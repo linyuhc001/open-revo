@@ -639,6 +639,20 @@ pub fn get_gpu_name_cached() -> String {
     "集成显卡/核显".to_string()
 }
 
+/// Robust numeric parser for `nvidia-smi --format=csv,noheader,nounits` fields.
+///
+/// Newer NVIDIA drivers return fractional values for some telemetry fields: on an
+/// RTX 5070 Ti Laptop GPU, `temperature.gpu` comes back as `28.69` instead of `28`,
+/// and unsupported fields come back as `N/A`. Parsing them with `parse::<u32>()`
+/// fails silently, which left the cached value frozen at its constructor default
+/// (this is why the GPU temperature was permanently stuck at 35°C).
+fn parse_smi_num(field: &str) -> Option<f32> {
+    let cleaned = field
+        .trim()
+        .trim_end_matches(|c: char| c.is_ascii_alphabetic() || c == '°' || c == ' ');
+    cleaned.parse::<f32>().ok()
+}
+
 impl GpuBridge {
     pub fn new() -> Self {
         let inner = Arc::new(GpuTelemetryInner {
@@ -730,27 +744,30 @@ impl GpuBridge {
                                     *n = name.to_string();
                                 }
                             }
-                            if let Ok(c) = parts[1].parse::<u32>() {
-                                inner.core_freq.store(c, Ordering::SeqCst);
+                            if let Some(c) = parse_smi_num(parts[1]) {
+                                inner.core_freq.store(c.max(0.0).round() as u32, Ordering::SeqCst);
                             }
-                            if let Ok(m) = parts[2].parse::<u32>() {
-                                inner.mem_freq.store(m, Ordering::SeqCst);
+                            if let Some(m) = parse_smi_num(parts[2]) {
+                                inner.mem_freq.store(m.max(0.0).round() as u32, Ordering::SeqCst);
                             }
-                            if let Ok(t) = parts[3].parse::<u32>() {
-                                inner.temp.store(t, Ordering::SeqCst);
+                            // Accept fractional readings (e.g. "28.69") instead of requiring a true integer.
+                            if let Some(t) = parse_smi_num(parts[3]) {
+                                if (0.0..=150.0).contains(&t) {
+                                    inner.temp.store(t.round() as u32, Ordering::SeqCst);
+                                }
                             }
-                            if let Ok(u) = parts[4].parse::<u32>() {
-                                inner.usage.store(u, Ordering::SeqCst);
+                            if let Some(u) = parse_smi_num(parts[4]) {
+                                inner.usage.store(u.clamp(0.0, 100.0).round() as u32, Ordering::SeqCst);
                             }
-                            if let Ok(v_tot) = parts[5].parse::<u64>() {
-                                inner.vram_mb.store(v_tot, Ordering::SeqCst);
+                            if let Some(v_tot) = parse_smi_num(parts[5]) {
+                                inner.vram_mb.store(v_tot.max(0.0).round() as u64, Ordering::SeqCst);
                             }
-                            if let Ok(v_use) = parts[6].parse::<u64>() {
-                                inner.vram_used_mb.store(v_use, Ordering::SeqCst);
+                            if let Some(v_use) = parse_smi_num(parts[6]) {
+                                inner.vram_used_mb.store(v_use.max(0.0).round() as u64, Ordering::SeqCst);
                             }
                             if parts.len() >= 8 {
-                                if let Ok(p) = parts[7].parse::<f32>() {
-                                    let dw = (p * 10.0).round() as u32;
+                                if let Some(p) = parse_smi_num(parts[7]) {
+                                    let dw = (p.max(0.0) * 10.0).round() as u32;
                                     inner.power_dw.store(dw, Ordering::SeqCst);
                                 }
                             }
