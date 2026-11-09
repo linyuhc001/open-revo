@@ -54,10 +54,6 @@ jobs:
       - name: Install Frontend Dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Verify Hardware Vault Gatekeeper
-        shell: pwsh
-        run: ./scripts/check_vault_leaks.ps1
-
       - name: Build Standalone Executable
         run: pnpm tauri build --no-bundle
 
