@@ -160,7 +160,7 @@ r#"<?xml version="1.0" encoding="UTF-16"?>
     <LogonTrigger>
       <Enabled>true</Enabled>
       <UserId>{}</UserId>
-      <Delay>PT2S</Delay>
+      <Delay>PT10S</Delay>
     </LogonTrigger>
   </Triggers>
   <Principals>
@@ -230,7 +230,7 @@ r#"<?xml version="1.0" encoding="UTF-16"?>
                         "/sc",
                         "onlogon",
                         "/delay",
-                        "0000:02",
+                        "0000:10",
                         "/rl",
                         "highest",
                     ])
