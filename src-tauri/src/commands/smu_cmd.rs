@@ -102,3 +102,71 @@ pub fn smu_profile_load() -> Result<String, String> {
     }
     std::fs::read_to_string(&path).map_err(|e| e.to_string())
 }
+
+/// Apply the saved profile at startup, but only when the user opted in.
+///
+/// The plugin page only runs while its tab is open, so "auto apply on boot" has
+/// to live in the host: this is called from the setup hook on a background
+/// thread after the kernel drivers are up. Every failure is reported as a
+/// string, never as a panic — a broken profile must not affect app startup.
+pub fn auto_apply_profile() -> Result<String, String> {
+    let path = profile_path();
+    if !path.exists() {
+        return Ok("no profile saved".into());
+    }
+
+    let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let profile: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("profile corrupt: {e}"))?;
+
+    if profile.get("autoApply").and_then(|v| v.as_bool()) != Some(true) {
+        return Ok("auto-apply is off for this profile".into());
+    }
+
+    let info = crate::system::smu::init_smu()?;
+    if !info.curve_optimizer_supported {
+        return Err(format!("{} does not expose Curve Optimizer", info.code_name));
+    }
+
+    let layout = crate::system::smu::get_core_layout();
+    if layout.is_empty() {
+        return Err("core topology unavailable".into());
+    }
+
+    let co = profile
+        .get("co")
+        .and_then(|v| v.as_object())
+        .ok_or("profile has no core map")?;
+
+    let (mut applied, mut failed) = (0usize, 0usize);
+    for core in &layout {
+        let Some(margin) = co
+            .get(&core.core.to_string())
+            .and_then(|v| v.as_i64())
+        else {
+            continue;
+        };
+        match crate::system::smu::set_co_single_core(
+            core.core,
+            core.ccd,
+            core.ccx,
+            margin as i32,
+        ) {
+            Ok(_) => applied += 1,
+            Err(_) => failed += 1,
+        }
+    }
+
+    if let Some(fmax) = profile.get("fmax").and_then(|v| v.as_i64()) {
+        if fmax > 0 && info.fmax_supported {
+            let _ = crate::system::smu::set_fmax(fmax as u32);
+        }
+    }
+    if let Some(scalar) = profile.get("scalar").and_then(|v| v.as_i64()) {
+        if scalar >= 1 && info.pbo_scalar_supported {
+            let _ = crate::system::smu::set_pbo_scalar((scalar as u32) * 1000);
+        }
+    }
+
+    Ok(format!("applied {applied} cores ({failed} failed)"))
+}

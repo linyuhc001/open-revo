@@ -122,8 +122,9 @@
     /* ---- CCD panels ---- */
     .ccd-wrap {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
       gap: 14px;
+      align-items: start;
     }
     .ccd-card {
       --ccd-color: #a855f7;
@@ -171,8 +172,8 @@
 
     .ccd-grid {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 6px 10px;
+      grid-template-columns: 1fr;
+      gap: 5px;
       padding: 11px;
     }
 
@@ -192,6 +193,7 @@
     .core-row input {
       flex: 1;
       min-width: 0;
+      max-width: 120px;
       width: 100%;
       background: #0b0f17;
       border: 1px solid var(--border-medium);
@@ -223,6 +225,22 @@
     }
     .row:last-child { margin-bottom: 0; }
     .row label { min-width: 100px; color: var(--text-secondary); font-size: 12px; }
+    .row label.checkline {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+      font-size: 12px;
+      color: var(--text-secondary);
+      cursor: pointer;
+      user-select: none;
+    }
+    .row label.checkline input[type="checkbox"] {
+      width: 14px;
+      height: 14px;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
     .row input[type="number"], .row input[type="text"] {
       background: #0b0f17;
       border: 1px solid var(--border-medium);
@@ -357,6 +375,12 @@
       <button id="btnLoadProfile" class="secondary">读取 Profile</button>
       <span class="hint" id="profileHint">尚未保存</span>
     </div>
+    <div class="row">
+      <label class="checkline" title="由宿主进程在启动时下发，插件页面无需打开">
+        <input type="checkbox" id="chkAutoApply" />
+        OpenRevo 启动时自动应用（保存后生效，启动 8 秒后台下发）
+      </label>
+    </div>
   </div>
 
   <div class="section">
@@ -489,6 +513,12 @@
       buildCcdPanels();
       await refreshValues({ initial: true });
       await refreshFmaxScalar();
+
+      // Auto-apply is a host-side setting; reflect whatever the saved profile says.
+      try {
+        const saved = await loadProfile(true);
+        document.getElementById('chkAutoApply').checked = !!(saved && saved.autoApply === true);
+      } catch (_) {}
     }
 
     // Last-resort topology: assume SMT-2 (logical / 2 physical cores) and
@@ -748,6 +778,7 @@
         co: STATE.values,
         fmax: parseInt(document.getElementById('inputFmax').value, 10) || 0,
         scalar: parseInt(document.getElementById('inputScalar').value, 10) || 1,
+        autoApply: !!document.getElementById('chkAutoApply').checked,
       };
     }
 
@@ -756,7 +787,8 @@
       try {
         const path = await rpc('smu_profile_save', { content: JSON.stringify(profile) });
         document.getElementById('profileHint').textContent =
-          `已保存 ${new Date().toLocaleTimeString()} · ${profile.cores.length} 核`;
+          `已保存 ${new Date().toLocaleTimeString()} · ${profile.cores.length} 核` +
+          (profile.autoApply ? ' · 开机自动应用' : '');
         log('[+] Profile 已保存: ' + path);
       } catch (e) {
         log('[-] 保存 Profile 失败: ' + e);
@@ -815,6 +847,7 @@
       if (typeof profile.scalar === 'number' && profile.scalar >= 1) {
         document.getElementById('inputScalar').value = profile.scalar;
       }
+      document.getElementById('chkAutoApply').checked = profile.autoApply === true;
       if (profile.savedAt) {
         document.getElementById('profileHint').textContent =
           `上次保存: ${new Date(profile.savedAt).toLocaleString()}`;
@@ -835,6 +868,7 @@
       });
       if (typeof profile.fmax === 'number') document.getElementById('inputFmax').value = profile.fmax;
       if (typeof profile.scalar === 'number') document.getElementById('inputScalar').value = profile.scalar;
+      document.getElementById('chkAutoApply').checked = profile.autoApply === true;
       applyValuesToInputs();
       setSourceTag('profile', '已载入 Profile');
       document.getElementById('coHint').textContent = profile.savedAt

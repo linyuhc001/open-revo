@@ -688,6 +688,17 @@ pub fn run_tauri_runtime() {
                 crate::system::device_switches::start_hardware_state_watcher(Some(app.handle().clone()), ec_for_watcher);
             });
 
+            // Step 6.8: Re-apply the saved PBO profile when the user opted into
+            // auto-apply. Delayed so PawnIO and the SMU mailbox are usable, and
+            // run off-thread so a slow/hung SMU can never block startup.
+            std::thread::spawn(|| {
+                std::thread::sleep(std::time::Duration::from_secs(8));
+                match crate::commands::smu_cmd::auto_apply_profile() {
+                    Ok(msg) => crate::log_info!("PBO_AUTO", "profile auto-apply: {}", msg),
+                    Err(e) => crate::log_info!("PBO_AUTO", "profile auto-apply skipped: {}", e),
+                }
+            });
+
             // Step 6.8: Initialize display tuning engine
             crate::system::boot_trace::boot_scope("Step 6.8: Display Tuning", || {
                 crate::system::display_tuning::init_display_tuning();
