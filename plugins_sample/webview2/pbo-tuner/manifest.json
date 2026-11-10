@@ -4,27 +4,9 @@
   "version": "1.0.0",
   "author": "OpenRevo Community",
   "description": "仿 SMUDebugTool 的 AMD Ryzen PBO 精准调校中心。基于 PawnIO 内核驱动直连 SMU（RSMU mailbox），支持每核 Curve Optimizer 降压、全核 CO、PBO Scalar、FMax 睿频上限调整与 SMU 版本/PM 表读取。所有参数直接作用于处理器固件，无需进入 BIOS。",
-  "type": "app",
+  "type": "tab",
   "entry": "index.html",
   "min_host_version": "0.9.7",
-  "tab": {
-    "type": "webview2",
-    "entry": "index.html",
-    "title": "PBO 精准调校"
-  },
-  "widget": {
-    "type": "slint",
-    "entry": "widget.slint",
-    "title": "PBO 状态挂件",
-    "window": {
-      "width": 280,
-      "height": 96,
-      "resizable": false,
-      "decorations": true,
-      "transparent": false,
-      "always_on_top": true
-    }
-  },
   "window": {
     "width": 1024,
     "height": 720,

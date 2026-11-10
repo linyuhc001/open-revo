@@ -400,6 +400,60 @@ pub async fn dispatch_plugin_ipc(plugin_id: &str, cmd: &str, args: Value) -> Res
             Ok(Value::Bool(res))
         }
 
+        // AMD Ryzen SMU / PBO (PawnIO kernel bridge)
+        "smu_init" => {
+            let res = crate::commands::smu_cmd::smu_init()?;
+            serde_json::to_value(res).map_err(|e| e.to_string())
+        }
+        "smu_get_core_layout" => {
+            let res = crate::commands::smu_cmd::smu_get_core_layout()?;
+            serde_json::to_value(res).map_err(|e| e.to_string())
+        }
+        "smu_set_co_single_core" => {
+            // Payload arrives either as { request: {...} } (Tauri command shape)
+            // or flattened at the top level (raw native IPC shape).
+            let payload = args.get("request").cloned().unwrap_or_else(|| args.clone());
+            let core = payload.get("core").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let ccd = payload.get("ccd").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let ccx = payload.get("ccx").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let margin = payload.get("margin").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let res = crate::commands::smu_cmd::smu_set_co_single_core(
+                crate::commands::smu_cmd::CoSetRequest { core, ccd, ccx, margin },
+            )?;
+            Ok(Value::Number(res.into()))
+        }
+        "smu_set_co_all_cores" => {
+            let margin = args.get("margin").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let res = crate::commands::smu_cmd::smu_set_co_all_cores(margin)?;
+            Ok(Value::Number(res.into()))
+        }
+        "smu_set_pbo_scalar" => {
+            let scalar = args
+                .get("scalarX1000")
+                .or_else(|| args.get("scalar_x1000"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1000) as u32;
+            let res = crate::commands::smu_cmd::smu_set_pbo_scalar(scalar)?;
+            Ok(Value::Number(res.into()))
+        }
+        "smu_get_pbo_scalar" => {
+            let res = crate::commands::smu_cmd::smu_get_pbo_scalar()?;
+            Ok(Value::Number(res.into()))
+        }
+        "smu_set_fmax" => {
+            let freq = args
+                .get("frequencyMhz")
+                .or_else(|| args.get("frequency_mhz"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            let res = crate::commands::smu_cmd::smu_set_fmax(freq)?;
+            Ok(Value::Number(res.into()))
+        }
+        "smu_get_fmax" => {
+            let res = crate::commands::smu_cmd::smu_get_fmax()?;
+            Ok(Value::Number(res.into()))
+        }
+
         other => {
             crate::log_warn!("NATIVE_WRY", "Unhandled IPC command: '{}'", other);
             Err(format!("Command '{}' not supported in native Wry container", other))
