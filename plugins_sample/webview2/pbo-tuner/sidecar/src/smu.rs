@@ -559,14 +559,11 @@ fn detect_physical_core_count() -> u32 {
 /// cores-per-CCD arithmetic used by every Ryzen desktop/mobile HX part.
 pub fn get_core_layout() -> Vec<CorePlacement> {
     let cores = detect_cores();
-    let slice_count = cores
-        .iter()
-        .map(|c| c.l3_mask)
-        .collect::<std::collections::BTreeSet<_>>()
-        .len();
-    let l3_grouping_usable = !cores.is_empty()
-        && cores.iter().all(|c| c.l3_mask != 0)
-        && slice_count > 1;
+    // A single L3 slice is a valid answer too: a 1-CCD part (9800X3D, 9700X,
+    // Strix Point / Strix Halo APUs) reports exactly one slice, and the slice
+    // count alone must not push us onto the 8-cores-per-CCD arithmetic, which
+    // would invent a second CCD on any 1-CCD part with more than 8 cores.
+    let l3_grouping_usable = !cores.is_empty() && cores.iter().all(|c| c.l3_mask != 0);
 
     // Order the L3 slices by the smallest core index inside them so CCD 0 is
     // always the one containing core 0, matching what Ryzen Master reports.
