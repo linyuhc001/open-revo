@@ -512,7 +512,8 @@
     function renderPlatform(info) {
       document.getElementById('platformGrid').style.display = 'grid';
       document.getElementById('pCpuName').textContent = info.cpu_name || '-';
-      document.getElementById('pCodeName').textContent = info.code_name;
+      const codeEl = document.getElementById('pCodeName');
+      codeEl.textContent = info.code_name || '未识别';
       document.getElementById('pSmuType').textContent = '0x' + Number(info.smu_type).toString(16).toUpperCase();
       document.getElementById('pSmuVersion').textContent = '0x' + Number(info.smu_version).toString(16).toUpperCase();
       document.getElementById('pPmVersion').textContent = '0x' + Number(info.pm_table_version).toString(16).toUpperCase();

@@ -68,6 +68,12 @@ pub enum CpuCodeName {
     Carrizo,
     BristolRidge,
     StoneyRidge,
+    /// Zen5 mobile HX die ("Fire Range"): 9955HX / 9955HX3D and friends.
+    /// RyzenSMU collapses family 1Ah model 44h into `GraniteRidge` because the
+    /// silicon is the mobile variant of the same die, but the SKUs and their
+    /// cache layout are different, so we keep them apart. Never produced by
+    /// `from_i64` — only by CPUID identification.
+    FireRange,
 }
 
 impl CpuCodeName {
@@ -208,8 +214,8 @@ fn resolve_commands(code: CpuCodeName) -> (SmuType, RsmuCommands) {
         }
         // Zen4 (Raphael / Genoa / StormPeak / DragonRange)
         // Zen5 (Granite Ridge / Fire Range / Turin / TurinD / Bergamo / ShimadaPeak)
-        Raphael | Genoa | StormPeak | DragonRange | GraniteRidge | Turin | TurinD | Bergamo
-        | ShimadaPeak => {
+        Raphael | Genoa | StormPeak | DragonRange | GraniteRidge | FireRange | Turin | TurinD
+        | Bergamo | ShimadaPeak => {
             c = zen45_commands();
             SmuType::Cpu4
         }
@@ -441,8 +447,10 @@ fn detect_code_name_from_cpuid() -> CpuCodeName {
         (0x1A, 0x08) => ShimadaPeak,
         (0x1A, 0x11) => TurinD,
         (0x1A, 0x20) | (0x1A, 0x24) => StrixPoint,
-        // Fire Range — the mobile HX die used by 9955HX / 9955HX3D.
-        (0x1A, 0x44) => GraniteRidge,
+        // Fire Range — the mobile HX die used by 9955HX / 9955HX3D. RyzenSMU
+        // reports this as GraniteRidge, which is why the name is resolved here
+        // instead of trusting the driver.
+        (0x1A, 0x44) => FireRange,
         (0x1A, 0x60) => KrackanPoint,
         (0x1A, 0x68) => KrackanPoint2,
         (0x1A, 0x70) => StrixHalo,
@@ -465,6 +473,20 @@ fn detect_code_name_from_cpuid() -> CpuCodeName {
         (0x19, 0x78) => Phoenix2,
         (0x19, 0x7C) => HawkPoint,
         (0x19, 0xA0) => Bergamo,
+        // Zen/Zen+/Zen2 (family 17h) — the driver handles these correctly too,
+        // but keeping them here means one code path decides the name everywhere.
+        (0x17, 0x01) => SummitRidge,
+        (0x17, 0x08) => PinnacleRidge,
+        (0x17, 0x11) => RavenRidge,
+        (0x17, 0x18) => Picasso,
+        (0x17, 0x20) => Dali,
+        (0x17, 0x31) => Rome,
+        (0x17, 0x60) => Renoir,
+        (0x17, 0x68) => Lucienne,
+        (0x17, 0x71) => Matisse,
+        (0x17, 0x90) | (0x17, 0x91) => Vangogh,
+        (0x17, 0x98) => Mero,
+        (0x17, 0xA0) => Mendocino,
         _ => Undefined,
     }
 }
@@ -630,7 +652,7 @@ impl SmuBridge {
     fn summary(&self) -> SmuInfo {
         SmuInfo {
             supported: self.smu_type != SmuType::Unsupported,
-            code_name: format!("{:?}", self.code_name),
+            code_name: display_code_name(self.code_name),
             cpu_name: cpuid_brand_string(),
             smu_type: smu_type_u32(self.smu_type),
             smu_version: self.smu_version,
@@ -645,6 +667,15 @@ impl SmuBridge {
             fmax_supported: self.commands.get_boost_limit_frequency != 0
                 || self.commands.set_boost_limit_all_core != 0,
         }
+    }
+}
+
+/// Human-readable code name. `Debug` alone prints `FireRange`, but the SKU
+/// family is called "Fire Range".
+fn display_code_name(code: CpuCodeName) -> String {
+    match code {
+        CpuCodeName::FireRange => "Fire Range".to_string(),
+        other => format!("{:?}", other),
     }
 }
 
@@ -672,7 +703,7 @@ pub fn init_smu() -> Result<SmuInfo, String> {
     let blob: &[u8] = include_bytes!("../../../assets/smu/RyzenSMU.bin");
     let pawn = PawnIo::load_module_from_bytes(blob)?;
 
-    let mut code_name = {
+    let driver_code = {
         match pawn.execute(FN_GET_CODE_NAME, &[], 1) {
             Ok(out) => {
                 // Driver returns the code name as a signed 32-bit int (0xFFFFFFFF = -1 = Undefined).
@@ -687,16 +718,25 @@ pub fn init_smu() -> Result<SmuInfo, String> {
         }
     };
 
-    // The bundled RyzenSMU blob may predate the installed SKU (Fire Range / 1Ah
-    // model 44h is a common miss). Identify from CPUID instead of giving up.
-    if code_name == CpuCodeName::Undefined {
-        let guess = detect_code_name_from_cpuid();
-        if guess != CpuCodeName::Undefined {
-            eprintln!("[smu] code name unresolved by RyzenSMU.bin, CPUID says {:?}", guess);
-            code_name = guess;
+    // CPUID wins over the driver. RyzenSMU.bin collapses several SKUs into one
+    // name — family 1Ah model 44h (Fire Range: 9955HX/9955HX3D) comes back as
+    // GraniteRidge because it is the mobile variant of that die — and older blob
+    // builds predate newer parts entirely. Only fall back to the driver value
+    // for platforms the CPUID table does not cover (Zen1…Zen3).
+    let cpuid_code = detect_code_name_from_cpuid();
+    let code_name = if cpuid_code != CpuCodeName::Undefined {
+        if cpuid_code != driver_code {
+            eprintln!(
+                "[smu] code name from CPUID: {:?} (driver said {:?})",
+                cpuid_code, driver_code
+            );
         }
-    }
+        cpuid_code
+    } else {
+        driver_code
+    };
 
+    // Still nothing? Probe the RSMU directly rather than refusing to start.
     let (mut smu_type, mut commands) = resolve_commands(code_name);
     if smu_type == SmuType::Unsupported {
         // Last resort: family 19h/1Ah all speak the same RSMU dialect, so try the
