@@ -258,8 +258,8 @@
     <h2>PBO Scalar <span class="tag">加速幅度</span></h2>
     <div class="row">
       <label>Scalar 倍率</label>
-      <input type="number" id="inputScalar" value="1" min="1" max="10" step="0.25" />
-      <span class="hint">1x ~ 10x（默认 1x，越高越激进）</span>
+      <input type="number" id="inputScalar" value="1" min="1" max="10" step="1" />
+      <span class="hint">1x ~ 10x 整数档（SMU 硬件仅支持整数倍，越高越激进）</span>
       <button id="btnApplyScalar">应用</button>
       <span id="scalarCurrent" class="hint"></span>
     </div>
@@ -362,7 +362,27 @@
         setStatus(false, '初始化失败');
         log('[-] SMU 初始化失败: ' + e);
         log('[-] 请确认：1) 已安装 PawnIO 且驱动已加载；2) CPU 为 AMD Ryzen；3) 以管理员权限运行 OpenRevo');
+
+        // Even when the SMU bridge is unavailable, still render the per-core
+        // grid so the operator can see the expected topology instead of an
+        // empty panel. Core count falls back to the host-reported logical
+        // processor count; CCD/CCX placement stays unknown until the SMU
+        // answers `smu_get_core_layout`.
+        STATE.coreCount = await detectHostCoreCount();
+        if (STATE.coreCount > 0) {
+          log(`[!] 已回退到宿主上报的核心数: ${STATE.coreCount} (CCD/CCX 拓扑待 SMU 恢复后校正)`);
+          buildCoGrid();
+        }
       }
+    }
+
+    // Fallback core count when the SMU topology query is offline.
+    // `navigator.hardwareConcurrency` reports the logical processor count and
+    // needs no privileged IPC, so the grid can still be rendered.
+    async function detectHostCoreCount() {
+      const hc = (typeof navigator !== 'undefined') ? navigator.hardwareConcurrency : 0;
+      if (typeof hc === 'number' && hc > 0 && hc <= 256) return hc;
+      return 16;
     }
 
     function ccdOf(core) {
@@ -387,16 +407,29 @@
     function buildCoGrid() {
       const grid = document.getElementById('coGrid');
       grid.innerHTML = '';
+      const hasTopology = STATE.coreLayout.length > 0;
       for (let i = 0; i < STATE.coreCount; i++) {
         const ccd = ccdOf(i);
         const ccx = ccxOf(i);
         const cell = document.createElement('div');
         cell.className = 'co-cell';
+        // Without a confirmed SMU topology we must NOT claim a CCD id: on
+        // multi-CCD Ryzen parts a wrong CCD routes the write to the wrong
+        // mailbox slot, which can silently apply the offset to another core.
+        const label = hasTopology
+          ? `Core ${i} · CCD${ccd} · CCX${ccx}`
+          : `Core ${i} · 拓扑待定`;
         cell.innerHTML = `
-          <div class="core-label">Core ${i} · CCD${ccd}</div>
-          <input type="number" id="co_${i}" value="0" min="-50" max="50" step="1" />
+          <div class="core-label">${label}</div>
+          <input type="number" id="co_${i}" value="0" min="-50" max="50" step="1" ${hasTopology ? '' : 'disabled'} />
         `;
         grid.appendChild(cell);
+      }
+      if (!hasTopology) {
+        const warn = document.createElement('div');
+        warn.style.cssText = 'grid-column: 1 / -1; font-size: 11px; color: var(--status-warn);';
+        warn.textContent = 'SMU 拓扑未就绪：分核输入框已禁用。恢复 SMU 链路后刷新本页即可启用，避免误写错误的 CCD 槽位。';
+        grid.appendChild(warn);
       }
     }
 
@@ -432,6 +465,11 @@
 
     // ---- Actions ----
     document.getElementById('btnApplyCO').addEventListener('click', async () => {
+      if (STATE.coreLayout.length === 0) {
+        log('[-] 已阻止写入：SMU 拓扑未就绪，无法确定每核 CCD/CCX 槽位。');
+        setBanner('err', '无法应用分核 CO', 'SMU 拓扑未就绪，已阻止写入以避免误改其它核心');
+        return;
+      }
       try {
         log('正在逐核应用 Curve Optimizer...');
         let applied = 0;
@@ -481,7 +519,11 @@
     });
 
     document.getElementById('btnApplyScalar').addEventListener('click', async () => {
-      const scalar = parseFloat(document.getElementById('inputScalar').value) || 1;
+      // SMU only accepts integer scalar multipliers (1x..10x); round down to the
+      // nearest hardware-representable step so the UI never claims a precision
+      // the firmware cannot apply.
+      const scalar = Math.max(1, Math.min(10, Math.floor(parseFloat(document.getElementById('inputScalar').value) || 1)));
+      document.getElementById('inputScalar').value = scalar;
       const x1000 = Math.round(scalar * 1000);
       try {
         const status = await rpc('smu_set_pbo_scalar', { scalarX1000: x1000 });
