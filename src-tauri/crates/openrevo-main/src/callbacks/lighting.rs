@@ -154,13 +154,53 @@ pub fn register(window: &MainWindow, ui_weak: slint::Weak<MainWindow>) {
     let ui_cb = ui_weak.clone();
     window.on_set_kb_engine(move |eng| {
         if let Some(ui) = ui_cb.upgrade() {
-            ui.set_kb_engine(eng);
-            let is_streamer = eng == 1 && !ui.get_is_single_zone() && !ui.get_is_four_zone() && !ui.get_is_single_color();
+            // The host decides the engine from `effect`, not from `engine`:
+            // 1..99 forces hardware, 100..199 streamer, 200+ custom
+            // (lighting_cmd::apply_keyboard_lighting_internal). Sending the
+            // current effect number with a new engine therefore reverted the
+            // switch on the very next sync — clicking BetterRGB bounced back
+            // to "全场固件" because kb_effect was still 3.
+            let can_stream = !ui.get_is_single_zone()
+                && !ui.get_is_four_zone()
+                && !ui.get_is_single_color();
+            let target = match eng {
+                1 if can_stream => 1,
+                2 if can_stream => 2,
+                _ => 0,
+            };
+            let cur_effect = ui.get_kb_effect();
+            let effect = match target {
+                1 => {
+                    if (100..200).contains(&cur_effect) {
+                        cur_effect
+                    } else {
+                        101
+                    }
+                }
+                2 => {
+                    if cur_effect >= 200 {
+                        cur_effect
+                    } else {
+                        201
+                    }
+                }
+                _ => {
+                    if cur_effect > 0 && cur_effect < 100 {
+                        cur_effect
+                    } else {
+                        3
+                    }
+                }
+            };
+            // Keep the on-screen engine/effect in step with what is being sent,
+            // so the effect grid does not keep highlighting a stale entry.
+            ui.set_kb_engine(target);
+            ui.set_kb_effect(effect);
             ipc::send_action_to_host("apply_keyboard_lighting_patch", serde_json::json!({
                 "enabled": ui.get_kb_enabled(),
-                "engine": if is_streamer { "streamer" } else { "hardware" },
+                "engine": match target { 1 => "streamer", 2 => "custom", _ => "hardware" },
                 "fps": ui.get_kb_fps(),
-                "effect": ui.get_kb_effect(),
+                "effect": effect,
                 "direction": ui.get_kb_direction(),
                 "brightness": ui.get_kb_brightness(),
                 "speed": ui.get_kb_speed(),
