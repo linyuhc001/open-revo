@@ -122,8 +122,10 @@
     /* ---- CCD panels ---- */
     .ccd-wrap {
       display: grid;
-      /* Always two columns: the two CCDs must sit side by side for comparison.
-         auto-fit would wrap them into two rows as soon as the panel narrows. */
+      /* Default two columns: on a 2-CCD part the two cards must sit side by side
+         for comparison (auto-fit would wrap them into two rows as the panel
+         narrows). buildCcdPanels() overrides this per topology: a single-CCD
+         part spans the full width instead of leaving half the panel empty. */
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 14px;
       align-items: start;
@@ -177,7 +179,8 @@
       grid-template-columns: repeat(2, minmax(0, 1fr));
       /* Column-major fill: C0-C3 down the left column, C4-C7 down the right.
          The row count is set per card in JS so CPUs with 6 cores per CCD still
-         split evenly instead of overflowing into a third column. */
+         split evenly instead of overflowing into a third column, and so a
+         single-CCD part can use four columns across the full width. */
       grid-auto-flow: column;
       gap: 5px 12px;
       padding: 11px;
@@ -217,6 +220,11 @@
     .row input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
     .core-row input:focus { outline: none; border-color: var(--ccd-color, var(--accent)); }
     .core-row input.negative { color: #34d399; border-color: rgba(52,211,153,0.35); }
+    /* A single-CCD card spans the full panel, so its columns are twice as wide
+       as the 2-CCD case. Let the inputs fill some of that instead of sitting
+       pinned to the left edge of every column. */
+    .ccd-grid.single .core-row { justify-content: center; }
+    .ccd-grid.single .core-row input { max-width: 140px; }
     .core-row input.positive { color: #f87171; border-color: rgba(248,113,113,0.35); }
     .core-row input:disabled { opacity: 0.45; cursor: not-allowed; }
     .core-row input.dirty { box-shadow: inset 0 0 0 1px rgba(245,158,11,0.55); }
@@ -626,6 +634,15 @@
       });
       const ccdIds = Array.from(byCcd.keys()).sort((a, b) => a - b);
 
+      // Layout follows the real CCD count, not a hardcoded pair:
+      //   1 CCD  (9800X3D / 9700X / mobile APUs) → one full-width card, 4 core columns
+      //   2 CCDs (9955HX3D / 7950X / 7900X)      → two cards side by side, 2 columns each
+      //   3+ CCDs (Threadripper)                 → two per row, extra cards wrap below
+      // ccdIds is empty only before topology loads; keep the CSS default then.
+      wrap.style.gridTemplateColumns = ccdIds.length === 1
+        ? 'minmax(0, 1fr)'
+        : 'repeat(2, minmax(0, 1fr))';
+
       ccdIds.forEach((ccdId, idx) => {
         const color = CCD_COLORS[idx % CCD_COLORS.length];
         const cores = byCcd.get(ccdId).sort((a, b) => a.core - b.core);
@@ -655,9 +672,25 @@
 
         const grid = document.createElement('div');
         grid.className = 'ccd-grid';
+        // A lone CCD owns the whole panel, so it spreads its cores over up to
+        // four columns (8 cores → 2 rows) instead of stacking them in a narrow
+        // half and leaving the middle of the row empty. Multi-CCD parts keep the
+        // two-column comparison layout.
+        const single = ccdIds.length === 1;
+        // Pick a column count that divides the core count evenly so no column
+        // is left half empty (6 cores → 3 columns, 8 → 4, 12 → 4, 16 → 4).
+        let cols = 2;
+        if (single) {
+          cols = 4;
+          for (const c of [4, 3, 2]) {
+            if (cores.length % c === 0) { cols = c; break; }
+          }
+        }
+        if (single) grid.classList.add('single');
+        grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
         // grid-auto-flow: column needs an explicit row count, otherwise the
         // 8 cores would run sideways into 8 columns.
-        grid.style.gridTemplateRows = `repeat(${Math.ceil(cores.length / 2)}, auto)`;
+        grid.style.gridTemplateRows = `repeat(${Math.ceil(cores.length / cols)}, auto)`;
 
         cores.forEach(c => {
           const row = document.createElement('div');
