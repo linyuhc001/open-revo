@@ -418,18 +418,38 @@
   </div>
 
   <script>
-    // ---- Unified RPC Invoker (same contract as gpu-curve-tuner) ----
+    // ---- RPC to the plugin's own companion service ----------------------
+    // Every SMU call used to be a host command (`window.OpenRevo.invoke`),
+    // which forced the feature into src-tauri. The service below ships inside
+    // the plugin and the host only launches it, so nothing here depends on
+    // host source. Endpoint names match the old command names 1:1.
+    const SERVICE_PORT = 18955;
+    const SERVICE_BASE = `http://127.0.0.1:${SERVICE_PORT}/api`;
+
     async function rpc(command, args = {}) {
-      if (window.OpenRevo && typeof window.OpenRevo.invoke === 'function') {
-        return await window.OpenRevo.invoke(command, args);
+      let res;
+      try {
+        res = await fetch(`${SERVICE_BASE}/${command}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(args || {}),
+          cache: 'no-store',
+        });
+      } catch (e) {
+        throw new Error(`PBO 服务未响应（127.0.0.1:${SERVICE_PORT}）`);
       }
-      if (window.__TAURI__ && window.__TAURI__.core && typeof window.__TAURI__.core.invoke === 'function') {
-        return await window.__TAURI__.core.invoke(command, args);
+      const text = await res.text();
+      let data = null;
+      if (text) {
+        try { data = JSON.parse(text); }
+        catch (_) { throw new Error('服务返回非 JSON: ' + text.slice(0, 160)); }
       }
-      if (window.parent && window.parent.__OPENREVO_BRIDGE__ && typeof window.parent.__OPENREVO_BRIDGE__.invoke === 'function') {
-        return await window.parent.__OPENREVO_BRIDGE__.invoke(command, args);
+      // The service reports failures in-band so a 200 response still carries
+      // the reason (e.g. "SMU command 0xD5 rejected ...").
+      if (data && typeof data === 'object' && '__error' in data) {
+        throw new Error(data.__error);
       }
-      throw new Error('未连接到 OpenRevo 宿主通信网关');
+      return data;
     }
 
     function log(msg) {
@@ -478,9 +498,31 @@
     };
 
     // ---- SMU init ----
+    // The host launches the companion service during plugin bootstrap, which
+    // can be a beat behind the first tab paint. Poll health instead of failing
+    // the whole page on a connection-refused race.
+    async function waitForService(timeoutMs = 15000) {
+      const deadline = Date.now() + timeoutMs;
+      let lastErr = null;
+      while (Date.now() < deadline) {
+        try {
+          const res = await fetch(`http://127.0.0.1:${SERVICE_PORT}/api/health`, { cache: 'no-store' });
+          if (res.ok) return await res.json();
+          lastErr = new Error('health HTTP ' + res.status);
+        } catch (e) {
+          lastErr = e;
+        }
+        await new Promise(r => setTimeout(r, 600));
+      }
+      throw new Error('PBO 服务启动超时' + (lastErr ? `（${lastErr.message}）` : ''));
+    }
+
     async function initSmu() {
       let info = null;
       try {
+        log('正在连接 PBO 伴随服务 (127.0.0.1:18955)…');
+        const health = await waitForService();
+        if (health && health.cpu) log(`[+] 服务已就绪 · ${health.cpu}`);
         log('正在初始化 SMU 链路 (PawnIO → RyzenSMU.bin → RSMU)…');
         info = await rpc('smu_init');
         STATE.smuInfo = info;
@@ -496,7 +538,7 @@
         setBanner('err', 'SMU 初始化失败', String(e));
         setStatus('err', '初始化失败');
         log('[-] SMU 初始化失败: ' + e);
-        log('[-] 请确认：1) 已安装 PawnIO 且驱动已加载；2) CPU 为 AMD Ryzen；3) 以管理员权限运行 OpenRevo');
+        log('[-] 请确认：1) 插件目录下存在 sidecar/pbo-service.exe 且能提权启动；2) 已安装 PawnIO 驱动；3) CPU 为 AMD Ryzen');
       }
 
       // Core topology does NOT depend on the SMU bridge: the host derives it
