@@ -280,6 +280,87 @@ fn is_family_gt_17h(t: SmuType) -> bool {
     matches!(t, SmuType::Cpu2 | SmuType::Cpu3 | SmuType::Cpu4)
 }
 
+// ---- CPU topology detection ----
+
+// kernel32 imports for counting physical cores (RelationProcessorCore entries).
+#[link(name = "kernel32")]
+extern "system" {
+    fn GetLogicalProcessorInformation(buffer: *mut u8, returned_length: *mut u32) -> i32;
+}
+
+// SYSTEM_LOGICAL_PROCESSOR_INFORMATION layout (packed for 32/64-bit).
+// We only care about the Relationship field and the ProcessorMask.
+const RELATION_PROCESSOR_CORE: u32 = 0;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SystemLogicalProcessorInformation {
+    processor_mask: usize,
+    relationship: u32,
+    flags: u32,
+    // union payload ignored; we never read past relationship.
+}
+
+/// Count physical cores via GetLogicalProcessorInformation (RelationProcessorCore).
+fn detect_physical_core_count() -> u32 {
+    unsafe {
+        let mut needed: u32 = 0;
+        let r = GetLogicalProcessorInformation(std::ptr::null_mut(), &mut needed);
+        if r != 0 || needed == 0 {
+            // Fallback to available_parallelism / 2 (SMT) heuristic.
+            let logical = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0) as u32;
+            return if logical > 0 { (logical + 1) / 2 } else { 0 };
+        }
+
+        let byte_len = needed as usize;
+        let mut buf: Vec<u8> = vec![0u8; byte_len];
+        let r = GetLogicalProcessorInformation(buf.as_mut_ptr(), &mut needed);
+        if r == 0 {
+            let logical = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0) as u32;
+            return if logical > 0 { (logical + 1) / 2 } else { 0 };
+        }
+
+        let elem_size = std::mem::size_of::<SystemLogicalProcessorInformation>();
+        let count = byte_len / elem_size;
+        let mut cores: u32 = 0;
+        for i in 0..count {
+            let e = *(buf.as_ptr().add(i * elem_size) as *const SystemLogicalProcessorInformation);
+            if e.relationship == RELATION_PROCESSOR_CORE {
+                cores += 1;
+            }
+        }
+        cores
+    }
+}
+
+/// Build the per-core (core, ccd, ccx) placement table.
+///
+/// Matches ZenStates-Core's fallback mapping:
+///   - 19h family (Zen3+): 1 CCX per CCD, 8 cores per CCD  -> ccd = core / 8, ccx = core / 8
+///   - pre-19h family:     2 CCX per CCD, 4 cores per CCX -> ccd = core / 8, ccx = core / 4
+pub fn get_core_layout() -> Vec<CorePlacement> {
+    let core_count = detect_physical_core_count();
+    if core_count == 0 {
+        return Vec::new();
+    }
+
+    let is_zen3_plus = {
+        let slot = SMU_BRIDGE.get();
+        slot.and_then(|m| m.lock().ok())
+            .and_then(|g| g.as_ref().map(|b| b.smu_type))
+            .map(|t| matches!(t, SmuType::Cpu3 | SmuType::Cpu4))
+            .unwrap_or(true)
+    };
+
+    (0..core_count)
+        .map(|core| {
+            let ccd = core / 8;
+            let ccx = if is_zen3_plus { core / 8 } else { core / 4 };
+            CorePlacement { core, ccd, ccx }
+        })
+        .collect()
+}
+
 // ---- Public API ----
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -291,9 +372,22 @@ pub struct SmuInfo {
     pub pm_table_version: u32,
     pub pm_table_size: u32,
     pub dram_base: u64,
+    pub physical_core_count: u32,
     pub curve_optimizer_supported: bool,
     pub pbo_scalar_supported: bool,
     pub fmax_supported: bool,
+}
+
+/// One physical core's topological placement (which CCD/CCX it belongs to).
+/// Mirrors ZenStates-Core's `CoreListItem` / `ApobCoreMapCore`.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub struct CorePlacement {
+    /// Logical (OS-visible) core index, 0-based.
+    pub core: u32,
+    /// Physical CCD this core lives on.
+    pub ccd: u32,
+    /// Physical CCX within the CCD.
+    pub ccx: u32,
 }
 
 impl SmuBridge {
@@ -306,6 +400,7 @@ impl SmuBridge {
             pm_table_version: self.pm_table_version,
             pm_table_size: self.pm_table_size,
             dram_base: self.dram_base,
+            physical_core_count: detect_physical_core_count(),
             curve_optimizer_supported: self.commands.set_dldo_psm_margin != 0
                 || self.commands.set_all_dldo_psm_margin != 0
                 || self.commands.set_overclock_cpu_vid != 0,

@@ -610,6 +610,7 @@ pub fn run_tauri_runtime() {
             commands::tuning_cmd::apply_gpu_oc,
             commands::tuning_cmd::get_gpu_oc_state,
             commands::smu_cmd::smu_init,
+            commands::smu_cmd::smu_get_core_layout,
             commands::smu_cmd::smu_set_co_single_core,
             commands::smu_cmd::smu_set_co_all_cores,
             commands::smu_cmd::smu_set_pbo_scalar,

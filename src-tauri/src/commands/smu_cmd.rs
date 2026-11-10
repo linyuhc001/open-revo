@@ -17,6 +17,13 @@ pub fn smu_init() -> Result<crate::system::smu::SmuInfo, String> {
 }
 
 #[tauri::command]
+pub fn smu_get_core_layout() -> Result<Vec<crate::system::smu::CorePlacement>, String> {
+    // Ensure the bridge is initialized first so we know the SMU generation.
+    let _ = crate::system::smu::init_smu()?;
+    Ok(crate::system::smu::get_core_layout())
+}
+
+#[tauri::command]
 pub fn smu_set_co_single_core(request: CoSetRequest) -> Result<u32, String> {
     crate::system::smu::set_co_single_core(request.core, request.ccd, request.ccx, request.margin)
 }

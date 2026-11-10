@@ -323,7 +323,8 @@
     // ---- State ----
     const STATE = {
       smuInfo: null,
-      coreCount: 16, // default, will be detected if possible
+      coreLayout: [], // [{ core, ccd, ccx }, ...] from smu_get_core_layout
+      coreCount: 0,
     };
 
     // ---- SMU init ----
@@ -338,6 +339,22 @@
         log(`[+] SMU 初始化成功: ${info.code_name} (type ${info.smu_type})`);
         log(`[+] SMU 版本 0x${info.smu_version.toString(16).toUpperCase()}, PM 表 0x${info.pm_table_version.toString(16).toUpperCase()}`);
         log(`[+] CO 支持: ${info.curve_optimizer_supported}, Scalar 支持: ${info.pbo_scalar_supported}, FMax 支持: ${info.fmax_supported}`);
+
+        // Fetch per-core topological placement (ccd/ccx) so per-core CO is
+        // written to the correct SMU mailbox slot.
+        try {
+          const layout = await rpc('smu_get_core_layout');
+          STATE.coreLayout = Array.isArray(layout) ? layout : [];
+        } catch (e) {
+          STATE.coreLayout = [];
+          log('[!] 获取核心拓扑失败，回退到单 CCD 假设: ' + e);
+        }
+        STATE.coreCount = STATE.coreLayout.length > 0
+          ? STATE.coreLayout.length
+          : (info.physical_core_count || 0);
+        if (STATE.coreCount === 0) STATE.coreCount = 16; // last-resort fallback
+
+        log(`[+] 检测到 ${STATE.coreCount} 个物理核心`);
         buildCoGrid();
         loadCurrentValues();
       } catch (e) {
@@ -346,6 +363,15 @@
         log('[-] SMU 初始化失败: ' + e);
         log('[-] 请确认：1) 已安装 PawnIO 且驱动已加载；2) CPU 为 AMD Ryzen；3) 以管理员权限运行 OpenRevo');
       }
+    }
+
+    function ccdOf(core) {
+      const p = STATE.coreLayout.find(x => x.core === core);
+      return p ? p.ccd : 0;
+    }
+    function ccxOf(core) {
+      const p = STATE.coreLayout.find(x => x.core === core);
+      return p ? p.ccx : 0;
     }
 
     function renderPlatform(info) {
@@ -362,10 +388,12 @@
       const grid = document.getElementById('coGrid');
       grid.innerHTML = '';
       for (let i = 0; i < STATE.coreCount; i++) {
+        const ccd = ccdOf(i);
+        const ccx = ccxOf(i);
         const cell = document.createElement('div');
         cell.className = 'co-cell';
         cell.innerHTML = `
-          <div class="core-label">Core ${i}</div>
+          <div class="core-label">Core ${i} · CCD${ccd}</div>
           <input type="number" id="co_${i}" value="0" min="-50" max="50" step="1" />
         `;
         grid.appendChild(cell);
@@ -410,11 +438,13 @@
         for (let i = 0; i < STATE.coreCount; i++) {
           const margin = getCoValue(i);
           if (margin === 0) continue;
-          const status = await rpc('smu_set_co_single_core', { request: { core: i, ccd: 0, ccx: 0, margin } });
+          const ccd = ccdOf(i);
+          const ccx = ccxOf(i);
+          const status = await rpc('smu_set_co_single_core', { request: { core: i, ccd, ccx, margin } });
           if (status === 1) {
             applied++;
           } else {
-            log(`[-] Core ${i} 应用失败 (status 0x${status.toString(16)})`);
+            log(`[-] Core ${i} (CCD${ccd}) 应用失败 (status 0x${status.toString(16)})`);
           }
         }
         log(`[+] 完成，成功应用 ${applied} 个核心`);
