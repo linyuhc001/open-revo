@@ -256,11 +256,6 @@ fn run_slint_pure_daemon() {
     // 14. Watcher Hub & Enabled Plugins Bootstrap
     crate::commands::system_cmd::bootstrap_enabled_plugins();
 
-    // 14.5 Re-apply the saved PBO profile when the user opted into auto-apply.
-    // This is the default entry point, so the hook cannot live only in the
-    // classic Tauri runtime's setup closure (that closure never runs here).
-    crate::commands::smu_cmd::spawn_auto_apply_on_boot();
-
     // 15. Autostart Alignment
     crate::system::autostart::sync_autostart_target_path();
 
@@ -614,17 +609,6 @@ pub fn run_tauri_runtime() {
             commands::power_cmd::apply_turbo_profile,
             commands::tuning_cmd::apply_gpu_oc,
             commands::tuning_cmd::get_gpu_oc_state,
-            commands::smu_cmd::smu_init,
-            commands::smu_cmd::smu_get_core_layout,
-            commands::smu_cmd::smu_set_co_single_core,
-            commands::smu_cmd::smu_get_co_single_core,
-            commands::smu_cmd::smu_set_co_all_cores,
-            commands::smu_cmd::smu_set_pbo_scalar,
-            commands::smu_cmd::smu_get_pbo_scalar,
-            commands::smu_cmd::smu_set_fmax,
-            commands::smu_cmd::smu_get_fmax,
-            commands::smu_cmd::smu_profile_save,
-            commands::smu_cmd::smu_profile_load,
         ])
         .setup(move |app| {
             openrevo_core::set_global_event_sink(Arc::new(TauriEventSink::new(app.handle().clone())));
@@ -692,11 +676,6 @@ pub fn run_tauri_runtime() {
             crate::system::boot_trace::boot_scope("Step 6.7: Hardware State Watcher", || {
                 crate::system::device_switches::start_hardware_state_watcher(Some(app.handle().clone()), ec_for_watcher);
             });
-
-            // Step 6.8b: Re-apply the saved PBO profile when the user opted into
-            // auto-apply. The spawn is shared with the Slint daemon entry point,
-            // which is the default runtime and never reaches this closure.
-            crate::commands::smu_cmd::spawn_auto_apply_on_boot();
 
             // Step 6.8: Initialize display tuning engine
             crate::system::boot_trace::boot_scope("Step 6.8: Display Tuning", || {
