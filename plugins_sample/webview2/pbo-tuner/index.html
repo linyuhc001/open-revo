@@ -795,10 +795,33 @@
       };
     }
 
+    // Apply pushes values to the SMU only — the archive is written by an
+    // explicit "保存 Profile" click. Saving from inside Apply used to wipe the
+    // stored margins whenever the screen held something else (All Zero ->
+    // Apply turned the whole saved profile into zeros).
+    async function markProfileDirty() {
+      const hint = document.getElementById('profileHint');
+      const saved = await loadProfile(true);
+      if (!saved) {
+        hint.textContent = '尚未保存 Profile（当前值只写入了硬件）';
+        return;
+      }
+      const curFmax = parseInt(document.getElementById('inputFmax').value, 10) || 0;
+      const curScalar = parseInt(document.getElementById('inputScalar').value, 10) || 1;
+      const sameCo = STATE.cores.every(c =>
+        Number(saved.co && saved.co[c.core]) === Number(STATE.values[c.core]));
+      const sameRest = Number(saved.fmax) === curFmax && Number(saved.scalar) === curScalar;
+      hint.textContent = (sameCo && sameRest)
+        ? '当前值与已保存 Profile 一致'
+        : '当前值已下发硬件，但未写入 Profile（存档仍是旧值）';
+      hint.style.color = (sameCo && sameRest) ? '' : 'var(--warn, #fbbf24)';
+    }
+
     async function saveProfile() {
       const profile = buildProfileObject();
       try {
         const path = await rpc('smu_profile_save', { content: JSON.stringify(profile) });
+        document.getElementById('profileHint').style.color = '';
         document.getElementById('profileHint').textContent =
           `已保存 ${new Date().toLocaleTimeString()} · ${profile.cores.length} 核` +
           (profile.autoApply ? ' · 开机自动应用' : '');
@@ -947,7 +970,7 @@
           log(`[!] 写入完成：成功 ${ok}，失败 ${fail}${firstErr ? '（' + firstErr + '）' : ''}`);
           setBanner('warn', 'CO 部分写入', `成功 ${ok} / 失败 ${fail}`);
         }
-        await saveProfile();
+        await markProfileDirty();
       } finally {
         updateApplyState();
       }
@@ -997,6 +1020,7 @@
         if (Number(status) === 1) {
           log(`[+] FMax 已应用: ${fmax} MHz`);
           document.getElementById('fmaxCurrent').textContent = `当前: ${fmax} MHz`;
+          await markProfileDirty();
         } else {
           log(`[-] FMax 应用失败 (status 0x${Number(status).toString(16)})`);
         }
@@ -1015,6 +1039,7 @@
         if (Number(status) === 1) {
           log(`[+] PBO Scalar 已应用: ${scalar}x`);
           document.getElementById('scalarCurrent').textContent = `当前: ${scalar}x`;
+          await markProfileDirty();
         } else {
           log(`[-] Scalar 应用失败 (status 0x${Number(status).toString(16)})`);
         }
