@@ -7,8 +7,14 @@ name: Build PBO Sidecar
 on:
   workflow_dispatch:
   push:
+    # Only source inputs rebuild. The committed pbo-service.exe also lives
+    # under sidecar/, and matching it here would make every artifact commit
+    # trigger another build.
     paths:
-      - 'plugins_sample/webview2/pbo-tuner/sidecar/**'
+      - 'plugins_sample/webview2/pbo-tuner/sidecar/src/**'
+      - 'plugins_sample/webview2/pbo-tuner/sidecar/Cargo.toml'
+      - 'plugins_sample/webview2/pbo-tuner/sidecar/Cargo.lock'
+      - 'plugins_sample/webview2/pbo-tuner/sidecar/RyzenSMU.bin'
       - '.github/workflows/pbo-sidecar.yml'
 
 permissions:
