@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="dark" />
+  <title>PBO 精准调校 (SMU Debug)</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --surface-base: #0b0f17;
+      --surface-card: rgba(22, 27, 34, 0.75);
+      --surface-card-hover: rgba(33, 38, 45, 0.85);
+      --surface-overlay: rgba(255, 255, 255, 0.06);
+      --border-subtle: rgba(255, 255, 255, 0.08);
+      --border-medium: rgba(255, 255, 255, 0.16);
+      --border-accent: rgba(168, 85, 247, 0.45);
+      --text-primary: #f8fafc;
+      --text-secondary: #cbd5e1;
+      --text-dim: #94a3b8;
+      --accent: #a855f7;
+      --accent-soft: rgba(168, 85, 247, 0.15);
+      --status-ok: #10b981;
+      --status-warn: #f59e0b;
+      --status-error: #ef4444;
+      --status-info: #38bdf8;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+      background: var(--surface-base);
+      color: var(--text-primary);
+      padding: 20px;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+    .header h1 { font-size: 20px; font-weight: 700; }
+    .header .sub { color: var(--text-dim); font-size: 12px; margin-top: 4px; }
+
+    .banner {
+      border-radius: 10px;
+      padding: 14px 16px;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      border: 1px solid var(--border-subtle);
+      background: var(--surface-card);
+    }
+    .banner .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+    .banner.ok { border-color: rgba(16,185,129,0.3); }
+    .banner.ok .dot { background: var(--status-ok); }
+    .banner.err { border-color: rgba(239,68,68,0.3); }
+    .banner.err .dot { background: var(--status-error); }
+    .banner.warn { border-color: rgba(245,158,11,0.3); }
+    .banner.warn .dot { background: var(--status-warn); }
+    .banner .title { font-weight: 600; }
+    .banner .detail { color: var(--text-dim); font-size: 12px; }
+
+    .platform-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+    .platform-card {
+      background: var(--surface-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 12px;
+    }
+    .platform-card .label { color: var(--text-dim); font-size: 11px; margin-bottom: 4px; }
+    .platform-card .value { font-size: 15px; font-weight: 600; font-family: "Consolas", monospace; }
+
+    .section {
+      background: var(--surface-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: 10px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+    .section h2 {
+      font-size: 15px;
+      font-weight: 700;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .section h2 .tag {
+      font-size: 10px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    .co-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+      gap: 10px;
+    }
+    .co-cell {
+      background: var(--surface-overlay);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 10px;
+      text-align: center;
+    }
+    .co-cell .core-label { font-size: 11px; color: var(--text-dim); margin-bottom: 6px; }
+    .co-cell input {
+      width: 100%;
+      background: #0b0f17;
+      border: 1px solid var(--border-medium);
+      border-radius: 6px;
+      color: var(--text-primary);
+      text-align: center;
+      padding: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      font-family: "Consolas", monospace;
+    }
+    .co-cell input:focus { outline: none; border-color: var(--accent); }
+    .co-cell input.negative { color: #34d399; }
+    .co-cell input.positive { color: #f87171; }
+
+    .row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+    .row label { min-width: 110px; color: var(--text-secondary); font-size: 13px; }
+    .row input[type="number"], .row input[type="text"] {
+      background: #0b0f17;
+      border: 1px solid var(--border-medium);
+      border-radius: 6px;
+      color: var(--text-primary);
+      padding: 8px 10px;
+      font-size: 14px;
+      width: 140px;
+      font-family: "Consolas", monospace;
+    }
+    .row input:focus { outline: none; border-color: var(--accent); }
+    .row .hint { color: var(--text-dim); font-size: 11px; }
+
+    button {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 8px 16px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    button:hover { opacity: 0.9; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    button.secondary {
+      background: var(--surface-overlay);
+      border: 1px solid var(--border-medium);
+      color: var(--text-secondary);
+    }
+    button.danger { background: var(--status-error); }
+
+    .console {
+      background: #05070b;
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 12px;
+      font-family: "Consolas", monospace;
+      font-size: 12px;
+      color: #94a3b8;
+      height: 180px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    .status-pill {
+      font-size: 11px;
+      padding: 3px 10px;
+      border-radius: 20px;
+      font-weight: 600;
+    }
+    .status-pill.ok { background: rgba(16,185,129,0.15); color: var(--status-ok); }
+    .status-pill.err { background: rgba(239,68,68,0.15); color: var(--status-error); }
+
+    .disclaimer {
+      color: var(--text-dim);
+      font-size: 11px;
+      margin-top: 8px;
+      padding: 10px;
+      border-left: 3px solid var(--status-warn);
+      background: rgba(245,158,11,0.06);
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <h1>PBO 精准调校</h1>
+      <div class="sub">AMD Ryzen · SMU 直连 · 仿 SMUDebugTool</div>
+    </div>
+    <span id="statusPill" class="status-pill err">未连接</span>
+  </div>
+
+  <div id="banner" class="banner warn">
+    <span class="dot"></span>
+    <div>
+      <div class="title">正在探测 SMU 链路…</div>
+      <div class="detail" id="bannerDetail">请稍候</div>
+    </div>
+  </div>
+
+  <div class="platform-grid" id="platformGrid" style="display:none;">
+    <div class="platform-card"><div class="label">CPU 代号</div><div class="value" id="pCodeName">-</div></div>
+    <div class="platform-card"><div class="label">SMU 类型</div><div class="value" id="pSmuType">-</div></div>
+    <div class="platform-card"><div class="label">SMU 版本</div><div class="value" id="pSmuVersion">-</div></div>
+    <div class="platform-card"><div class="label">PM 表版本</div><div class="value" id="pPmVersion">-</div></div>
+    <div class="platform-card"><div class="label">PM 表大小</div><div class="value" id="pPmSize">-</div></div>
+    <div class="platform-card"><div class="label">DRAM 基址</div><div class="value" id="pDram">-</div></div>
+  </div>
+
+  <div class="section">
+    <h2>每核 Curve Optimizer <span class="tag">降压增效</span></h2>
+    <div class="co-grid" id="coGrid"></div>
+    <div class="row" style="margin-top:14px;">
+      <button id="btnApplyCO">应用全部核心 CO</button>
+      <button id="btnResetCO" class="secondary">全部归零</button>
+      <span class="hint">负值 = 降压（推荐从 -10 起，每次 ±5 小步验证）；范围 -50 ~ +50</span>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>全核快捷设置 <span class="tag">All-Core</span></h2>
+    <div class="row">
+      <label>全核 CO 偏移</label>
+      <input type="number" id="inputAllCoreCO" value="-10" min="-50" max="50" />
+      <button id="btnApplyAllCore">应用全核</button>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>PBO Scalar <span class="tag">加速幅度</span></h2>
+    <div class="row">
+      <label>Scalar 倍率</label>
+      <input type="number" id="inputScalar" value="1" min="1" max="10" step="0.25" />
+      <span class="hint">1x ~ 10x（默认 1x，越高越激进）</span>
+      <button id="btnApplyScalar">应用</button>
+      <span id="scalarCurrent" class="hint"></span>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>FMax 睿频上限 <span class="tag">Boost Limit</span></h2>
+    <div class="row">
+      <label>最大睿频 (MHz)</label>
+      <input type="number" id="inputFmax" value="0" min="0" max="6000" step="25" />
+      <span class="hint">0 = 自动；典型范围 4500 ~ 6000</span>
+      <button id="btnApplyFmax">应用</button>
+      <span id="fmaxCurrent" class="hint"></span>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>操作日志</h2>
+    <div class="console" id="consoleBox">[系统] 初始化中…</div>
+  </div>
+
+  <div class="disclaimer">
+    ⚠️ 安全提示：PBO 调校直接作用于处理器固件，可能影响系统稳定性。请遵循「单变量、小步幅」原则——每次只改一个核心或一个参数，从保守值起步并做稳定性测试。若出现蓝屏/不稳定，请重启后降低偏移量。本工具与 SMUDebugTool 相同，均通过 PawnIO 内核驱动访问 RSMU，不支持功耗墙(PPT/TDC/EDC，需 MP1 mailbox)。
+  </div>
+
+  <script>
+    // ---- Unified RPC Invoker (same contract as gpu-curve-tuner) ----
+    async function rpc(command, args = {}) {
+      if (window.OpenRevo && typeof window.OpenRevo.invoke === 'function') {
+        return await window.OpenRevo.invoke(command, args);
+      }
+      if (window.__TAURI__ && window.__TAURI__.core && typeof window.__TAURI__.core.invoke === 'function') {
+        return await window.__TAURI__.core.invoke(command, args);
+      }
+      if (window.parent && window.parent.__OPENREVO_BRIDGE__ && typeof window.parent.__OPENREVO_BRIDGE__.invoke === 'function') {
+        return await window.parent.__OPENREVO_BRIDGE__.invoke(command, args);
+      }
+      throw new Error('未连接到 OpenRevo 宿主通信网关');
+    }
+
+    function log(msg) {
+      const box = document.getElementById('consoleBox');
+      const time = new Date().toTimeString().split(' ')[0];
+      box.innerHTML += `\n[${time}] ${msg}`;
+      box.scrollTop = box.scrollHeight;
+    }
+
+    function setBanner(state, title, detail) {
+      const banner = document.getElementById('banner');
+      banner.className = 'banner ' + state;
+      banner.querySelector('.title').textContent = title;
+      document.getElementById('bannerDetail').textContent = detail;
+    }
+
+    function setStatus(ok, text) {
+      const pill = document.getElementById('statusPill');
+      pill.className = 'status-pill ' + (ok ? 'ok' : 'err');
+      pill.textContent = text;
+    }
+
+    // ---- State ----
+    const STATE = {
+      smuInfo: null,
+      coreCount: 16, // default, will be detected if possible
+    };
+
+    // ---- SMU init ----
+    async function initSmu() {
+      try {
+        log('正在初始化 SMU 链路 (PawnIO -> RyzenSMU.bin -> RSMU)...');
+        const info = await rpc('smu_init');
+        STATE.smuInfo = info;
+        renderPlatform(info);
+        setBanner('ok', 'SMU 链路就绪', `CPU 代号 ${info.code_name} · SMU 版本 0x${info.smu_version.toString(16).toUpperCase()}`);
+        setStatus(true, '已连接');
+        log(`[+] SMU 初始化成功: ${info.code_name} (type ${info.smu_type})`);
+        log(`[+] SMU 版本 0x${info.smu_version.toString(16).toUpperCase()}, PM 表 0x${info.pm_table_version.toString(16).toUpperCase()}`);
+        log(`[+] CO 支持: ${info.curve_optimizer_supported}, Scalar 支持: ${info.pbo_scalar_supported}, FMax 支持: ${info.fmax_supported}`);
+        buildCoGrid();
+        loadCurrentValues();
+      } catch (e) {
+        setBanner('err', 'SMU 初始化失败', String(e));
+        setStatus(false, '初始化失败');
+        log('[-] SMU 初始化失败: ' + e);
+        log('[-] 请确认：1) 已安装 PawnIO 且驱动已加载；2) CPU 为 AMD Ryzen；3) 以管理员权限运行 OpenRevo');
+      }
+    }
+
+    function renderPlatform(info) {
+      document.getElementById('platformGrid').style.display = 'grid';
+      document.getElementById('pCodeName').textContent = info.code_name;
+      document.getElementById('pSmuType').textContent = '0x' + info.smu_type.toString(16).toUpperCase();
+      document.getElementById('pSmuVersion').textContent = '0x' + info.smu_version.toString(16).toUpperCase();
+      document.getElementById('pPmVersion').textContent = '0x' + info.pm_table_version.toString(16).toUpperCase();
+      document.getElementById('pPmSize').textContent = '0x' + info.pm_table_size.toString(16).toUpperCase();
+      document.getElementById('pDram').textContent = '0x' + info.dram_base.toString(16).toUpperCase();
+    }
+
+    function buildCoGrid() {
+      const grid = document.getElementById('coGrid');
+      grid.innerHTML = '';
+      for (let i = 0; i < STATE.coreCount; i++) {
+        const cell = document.createElement('div');
+        cell.className = 'co-cell';
+        cell.innerHTML = `
+          <div class="core-label">Core ${i}</div>
+          <input type="number" id="co_${i}" value="0" min="-50" max="50" step="1" />
+        `;
+        grid.appendChild(cell);
+      }
+    }
+
+    function getCoValue(i) {
+      const el = document.getElementById('co_' + i);
+      return el ? parseInt(el.value) || 0 : 0;
+    }
+
+    async function loadCurrentValues() {
+      // Read current scalar and fmax if supported
+      if (STATE.smuInfo && STATE.smuInfo.pbo_scalar_supported) {
+        try {
+          const scalar = await rpc('smu_get_pbo_scalar');
+          const x = (scalar / 1000).toFixed(2);
+          document.getElementById('inputScalar').value = x;
+          document.getElementById('scalarCurrent').textContent = `当前: ${x}x`;
+          log(`[i] 当前 PBO Scalar: ${x}x`);
+        } catch (e) {
+          log('[-] 读取 Scalar 失败: ' + e);
+        }
+      }
+      if (STATE.smuInfo && STATE.smuInfo.fmax_supported) {
+        try {
+          const fmax = await rpc('smu_get_fmax');
+          document.getElementById('inputFmax').value = fmax;
+          document.getElementById('fmaxCurrent').textContent = `当前: ${fmax} MHz`;
+          log(`[i] 当前 FMax: ${fmax} MHz`);
+        } catch (e) {
+          log('[-] 读取 FMax 失败: ' + e);
+        }
+      }
+    }
+
+    // ---- Actions ----
+    document.getElementById('btnApplyCO').addEventListener('click', async () => {
+      try {
+        log('正在逐核应用 Curve Optimizer...');
+        let applied = 0;
+        for (let i = 0; i < STATE.coreCount; i++) {
+          const margin = getCoValue(i);
+          if (margin === 0) continue;
+          const status = await rpc('smu_set_co_single_core', { request: { core: i, ccd: 0, ccx: 0, margin } });
+          if (status === 1) {
+            applied++;
+          } else {
+            log(`[-] Core ${i} 应用失败 (status 0x${status.toString(16)})`);
+          }
+        }
+        log(`[+] 完成，成功应用 ${applied} 个核心`);
+      } catch (e) {
+        log('[-] 应用 CO 失败: ' + e);
+      }
+    });
+
+    document.getElementById('btnResetCO').addEventListener('click', () => {
+      for (let i = 0; i < STATE.coreCount; i++) {
+        const el = document.getElementById('co_' + i);
+        if (el) el.value = 0;
+      }
+      log('[i] 已全部归零（需点「应用全部核心 CO」才会下发，负值才会被跳过）');
+    });
+
+    document.getElementById('btnApplyAllCore').addEventListener('click', async () => {
+      const margin = parseInt(document.getElementById('inputAllCoreCO').value) || 0;
+      try {
+        const status = await rpc('smu_set_co_all_cores', { margin });
+        if (status === 1) {
+          log(`[+] 全核 CO 已应用: ${margin}`);
+          // 同步到每核输入框
+          for (let i = 0; i < STATE.coreCount; i++) {
+            const el = document.getElementById('co_' + i);
+            if (el) el.value = margin;
+          }
+        } else {
+          log(`[-] 全核 CO 应用失败 (status 0x${status.toString(16)})`);
+        }
+      } catch (e) {
+        log('[-] 全核 CO 失败: ' + e);
+      }
+    });
+
+    document.getElementById('btnApplyScalar').addEventListener('click', async () => {
+      const scalar = parseFloat(document.getElementById('inputScalar').value) || 1;
+      const x1000 = Math.round(scalar * 1000);
+      try {
+        const status = await rpc('smu_set_pbo_scalar', { scalarX1000: x1000 });
+        if (status === 1) {
+          log(`[+] PBO Scalar 已应用: ${scalar.toFixed(2)}x`);
+          document.getElementById('scalarCurrent').textContent = `当前: ${scalar.toFixed(2)}x`;
+        } else {
+          log(`[-] Scalar 应用失败 (status 0x${status.toString(16)})`);
+        }
+      } catch (e) {
+        log('[-] Scalar 失败: ' + e);
+      }
+    });
+
+    document.getElementById('btnApplyFmax').addEventListener('click', async () => {
+      const fmax = parseInt(document.getElementById('inputFmax').value) || 0;
+      try {
+        const status = await rpc('smu_set_fmax', { frequencyMhz: fmax });
+        if (status === 1) {
+          log(`[+] FMax 已应用: ${fmax} MHz`);
+          document.getElementById('fmaxCurrent').textContent = `当前: ${fmax} MHz`;
+        } else {
+          log(`[-] FMax 应用失败 (status 0x${status.toString(16)})`);
+        }
+      } catch (e) {
+        log('[-] FMax 失败: ' + e);
+      }
+    });
+
+    // ---- Boot ----
+    initSmu();
+  </script>
+</body>
+</html>

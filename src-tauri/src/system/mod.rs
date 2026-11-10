@@ -37,5 +37,6 @@ pub mod native_wry;
 pub mod turbo_events;
 pub mod broadcast;
 pub mod ai_gateway;
+pub mod smu;
 
 pub use openrevo_core::system::config_io;

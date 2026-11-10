@@ -17,6 +17,7 @@ pub mod raw_ec_cmd;
 pub mod watcher_cmd;
 pub mod plugin_storage_cmd;
 pub mod ai_cmd;
+pub mod smu_cmd;
 
 pub use cooler_cmd::*;
 pub use display_cmd::*;
@@ -32,3 +33,4 @@ pub use raw_ec_cmd::*;
 pub use watcher_cmd::*;
 pub use plugin_storage_cmd::*;
 pub use ai_cmd::*;
+pub use smu_cmd::*;

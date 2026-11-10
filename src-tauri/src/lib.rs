@@ -609,6 +609,13 @@ pub fn run_tauri_runtime() {
             commands::power_cmd::apply_turbo_profile,
             commands::tuning_cmd::apply_gpu_oc,
             commands::tuning_cmd::get_gpu_oc_state,
+            commands::smu_cmd::smu_init,
+            commands::smu_cmd::smu_set_co_single_core,
+            commands::smu_cmd::smu_set_co_all_cores,
+            commands::smu_cmd::smu_set_pbo_scalar,
+            commands::smu_cmd::smu_get_pbo_scalar,
+            commands::smu_cmd::smu_set_fmax,
+            commands::smu_cmd::smu_get_fmax,
         ])
         .setup(move |app| {
             openrevo_core::set_global_event_sink(Arc::new(TauriEventSink::new(app.handle().clone())));
