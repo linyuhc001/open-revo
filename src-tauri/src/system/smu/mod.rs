@@ -7,7 +7,9 @@
 //   - FMax / Boost Limit Frequency
 //   - SMU version / code name / PM table reading
 
-use super::pawnio::PawnIo;
+mod pawnio;
+
+use pawnio::PawnIo;
 use std::sync::{Mutex, OnceLock};
 
 // ---- SMU mailbox function names exported by RyzenSMU.bin ----
@@ -224,11 +226,6 @@ struct SmuBridge {
 }
 
 impl SmuBridge {
-    fn get_smu_version(&self) -> Result<u32, String> {
-        let out = self.pawn.execute(FN_GET_SMU_VERSION, &[], 1)?;
-        Ok((out[0] & 0xFFFF_FFFF) as u32)
-    }
-
     /// Sends an RSMU command with up to 6 args.
     ///
     /// The PawnIO module returns SMU status via the IOCTL HRESULT (0 = SMU_OK),
@@ -344,7 +341,7 @@ pub fn init_smu() -> Result<SmuInfo, String> {
     let pawn = PawnIo::load_module_from_bytes(blob)?;
 
     let code_name = {
-        let out = pawn.execute(FN_GET_CODE_NAME, &[])?;
+        let out = pawn.execute(FN_GET_CODE_NAME, &[], 1)?;
         // Driver returns the code name as a signed 32-bit int (0xFFFFFFFF = -1 = Undefined).
         CpuCodeName::from_i64((out[0] & 0xFFFF_FFFF) as i32 as i64)
     };
@@ -355,11 +352,11 @@ pub fn init_smu() -> Result<SmuInfo, String> {
     }
 
     let smu_version = {
-        let out = pawn.execute(FN_GET_SMU_VERSION, &[])?;
+        let out = pawn.execute(FN_GET_SMU_VERSION, &[], 1)?;
         (out[0] & 0xFFFF_FFFF) as u32
     };
 
-    let (pm_table_version, dram_base) = match pawn.execute(FN_RESOLVE_PM_TABLE, &[]) {
+    let (pm_table_version, dram_base) = match pawn.execute(FN_RESOLVE_PM_TABLE, &[], 2) {
         Ok(out) if out.len() >= 2 => ((out[0] & 0xFFFF_FFFF) as u32, out[1]),
         _ => (0, 0),
     };
