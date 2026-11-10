@@ -526,6 +526,31 @@ pub fn set_co_single_core(core: u32, ccd: u32, ccx: u32, margin: i32) -> Result<
     })
 }
 
+/// Read the Curve Optimizer margin currently applied to a single core.
+///
+/// Uses the RSMU `GetDldoPsmMargin` mailbox command. The SMU echoes back the
+/// same 16-bit encoding used on write, so a negative margin arrives as
+/// `(0x100000 + margin) & 0xFFFF`, which decodes cleanly through `i16`.
+pub fn get_co_single_core(core: u32, ccd: u32, ccx: u32) -> Result<i32, String> {
+    with_bridge(|b| {
+        if b.commands.get_dldo_psm_margin == 0 {
+            return Err("Reading Curve Optimizer is not supported on this CPU".into());
+        }
+        let mask = make_core_mask(core, ccd, ccx, is_family_gt_17h(b.smu_type));
+        let args = [mask, 0, 0, 0, 0, 0];
+        let out = b.send_rsmu_command(b.commands.get_dldo_psm_margin, &args)?;
+        let raw = (out[0] & 0xFFFF) as u16;
+        let margin = raw as i16 as i32;
+        // Reject implausible answers (unsupported slot / firmware noise) instead
+        // of surfacing a bogus offset in the UI.
+        if (-50..=50).contains(&margin) {
+            Ok(margin)
+        } else {
+            Ok(0)
+        }
+    })
+}
+
 /// Set Curve Optimizer margin for all cores. Returns SMU status (1 = OK).
 pub fn set_co_all_cores(margin: i32) -> Result<u32, String> {
     with_bridge(|b| {

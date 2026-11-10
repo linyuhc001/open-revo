@@ -10,11 +10,9 @@
       color-scheme: dark;
       --surface-base: #0b0f17;
       --surface-card: rgba(22, 27, 34, 0.75);
-      --surface-card-hover: rgba(33, 38, 45, 0.85);
       --surface-overlay: rgba(255, 255, 255, 0.06);
       --border-subtle: rgba(255, 255, 255, 0.08);
       --border-medium: rgba(255, 255, 255, 0.16);
-      --border-accent: rgba(168, 85, 247, 0.45);
       --text-primary: #f8fafc;
       --text-secondary: #cbd5e1;
       --text-dim: #94a3b8;
@@ -32,7 +30,7 @@
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
       background: var(--surface-base);
       color: var(--text-primary);
-      padding: 20px;
+      padding: 18px 20px 28px;
       font-size: 14px;
       line-height: 1.5;
     }
@@ -41,60 +39,61 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      margin-bottom: 16px;
+      margin-bottom: 14px;
     }
-    .header h1 { font-size: 20px; font-weight: 700; }
-    .header .sub { color: var(--text-dim); font-size: 12px; margin-top: 4px; }
+    .header h1 { font-size: 19px; font-weight: 700; }
+    .header .sub { color: var(--text-dim); font-size: 12px; margin-top: 3px; }
 
     .banner {
       border-radius: 10px;
-      padding: 14px 16px;
-      margin-bottom: 16px;
+      padding: 12px 15px;
+      margin-bottom: 14px;
       display: flex;
       align-items: center;
       gap: 12px;
       border: 1px solid var(--border-subtle);
       background: var(--surface-card);
     }
-    .banner .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+    .banner .dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
     .banner.ok { border-color: rgba(16,185,129,0.3); }
     .banner.ok .dot { background: var(--status-ok); }
     .banner.err { border-color: rgba(239,68,68,0.3); }
     .banner.err .dot { background: var(--status-error); }
     .banner.warn { border-color: rgba(245,158,11,0.3); }
     .banner.warn .dot { background: var(--status-warn); }
-    .banner .title { font-weight: 600; }
+    .banner .title { font-weight: 600; font-size: 13px; }
     .banner .detail { color: var(--text-dim); font-size: 12px; }
 
     .platform-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-      gap: 10px;
-      margin-bottom: 20px;
+      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: 8px;
+      margin-bottom: 16px;
     }
     .platform-card {
       background: var(--surface-card);
       border: 1px solid var(--border-subtle);
       border-radius: 8px;
-      padding: 12px;
+      padding: 9px 11px;
     }
-    .platform-card .label { color: var(--text-dim); font-size: 11px; margin-bottom: 4px; }
-    .platform-card .value { font-size: 15px; font-weight: 600; font-family: "Consolas", monospace; }
+    .platform-card .label { color: var(--text-dim); font-size: 10px; margin-bottom: 2px; }
+    .platform-card .value { font-size: 13px; font-weight: 600; font-family: "Consolas", monospace; }
 
     .section {
       background: var(--surface-card);
       border: 1px solid var(--border-subtle);
       border-radius: 10px;
-      padding: 16px;
-      margin-bottom: 16px;
+      padding: 14px 16px;
+      margin-bottom: 14px;
     }
     .section h2 {
-      font-size: 15px;
+      font-size: 14px;
       font-weight: 700;
       margin-bottom: 12px;
       display: flex;
       align-items: center;
       gap: 8px;
+      flex-wrap: wrap;
     }
     .section h2 .tag {
       font-size: 10px;
@@ -104,52 +103,123 @@
       color: var(--accent);
       font-weight: 600;
     }
+    .tag.source-smu { background: rgba(16,185,129,0.15); color: var(--status-ok); }
+    .tag.source-profile { background: rgba(56,189,248,0.15); color: var(--status-info); }
+    .tag.source-none { background: rgba(148,163,184,0.15); color: var(--text-dim); }
 
-    .co-grid {
+    /* ---- Global CO toolbar ---- */
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .toolbar .spacer { flex: 1; }
+
+    /* ---- CCD panels ---- */
+    .ccd-wrap {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
-      gap: 10px;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 14px;
     }
-    .co-cell {
-      background: var(--surface-overlay);
-      border: 1px solid var(--border-subtle);
-      border-radius: 8px;
-      padding: 10px;
-      text-align: center;
+    .ccd-card {
+      --ccd-color: #a855f7;
+      border: 1px solid var(--ccd-color);
+      border-radius: 10px;
+      overflow: hidden;
+      background: rgba(255, 255, 255, 0.02);
     }
-    .co-cell .core-label { font-size: 11px; color: var(--text-dim); margin-bottom: 6px; }
-    .co-cell input {
+    .ccd-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 7px 11px;
+      background: var(--ccd-bg, rgba(168, 85, 247, 0.2));
+      border-bottom: 1px solid var(--ccd-border, rgba(168, 85, 247, 0.45));
+    }
+    .ccd-title {
+      display: flex;
+      align-items: baseline;
+      gap: 7px;
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.4px;
+      color: var(--ccd-color);
+    }
+    .ccd-title .ccd-sub {
+      font-size: 10px;
+      font-weight: 500;
+      color: var(--text-dim);
+      letter-spacing: 0;
+    }
+    .ccd-actions { display: flex; gap: 5px; }
+
+    .ccd-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 6px 10px;
+      padding: 11px;
+    }
+
+    .core-row {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+    }
+    .core-name {
+      flex: 0 0 30px;
+      font-size: 11px;
+      font-family: "Consolas", monospace;
+      color: var(--text-dim);
+      text-align: right;
+    }
+    .core-row input {
+      flex: 1;
+      min-width: 0;
       width: 100%;
       background: #0b0f17;
       border: 1px solid var(--border-medium);
-      border-radius: 6px;
+      border-radius: 5px;
       color: var(--text-primary);
       text-align: center;
-      padding: 6px;
-      font-size: 14px;
+      padding: 5px 4px;
+      font-size: 13px;
       font-weight: 600;
       font-family: "Consolas", monospace;
+      -moz-appearance: textfield;
     }
-    .co-cell input:focus { outline: none; border-color: var(--accent); }
-    .co-cell input.negative { color: #34d399; }
-    .co-cell input.positive { color: #f87171; }
+    .core-row input::-webkit-outer-spin-button,
+    .core-row input::-webkit-inner-spin-button,
+    .row input[type="number"]::-webkit-outer-spin-button,
+    .row input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+    .core-row input:focus { outline: none; border-color: var(--ccd-color, var(--accent)); }
+    .core-row input.negative { color: #34d399; border-color: rgba(52,211,153,0.35); }
+    .core-row input.positive { color: #f87171; border-color: rgba(248,113,113,0.35); }
+    .core-row input:disabled { opacity: 0.45; cursor: not-allowed; }
+    .core-row input.dirty { box-shadow: inset 0 0 0 1px rgba(245,158,11,0.55); }
 
     .row {
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 10px;
       flex-wrap: wrap;
-      margin-bottom: 12px;
+      margin-bottom: 10px;
     }
-    .row label { min-width: 110px; color: var(--text-secondary); font-size: 13px; }
+    .row:last-child { margin-bottom: 0; }
+    .row label { min-width: 100px; color: var(--text-secondary); font-size: 12px; }
     .row input[type="number"], .row input[type="text"] {
       background: #0b0f17;
       border: 1px solid var(--border-medium);
       border-radius: 6px;
       color: var(--text-primary);
-      padding: 8px 10px;
-      font-size: 14px;
-      width: 140px;
+      padding: 7px 10px;
+      font-size: 13px;
+      width: 130px;
       font-family: "Consolas", monospace;
     }
     .row input:focus { outline: none; border-color: var(--accent); }
@@ -160,11 +230,12 @@
       color: #fff;
       border: none;
       border-radius: 6px;
-      padding: 8px 16px;
-      font-size: 13px;
+      padding: 7px 14px;
+      font-size: 12.5px;
       font-weight: 600;
       cursor: pointer;
-      transition: opacity 0.15s;
+      transition: opacity 0.15s, background 0.15s;
+      white-space: nowrap;
     }
     button:hover { opacity: 0.9; }
     button:disabled { opacity: 0.4; cursor: not-allowed; }
@@ -173,17 +244,27 @@
       border: 1px solid var(--border-medium);
       color: var(--text-secondary);
     }
-    button.danger { background: var(--status-error); }
+    button.mini {
+      padding: 2px 9px;
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.35;
+      border-radius: 5px;
+      background: rgba(0, 0, 0, 0.28);
+      border: 1px solid rgba(255, 255, 255, 0.22);
+      color: #fff;
+    }
+    button.mini:hover { background: rgba(0, 0, 0, 0.45); }
 
     .console {
       background: #05070b;
       border: 1px solid var(--border-subtle);
       border-radius: 8px;
-      padding: 12px;
+      padding: 11px;
       font-family: "Consolas", monospace;
-      font-size: 12px;
+      font-size: 11.5px;
       color: #94a3b8;
-      height: 180px;
+      height: 150px;
       overflow-y: auto;
       white-space: pre-wrap;
       word-break: break-all;
@@ -197,12 +278,13 @@
     }
     .status-pill.ok { background: rgba(16,185,129,0.15); color: var(--status-ok); }
     .status-pill.err { background: rgba(239,68,68,0.15); color: var(--status-error); }
+    .status-pill.busy { background: rgba(245,158,11,0.15); color: var(--status-warn); }
 
     .disclaimer {
       color: var(--text-dim);
       font-size: 11px;
-      margin-top: 8px;
-      padding: 10px;
+      margin-top: 4px;
+      padding: 10px 12px;
       border-left: 3px solid var(--status-warn);
       background: rgba(245,158,11,0.06);
       border-radius: 4px;
@@ -213,9 +295,9 @@
   <div class="header">
     <div>
       <h1>PBO 精准调校</h1>
-      <div class="sub">AMD Ryzen · SMU 直连 · 仿 SMUDebugTool</div>
+      <div class="sub">AMD Ryzen · 分核 Curve Optimizer · SMU 直连</div>
     </div>
-    <span id="statusPill" class="status-pill err">未连接</span>
+    <span id="statusPill" class="status-pill busy">初始化中</span>
   </div>
 
   <div id="banner" class="banner warn">
@@ -228,40 +310,40 @@
 
   <div class="platform-grid" id="platformGrid" style="display:none;">
     <div class="platform-card"><div class="label">CPU 代号</div><div class="value" id="pCodeName">-</div></div>
+    <div class="platform-card"><div class="label">物理核心</div><div class="value" id="pCores">-</div></div>
+    <div class="platform-card"><div class="label">CCD 数量</div><div class="value" id="pCcds">-</div></div>
     <div class="platform-card"><div class="label">SMU 类型</div><div class="value" id="pSmuType">-</div></div>
     <div class="platform-card"><div class="label">SMU 版本</div><div class="value" id="pSmuVersion">-</div></div>
     <div class="platform-card"><div class="label">PM 表版本</div><div class="value" id="pPmVersion">-</div></div>
-    <div class="platform-card"><div class="label">PM 表大小</div><div class="value" id="pPmSize">-</div></div>
-    <div class="platform-card"><div class="label">DRAM 基址</div><div class="value" id="pDram">-</div></div>
   </div>
 
   <div class="section">
-    <h2>每核 Curve Optimizer <span class="tag">降压增效</span></h2>
-    <div class="co-grid" id="coGrid"></div>
-    <div class="row" style="margin-top:14px;">
-      <button id="btnApplyCO">应用全部核心 CO</button>
-      <button id="btnResetCO" class="secondary">全部归零</button>
-      <span class="hint">负值 = 降压（推荐从 -10 起，每次 ±5 小步验证）；范围 -50 ~ +50</span>
+    <h2>
+      Curve Optimizer 分核降压
+      <span class="tag" id="coSourceTag">读取中</span>
+      <span class="hint" id="coHint" style="font-weight:400;color:var(--text-dim);font-size:11px;"></span>
+    </h2>
+
+    <div class="toolbar">
+      <button id="btnAllMinus" class="secondary">All −</button>
+      <button id="btnAllPlus" class="secondary">All +</button>
+      <button id="btnAllZero" class="secondary">All Zero</button>
+      <button id="btnApplyCO">Apply</button>
+      <span class="spacer"></span>
+      <button id="btnRefresh" class="secondary">Refresh</button>
+    </div>
+
+    <div class="ccd-wrap" id="ccdWrap">
+      <div class="hint" style="color:var(--text-dim);font-size:12px;">正在构建核心拓扑…</div>
     </div>
   </div>
 
   <div class="section">
-    <h2>全核快捷设置 <span class="tag">All-Core</span></h2>
+    <h2>Profile <span class="tag">保存 / 读取</span></h2>
     <div class="row">
-      <label>全核 CO 偏移</label>
-      <input type="number" id="inputAllCoreCO" value="-10" min="-50" max="50" />
-      <button id="btnApplyAllCore">应用全核</button>
-    </div>
-  </div>
-
-  <div class="section">
-    <h2>PBO Scalar <span class="tag">加速幅度</span></h2>
-    <div class="row">
-      <label>Scalar 倍率</label>
-      <input type="number" id="inputScalar" value="1" min="1" max="10" step="1" />
-      <span class="hint">1x ~ 10x 整数档（SMU 硬件仅支持整数倍，越高越激进）</span>
-      <button id="btnApplyScalar">应用</button>
-      <span id="scalarCurrent" class="hint"></span>
+      <button id="btnSaveProfile" class="secondary">保存 Profile</button>
+      <button id="btnLoadProfile" class="secondary">读取 Profile</button>
+      <span class="hint" id="profileHint">尚未保存</span>
     </div>
   </div>
 
@@ -270,9 +352,18 @@
     <div class="row">
       <label>最大睿频 (MHz)</label>
       <input type="number" id="inputFmax" value="0" min="0" max="6000" step="25" />
-      <span class="hint">0 = 自动；典型范围 4500 ~ 6000</span>
-      <button id="btnApplyFmax">应用</button>
-      <span id="fmaxCurrent" class="hint"></span>
+      <button id="btnApplyFmax">Apply</button>
+      <span class="hint" id="fmaxCurrent"></span>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>PBO Scalar <span class="tag">加速幅度</span></h2>
+    <div class="row">
+      <label>Scalar 倍率</label>
+      <input type="number" id="inputScalar" value="1" min="1" max="10" step="1" />
+      <button id="btnApplyScalar">Apply</button>
+      <span class="hint" id="scalarCurrent">1x ~ 10x 整数档</span>
     </div>
   </div>
 
@@ -282,7 +373,7 @@
   </div>
 
   <div class="disclaimer">
-    ⚠️ 安全提示：PBO 调校直接作用于处理器固件，可能影响系统稳定性。请遵循「单变量、小步幅」原则——每次只改一个核心或一个参数，从保守值起步并做稳定性测试。若出现蓝屏/不稳定，请重启后降低偏移量。本工具与 SMUDebugTool 相同，均通过 PawnIO 内核驱动访问 RSMU，不支持功耗墙(PPT/TDC/EDC，需 MP1 mailbox)。
+    安全提示：负值 = 降压，范围 −50 ~ +50。请遵循「单变量、小步幅」原则，从 −10 起每次 ±5 递增并做稳定性测试；出现蓝屏或不稳定请重启并回调偏移量。本工具通过 PawnIO 访问 RSMU，不支持功耗墙（PPT/TDC/EDC，需 MP1 mailbox）。
   </div>
 
   <script>
@@ -314,242 +405,526 @@
       document.getElementById('bannerDetail').textContent = detail;
     }
 
-    function setStatus(ok, text) {
+    function setStatus(kind, text) {
       const pill = document.getElementById('statusPill');
-      pill.className = 'status-pill ' + (ok ? 'ok' : 'err');
+      pill.className = 'status-pill ' + kind;
       pill.textContent = text;
     }
 
     // ---- State ----
+    const CCD_COLORS = ['#a855f7', '#38bdf8', '#34d399', '#fbbf24', '#f472b6', '#60a5fa'];
+    const CO_MIN = -50;
+    const CO_MAX = 50;
+
+    // Per-CCD tinting: build rgba() strings so the panels stay distinguishable
+    // without relying on color-mix() support in the embedded WebView.
+    function hexToRgba(hex, alpha) {
+      const h = hex.replace('#', '');
+      const r = parseInt(h.slice(0, 2), 16);
+      const g = parseInt(h.slice(2, 4), 16);
+      const b = parseInt(h.slice(4, 6), 16);
+      return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    }
+
     const STATE = {
       smuInfo: null,
-      coreLayout: [], // [{ core, ccd, ccx }, ...] from smu_get_core_layout
-      coreCount: 0,
+      cores: [],          // [{ core, ccd, ccx }] — physical cores only
+      topologyKnown: false,
+      canWrite: false,
+      values: {},         // core -> margin currently shown in the UI
+      original: {},       // core -> margin as read from HW/profile (for dirty marking)
+      source: 'none',     // 'smu' | 'profile' | 'none'
     };
 
     // ---- SMU init ----
     async function initSmu() {
+      let info = null;
       try {
-        log('正在初始化 SMU 链路 (PawnIO -> RyzenSMU.bin -> RSMU)...');
-        const info = await rpc('smu_init');
+        log('正在初始化 SMU 链路 (PawnIO → RyzenSMU.bin → RSMU)…');
+        info = await rpc('smu_init');
         STATE.smuInfo = info;
+        STATE.canWrite = !!(info && info.curve_optimizer_supported);
         renderPlatform(info);
-        setBanner('ok', 'SMU 链路就绪', `CPU 代号 ${info.code_name} · SMU 版本 0x${info.smu_version.toString(16).toUpperCase()}`);
-        setStatus(true, '已连接');
+        setBanner('ok', 'SMU 链路就绪',
+          `${info.code_name} · SMU 0x${Number(info.smu_version).toString(16).toUpperCase()} · CO ${info.curve_optimizer_supported ? '可用' : '不可用'}`);
+        setStatus('ok', '已连接');
         log(`[+] SMU 初始化成功: ${info.code_name} (type ${info.smu_type})`);
-        log(`[+] SMU 版本 0x${info.smu_version.toString(16).toUpperCase()}, PM 表 0x${info.pm_table_version.toString(16).toUpperCase()}`);
-        log(`[+] CO 支持: ${info.curve_optimizer_supported}, Scalar 支持: ${info.pbo_scalar_supported}, FMax 支持: ${info.fmax_supported}`);
-
-        // Fetch per-core topological placement (ccd/ccx) so per-core CO is
-        // written to the correct SMU mailbox slot.
-        try {
-          const layout = await rpc('smu_get_core_layout');
-          STATE.coreLayout = Array.isArray(layout) ? layout : [];
-        } catch (e) {
-          STATE.coreLayout = [];
-          log('[!] 获取核心拓扑失败，回退到单 CCD 假设: ' + e);
-        }
-        STATE.coreCount = STATE.coreLayout.length > 0
-          ? STATE.coreLayout.length
-          : (info.physical_core_count || 0);
-        if (STATE.coreCount === 0) STATE.coreCount = 16; // last-resort fallback
-
-        log(`[+] 检测到 ${STATE.coreCount} 个物理核心`);
-        buildCoGrid();
-        loadCurrentValues();
+        log(`[+] SMU 版本 0x${Number(info.smu_version).toString(16).toUpperCase()}，CO=${info.curve_optimizer_supported}，Scalar=${info.pbo_scalar_supported}，FMax=${info.fmax_supported}`);
       } catch (e) {
+        STATE.canWrite = false;
         setBanner('err', 'SMU 初始化失败', String(e));
-        setStatus(false, '初始化失败');
+        setStatus('err', '初始化失败');
         log('[-] SMU 初始化失败: ' + e);
         log('[-] 请确认：1) 已安装 PawnIO 且驱动已加载；2) CPU 为 AMD Ryzen；3) 以管理员权限运行 OpenRevo');
-
-        // Even when the SMU bridge is unavailable, still render the per-core
-        // grid so the operator can see the expected topology instead of an
-        // empty panel. Core count falls back to the host-reported logical
-        // processor count; CCD/CCX placement stays unknown until the SMU
-        // answers `smu_get_core_layout`.
-        STATE.coreCount = await detectHostCoreCount();
-        if (STATE.coreCount > 0) {
-          log(`[!] 已回退到宿主上报的核心数: ${STATE.coreCount} (CCD/CCX 拓扑待 SMU 恢复后校正)`);
-          buildCoGrid();
-        }
       }
+
+      // Core topology does NOT depend on the SMU bridge: the host derives it
+      // from GetLogicalProcessorInformation, so ask for it even when init failed.
+      try {
+        const layout = await rpc('smu_get_core_layout');
+        const list = Array.isArray(layout) ? layout : [];
+        STATE.cores = list.map(x => ({ core: x.core, ccd: x.ccd, ccx: x.ccx }));
+        STATE.topologyKnown = STATE.cores.length > 0;
+        if (STATE.topologyKnown) {
+          log(`[+] 检测到 ${STATE.cores.length} 个物理核心 / ${countCcds()} 个 CCD`);
+        }
+      } catch (e) {
+        log('[!] 获取核心拓扑失败: ' + e);
+      }
+      if (!STATE.topologyKnown) applyFallbackLayout();
+
+      renderPlatformExtras();
+      buildCcdPanels();
+      await refreshValues({ initial: true });
+      await refreshFmaxScalar();
     }
 
-    // Fallback core count when the SMU topology query is offline.
-    // `navigator.hardwareConcurrency` reports the logical processor count and
-    // needs no privileged IPC, so the grid can still be rendered.
-    async function detectHostCoreCount() {
-      const hc = (typeof navigator !== 'undefined') ? navigator.hardwareConcurrency : 0;
-      if (typeof hc === 'number' && hc > 0 && hc <= 256) return hc;
-      return 16;
+    // Last-resort topology: assume SMT-2 (logical / 2 physical cores) and
+    // 8 cores per CCD. Writes stay disabled because the CCD slot would be a guess.
+    function applyFallbackLayout() {
+      const hc = (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 16;
+      const physical = Math.max(1, Math.floor(hc / 2));
+      STATE.cores = [];
+      for (let i = 0; i < physical; i++) {
+        STATE.cores.push({ core: i, ccd: Math.floor(i / 8), ccx: Math.floor(i / 8) });
+      }
+      STATE.topologyKnown = false;
+      log(`[!] 拓扑不可用，已按 SMT-2 推算 ${physical} 个物理核心（CCD 分组仅供参考，写入已禁用）`);
     }
 
-    function ccdOf(core) {
-      const p = STATE.coreLayout.find(x => x.core === core);
-      return p ? p.ccd : 0;
-    }
-    function ccxOf(core) {
-      const p = STATE.coreLayout.find(x => x.core === core);
-      return p ? p.ccx : 0;
+    function countCcds() {
+      const set = new Set(STATE.cores.map(c => c.ccd));
+      return set.size;
     }
 
     function renderPlatform(info) {
       document.getElementById('platformGrid').style.display = 'grid';
       document.getElementById('pCodeName').textContent = info.code_name;
-      document.getElementById('pSmuType').textContent = '0x' + info.smu_type.toString(16).toUpperCase();
-      document.getElementById('pSmuVersion').textContent = '0x' + info.smu_version.toString(16).toUpperCase();
-      document.getElementById('pPmVersion').textContent = '0x' + info.pm_table_version.toString(16).toUpperCase();
-      document.getElementById('pPmSize').textContent = '0x' + info.pm_table_size.toString(16).toUpperCase();
-      document.getElementById('pDram').textContent = '0x' + info.dram_base.toString(16).toUpperCase();
+      document.getElementById('pSmuType').textContent = '0x' + Number(info.smu_type).toString(16).toUpperCase();
+      document.getElementById('pSmuVersion').textContent = '0x' + Number(info.smu_version).toString(16).toUpperCase();
+      document.getElementById('pPmVersion').textContent = '0x' + Number(info.pm_table_version).toString(16).toUpperCase();
     }
 
-    function buildCoGrid() {
-      const grid = document.getElementById('coGrid');
-      grid.innerHTML = '';
-      const hasTopology = STATE.coreLayout.length > 0;
-      for (let i = 0; i < STATE.coreCount; i++) {
-        const ccd = ccdOf(i);
-        const ccx = ccxOf(i);
-        const cell = document.createElement('div');
-        cell.className = 'co-cell';
-        // Without a confirmed SMU topology we must NOT claim a CCD id: on
-        // multi-CCD Ryzen parts a wrong CCD routes the write to the wrong
-        // mailbox slot, which can silently apply the offset to another core.
-        const label = hasTopology
-          ? `Core ${i} · CCD${ccd} · CCX${ccx}`
-          : `Core ${i} · 拓扑待定`;
-        cell.innerHTML = `
-          <div class="core-label">${label}</div>
-          <input type="number" id="co_${i}" value="0" min="-50" max="50" step="1" ${hasTopology ? '' : 'disabled'} />
-        `;
-        grid.appendChild(cell);
+    function renderPlatformExtras() {
+      document.getElementById('platformGrid').style.display = 'grid';
+      document.getElementById('pCores').textContent = STATE.cores.length;
+      document.getElementById('pCcds').textContent = countCcds();
+      if (!STATE.smuInfo) {
+        document.getElementById('pCodeName').textContent = '未识别';
+        document.getElementById('pSmuType').textContent = '-';
+        document.getElementById('pSmuVersion').textContent = '-';
+        document.getElementById('pPmVersion').textContent = '-';
       }
-      if (!hasTopology) {
+    }
+
+    // ---- CCD panel rendering ----
+    function buildCcdPanels() {
+      const wrap = document.getElementById('ccdWrap');
+      wrap.innerHTML = '';
+
+      const byCcd = new Map();
+      STATE.cores.forEach(c => {
+        if (!byCcd.has(c.ccd)) byCcd.set(c.ccd, []);
+        byCcd.get(c.ccd).push(c);
+      });
+      const ccdIds = Array.from(byCcd.keys()).sort((a, b) => a - b);
+
+      ccdIds.forEach((ccdId, idx) => {
+        const color = CCD_COLORS[idx % CCD_COLORS.length];
+        const cores = byCcd.get(ccdId).sort((a, b) => a.core - b.core);
+
+        const card = document.createElement('div');
+        card.className = 'ccd-card';
+        card.style.setProperty('--ccd-color', color);
+        card.style.setProperty('--ccd-bg', hexToRgba(color, 0.2));
+        card.style.setProperty('--ccd-border', hexToRgba(color, 0.5));
+        card.dataset.ccd = String(ccdId);
+
+        const head = document.createElement('div');
+        head.className = 'ccd-head';
+        head.innerHTML = `
+          <div class="ccd-title">CCD ${ccdId}<span class="ccd-sub">${cores.length} 核 · C${cores[0].core}–C${cores[cores.length - 1].core}</span></div>
+          <div class="ccd-actions">
+            <button class="mini" data-act="zero" title="本 CCD 全部归零">↺</button>
+            <button class="mini" data-act="minus" title="本 CCD 全部 −1">−</button>
+            <button class="mini" data-act="plus" title="本 CCD 全部 +1">+</button>
+          </div>`;
+
+        const grid = document.createElement('div');
+        grid.className = 'ccd-grid';
+
+        cores.forEach(c => {
+          const row = document.createElement('div');
+          row.className = 'core-row';
+          row.innerHTML = `
+            <span class="core-name">C${c.core}</span>
+            <input type="number" data-core="${c.core}" value="0"
+                   min="${CO_MIN}" max="${CO_MAX}" step="1" ${STATE.canWrite ? '' : 'disabled'} />`;
+          grid.appendChild(row);
+        });
+
+        card.appendChild(head);
+        card.appendChild(grid);
+
+        // Per-CCD batch actions
+        head.querySelectorAll('button[data-act]').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const act = btn.dataset.act;
+            if (act === 'zero') setCcdValue(ccdId, 0);
+            else if (act === 'minus') setCcdValue(ccdId, -1, true);
+            else setCcdValue(ccdId, 1, true);
+          });
+        });
+
+        wrap.appendChild(card);
+      });
+
+      // Wire per-core input events
+      wrap.querySelectorAll('input[data-core]').forEach(input => {
+        input.addEventListener('input', () => {
+          const core = Number(input.dataset.core);
+          STATE.values[core] = readInput(input);
+          paintInput(input, STATE.values[core]);
+          markDirty(input, core);
+        });
+      });
+
+      if (!STATE.topologyKnown) {
         const warn = document.createElement('div');
-        warn.style.cssText = 'grid-column: 1 / -1; font-size: 11px; color: var(--status-warn);';
-        warn.textContent = 'SMU 拓扑未就绪：分核输入框已禁用。恢复 SMU 链路后刷新本页即可启用，避免误写错误的 CCD 槽位。';
-        grid.appendChild(warn);
+        warn.style.cssText = 'grid-column:1/-1;font-size:11.5px;color:var(--status-warn);padding:8px 2px;';
+        warn.textContent = '拓扑未确认：核心数按 SMT-2 推算，CCD 分组可能不准，写入已禁用（避免把偏移写到错误的核心上）。';
+        wrap.appendChild(warn);
+      }
+
+      applyValuesToInputs();
+      updateApplyState();
+    }
+
+    function readInput(input) {
+      const v = parseInt(input.value, 10);
+      if (Number.isNaN(v)) return 0;
+      return Math.max(CO_MIN, Math.min(CO_MAX, v));
+    }
+
+    function paintInput(input, v) {
+      input.classList.toggle('negative', v < 0);
+      input.classList.toggle('positive', v > 0);
+    }
+
+    function markDirty(input, core) {
+      const base = STATE.original[core] === undefined ? 0 : STATE.original[core];
+      input.classList.toggle('dirty', STATE.values[core] !== base);
+    }
+
+    function applyValuesToInputs() {
+      document.querySelectorAll('#ccdWrap input[data-core]').forEach(input => {
+        const core = Number(input.dataset.core);
+        const v = STATE.values[core] === undefined ? 0 : STATE.values[core];
+        input.value = v;
+        paintInput(input, v);
+        markDirty(input, core);
+      });
+    }
+
+    function setCcdValue(ccdId, value, relative = false) {
+      if (!STATE.canWrite) { log('[-] SMU 未就绪，已阻止修改'); return; }
+      STATE.cores.filter(c => c.ccd === ccdId).forEach(c => {
+        const next = relative
+          ? Math.max(CO_MIN, Math.min(CO_MAX, (STATE.values[c.core] || 0) + value))
+          : value;
+        STATE.values[c.core] = next;
+      });
+      applyValuesToInputs();
+      log(`[i] CCD ${ccdId} 已${relative ? (value > 0 ? ' +' : ' ') + value : '归零'}`);
+    }
+
+    function setAllValue(value, relative = false) {
+      if (!STATE.canWrite) { log('[-] SMU 未就绪，已阻止修改'); return; }
+      STATE.cores.forEach(c => {
+        const next = relative
+          ? Math.max(CO_MIN, Math.min(CO_MAX, (STATE.values[c.core] || 0) + value))
+          : value;
+        STATE.values[c.core] = next;
+      });
+      applyValuesToInputs();
+    }
+
+    function updateApplyState() {
+      const btn = document.getElementById('btnApplyCO');
+      btn.disabled = !STATE.canWrite;
+      btn.title = STATE.canWrite ? '' : 'SMU 链路未就绪，无法写入';
+    }
+
+    // ---- Reading current values ----
+    function setSourceTag(kind, text) {
+      const el = document.getElementById('coSourceTag');
+      el.className = 'tag source-' + kind;
+      el.textContent = text;
+    }
+
+    async function refreshValues(opts = {}) {
+      if (STATE.cores.length === 0) return;
+
+      // 1) Try reading the live margin straight from the SMU.
+      let ok = 0, failed = 0, lastErr = null;
+      if (STATE.canWrite) {
+        setStatus('busy', '读取中');
+      }
+      for (const c of STATE.cores) {
+        try {
+          const v = await rpc('smu_get_co_single_core', { request: { core: c.core, ccd: c.ccd, ccx: c.ccx } });
+          const n = Number(v);
+          STATE.values[c.core] = Number.isFinite(n) ? Math.max(CO_MIN, Math.min(CO_MAX, n)) : 0;
+          ok++;
+        } catch (e) {
+          failed++;
+          lastErr = e;
+        }
+      }
+
+      if (ok > 0 && failed === 0) {
+        STATE.source = 'smu';
+        setSourceTag('smu', `硬件读回 · ${ok} 核`);
+        document.getElementById('coHint').textContent = '已从 SMU 读取当前生效的偏移值';
+        log(`[+] 已从 SMU 读回 ${ok} 个核心的当前 CO 偏移`);
+      } else if (ok > 0) {
+        STATE.source = 'smu';
+        setSourceTag('smu', `部分读回 ${ok}/${STATE.cores.length}`);
+        document.getElementById('coHint').textContent = `${failed} 个核心读回失败，已用 Profile / 0 补齐`;
+        log(`[!] ${failed}/${STATE.cores.length} 个核心读回失败（${lastErr}），其余使用保存的 Profile`);
+        await mergeProfileIntoValues();
+      } else {
+        // 2) SMU cannot answer — fall back to the persisted profile.
+        const loaded = await mergeProfileIntoValues();
+        if (loaded) {
+          STATE.source = 'profile';
+          setSourceTag('profile', '来自 Profile');
+          document.getElementById('coHint').textContent = 'SMU 读回不可用，已加载上次保存的 Profile（未下发）';
+          log(`[i] SMU 读回不可用（${lastErr || '未初始化'}），已加载本地 Profile`);
+        } else {
+          STATE.source = 'none';
+          setSourceTag('none', '默认 0');
+          document.getElementById('coHint').textContent = '无可用来源，全部按 0 显示';
+          STATE.cores.forEach(c => { STATE.values[c.core] = 0; });
+          log('[i] 无历史 Profile，全部按 0 显示');
+        }
+      }
+
+      STATE.original = { ...STATE.values };
+      applyValuesToInputs();
+      if (STATE.canWrite) setStatus('ok', '已连接');
+      else if (STATE.smuInfo) setStatus('ok', '只读');
+      else setStatus('err', '未连接');
+    }
+
+    // ---- Profile ----
+    function buildProfileObject() {
+      return {
+        schema: 1,
+        cpu: STATE.smuInfo ? STATE.smuInfo.code_name : 'unknown',
+        savedAt: new Date().toISOString(),
+        cores: STATE.cores.map(c => ({ core: c.core, ccd: c.ccd, ccx: c.ccx })),
+        co: STATE.values,
+        fmax: parseInt(document.getElementById('inputFmax').value, 10) || 0,
+        scalar: parseInt(document.getElementById('inputScalar').value, 10) || 1,
+      };
+    }
+
+    async function saveProfile() {
+      const profile = buildProfileObject();
+      try {
+        const path = await rpc('smu_profile_save', { content: JSON.stringify(profile) });
+        document.getElementById('profileHint').textContent =
+          `已保存 ${new Date().toLocaleTimeString()} · ${profile.cores.length} 核`;
+        log('[+] Profile 已保存: ' + path);
+      } catch (e) {
+        log('[-] 保存 Profile 失败: ' + e);
+        // localStorage is a best-effort backup (may be unavailable in srcDoc).
+        try {
+          localStorage.setItem('pbo-tuner-profile', JSON.stringify(profile));
+          document.getElementById('profileHint').textContent = '已保存到浏览器本地存储（后端写入失败）';
+          log('[!] 后端写入失败，已退回到浏览器本地存储');
+        } catch (_) {}
       }
     }
 
-    function getCoValue(i) {
-      const el = document.getElementById('co_' + i);
-      return el ? parseInt(el.value) || 0 : 0;
+    async function loadProfile(silent = false) {
+      let raw = '';
+      try {
+        raw = await rpc('smu_profile_load');
+      } catch (e) {
+        log('[-] 读取 Profile 失败: ' + e);
+      }
+      if (!raw) {
+        try { raw = localStorage.getItem('pbo-tuner-profile') || ''; } catch (_) {}
+      }
+      if (!raw) {
+        if (!silent) log('[i] 未找到已保存的 Profile');
+        return null;
+      }
+      let profile;
+      try {
+        profile = JSON.parse(raw);
+      } catch (e) {
+        log('[-] Profile 格式损坏: ' + e);
+        return null;
+      }
+      if (!profile || typeof profile !== 'object' || !profile.co) {
+        if (!silent) log('[-] Profile 内容不完整，已忽略');
+        return null;
+      }
+      return profile;
     }
 
-    async function loadCurrentValues() {
-      // Read current scalar and fmax if supported
+    // Fill values from the profile without touching the hardware.
+    async function mergeProfileIntoValues() {
+      const profile = await loadProfile(true);
+      if (!profile) return false;
+      let filled = 0;
+      STATE.cores.forEach(c => {
+        const v = profile.co[c.core];
+        if (typeof v === 'number' && v >= CO_MIN && v <= CO_MAX) {
+          STATE.values[c.core] = v;
+          filled++;
+        }
+      });
+      if (typeof profile.fmax === 'number' && profile.fmax > 0) {
+        document.getElementById('inputFmax').value = profile.fmax;
+      }
+      if (typeof profile.scalar === 'number' && profile.scalar >= 1) {
+        document.getElementById('inputScalar').value = profile.scalar;
+      }
+      if (profile.savedAt) {
+        document.getElementById('profileHint').textContent =
+          `上次保存: ${new Date(profile.savedAt).toLocaleString()}`;
+      }
+      return filled > 0;
+    }
+
+    async function loadProfileToUi() {
+      const profile = await loadProfile(false);
+      if (!profile) return;
+      let filled = 0;
+      STATE.cores.forEach(c => {
+        const v = profile.co[c.core];
+        if (typeof v === 'number' && v >= CO_MIN && v <= CO_MAX) {
+          STATE.values[c.core] = v;
+          filled++;
+        }
+      });
+      if (typeof profile.fmax === 'number') document.getElementById('inputFmax').value = profile.fmax;
+      if (typeof profile.scalar === 'number') document.getElementById('inputScalar').value = profile.scalar;
+      applyValuesToInputs();
+      setSourceTag('profile', '已载入 Profile');
+      document.getElementById('coHint').textContent = profile.savedAt
+        ? `Profile 保存于 ${new Date(profile.savedAt).toLocaleString()}，点 Apply 下发`
+        : 'Profile 已载入，点 Apply 下发';
+      log(`[+] 已载入 Profile（${filled} 个核心）。需要写入请点 Apply。`);
+    }
+
+    // ---- Apply ----
+    async function applyAllCo() {
+      if (!STATE.canWrite) { log('[-] 已阻止写入：SMU 链路未就绪'); return; }
+      if (!STATE.topologyKnown) { log('[-] 已阻止写入：核心拓扑未确认'); return; }
+
+      const btn = document.getElementById('btnApplyCO');
+      btn.disabled = true;
+      try {
+        log('正在逐核写入 Curve Optimizer…');
+        let ok = 0, fail = 0, firstErr = null;
+        for (const c of STATE.cores) {
+          const margin = STATE.values[c.core] === undefined ? 0 : STATE.values[c.core];
+          try {
+            const status = await rpc('smu_set_co_single_core',
+              { request: { core: c.core, ccd: c.ccd, ccx: c.ccx, margin } });
+            if (Number(status) === 1) ok++;
+            else { fail++; log(`[-] Core ${c.core} (CCD${c.ccd}) 返回 status 0x${Number(status).toString(16)}`); }
+          } catch (e) {
+            fail++;
+            if (!firstErr) firstErr = e;
+          }
+        }
+        STATE.original = { ...STATE.values };
+        applyValuesToInputs();
+        if (fail === 0) {
+          log(`[+] 已应用 ${ok} 个核心的 CO 偏移`);
+          setBanner('ok', 'CO 已写入', `${ok} 个核心全部成功`);
+        } else {
+          log(`[!] 写入完成：成功 ${ok}，失败 ${fail}${firstErr ? '（' + firstErr + '）' : ''}`);
+          setBanner('warn', 'CO 部分写入', `成功 ${ok} / 失败 ${fail}`);
+        }
+        await saveProfile();
+      } finally {
+        updateApplyState();
+      }
+    }
+
+    // ---- FMax / Scalar ----
+    async function refreshFmaxScalar() {
       if (STATE.smuInfo && STATE.smuInfo.pbo_scalar_supported) {
         try {
-          const scalar = await rpc('smu_get_pbo_scalar');
-          const x = (scalar / 1000).toFixed(2);
+          const scalar = Number(await rpc('smu_get_pbo_scalar'));
+          const x = Math.max(1, Math.round(scalar / 1000));
           document.getElementById('inputScalar').value = x;
           document.getElementById('scalarCurrent').textContent = `当前: ${x}x`;
-          log(`[i] 当前 PBO Scalar: ${x}x`);
         } catch (e) {
           log('[-] 读取 Scalar 失败: ' + e);
         }
       }
       if (STATE.smuInfo && STATE.smuInfo.fmax_supported) {
         try {
-          const fmax = await rpc('smu_get_fmax');
+          const fmax = Number(await rpc('smu_get_fmax'));
           document.getElementById('inputFmax').value = fmax;
           document.getElementById('fmaxCurrent').textContent = `当前: ${fmax} MHz`;
-          log(`[i] 当前 FMax: ${fmax} MHz`);
         } catch (e) {
           log('[-] 读取 FMax 失败: ' + e);
         }
       }
     }
 
-    // ---- Actions ----
-    document.getElementById('btnApplyCO').addEventListener('click', async () => {
-      if (STATE.coreLayout.length === 0) {
-        log('[-] 已阻止写入：SMU 拓扑未就绪，无法确定每核 CCD/CCX 槽位。');
-        setBanner('err', '无法应用分核 CO', 'SMU 拓扑未就绪，已阻止写入以避免误改其它核心');
-        return;
-      }
-      try {
-        log('正在逐核应用 Curve Optimizer...');
-        let applied = 0;
-        for (let i = 0; i < STATE.coreCount; i++) {
-          const margin = getCoValue(i);
-          if (margin === 0) continue;
-          const ccd = ccdOf(i);
-          const ccx = ccxOf(i);
-          const status = await rpc('smu_set_co_single_core', { request: { core: i, ccd, ccx, margin } });
-          if (status === 1) {
-            applied++;
-          } else {
-            log(`[-] Core ${i} (CCD${ccd}) 应用失败 (status 0x${status.toString(16)})`);
-          }
-        }
-        log(`[+] 完成，成功应用 ${applied} 个核心`);
-      } catch (e) {
-        log('[-] 应用 CO 失败: ' + e);
-      }
+    // ---- Wiring ----
+    document.getElementById('btnAllMinus').addEventListener('click', () => setAllValue(-1, true));
+    document.getElementById('btnAllPlus').addEventListener('click', () => setAllValue(1, true));
+    document.getElementById('btnAllZero').addEventListener('click', () => setAllValue(0));
+    document.getElementById('btnApplyCO').addEventListener('click', applyAllCo);
+    document.getElementById('btnRefresh').addEventListener('click', async () => {
+      log('[i] 重新读取当前 CO 值…');
+      await refreshValues();
+      await refreshFmaxScalar();
     });
+    document.getElementById('btnSaveProfile').addEventListener('click', saveProfile);
+    document.getElementById('btnLoadProfile').addEventListener('click', loadProfileToUi);
 
-    document.getElementById('btnResetCO').addEventListener('click', () => {
-      for (let i = 0; i < STATE.coreCount; i++) {
-        const el = document.getElementById('co_' + i);
-        if (el) el.value = 0;
-      }
-      log('[i] 已全部归零（需点「应用全部核心 CO」才会下发，负值才会被跳过）');
-    });
-
-    document.getElementById('btnApplyAllCore').addEventListener('click', async () => {
-      const margin = parseInt(document.getElementById('inputAllCoreCO').value) || 0;
+    document.getElementById('btnApplyFmax').addEventListener('click', async () => {
+      const fmax = parseInt(document.getElementById('inputFmax').value, 10) || 0;
       try {
-        const status = await rpc('smu_set_co_all_cores', { margin });
-        if (status === 1) {
-          log(`[+] 全核 CO 已应用: ${margin}`);
-          // 同步到每核输入框
-          for (let i = 0; i < STATE.coreCount; i++) {
-            const el = document.getElementById('co_' + i);
-            if (el) el.value = margin;
-          }
+        const status = await rpc('smu_set_fmax', { frequencyMhz: fmax });
+        if (Number(status) === 1) {
+          log(`[+] FMax 已应用: ${fmax} MHz`);
+          document.getElementById('fmaxCurrent').textContent = `当前: ${fmax} MHz`;
         } else {
-          log(`[-] 全核 CO 应用失败 (status 0x${status.toString(16)})`);
+          log(`[-] FMax 应用失败 (status 0x${Number(status).toString(16)})`);
         }
       } catch (e) {
-        log('[-] 全核 CO 失败: ' + e);
+        log('[-] FMax 失败: ' + e);
       }
     });
 
     document.getElementById('btnApplyScalar').addEventListener('click', async () => {
-      // SMU only accepts integer scalar multipliers (1x..10x); round down to the
-      // nearest hardware-representable step so the UI never claims a precision
-      // the firmware cannot apply.
+      // SMU only stores integer multipliers (1x..10x); clamp before sending so
+      // the UI never claims a precision the firmware cannot apply.
       const scalar = Math.max(1, Math.min(10, Math.floor(parseFloat(document.getElementById('inputScalar').value) || 1)));
       document.getElementById('inputScalar').value = scalar;
-      const x1000 = Math.round(scalar * 1000);
       try {
-        const status = await rpc('smu_set_pbo_scalar', { scalarX1000: x1000 });
-        if (status === 1) {
-          log(`[+] PBO Scalar 已应用: ${scalar.toFixed(2)}x`);
-          document.getElementById('scalarCurrent').textContent = `当前: ${scalar.toFixed(2)}x`;
+        const status = await rpc('smu_set_pbo_scalar', { scalarX1000: scalar * 1000 });
+        if (Number(status) === 1) {
+          log(`[+] PBO Scalar 已应用: ${scalar}x`);
+          document.getElementById('scalarCurrent').textContent = `当前: ${scalar}x`;
         } else {
-          log(`[-] Scalar 应用失败 (status 0x${status.toString(16)})`);
+          log(`[-] Scalar 应用失败 (status 0x${Number(status).toString(16)})`);
         }
       } catch (e) {
         log('[-] Scalar 失败: ' + e);
-      }
-    });
-
-    document.getElementById('btnApplyFmax').addEventListener('click', async () => {
-      const fmax = parseInt(document.getElementById('inputFmax').value) || 0;
-      try {
-        const status = await rpc('smu_set_fmax', { frequencyMhz: fmax });
-        if (status === 1) {
-          log(`[+] FMax 已应用: ${fmax} MHz`);
-          document.getElementById('fmaxCurrent').textContent = `当前: ${fmax} MHz`;
-        } else {
-          log(`[-] FMax 应用失败 (status 0x${status.toString(16)})`);
-        }
-      } catch (e) {
-        log('[-] FMax 失败: ' + e);
       }
     });
 

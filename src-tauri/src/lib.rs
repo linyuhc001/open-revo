@@ -612,11 +612,14 @@ pub fn run_tauri_runtime() {
             commands::smu_cmd::smu_init,
             commands::smu_cmd::smu_get_core_layout,
             commands::smu_cmd::smu_set_co_single_core,
+            commands::smu_cmd::smu_get_co_single_core,
             commands::smu_cmd::smu_set_co_all_cores,
             commands::smu_cmd::smu_set_pbo_scalar,
             commands::smu_cmd::smu_get_pbo_scalar,
             commands::smu_cmd::smu_set_fmax,
             commands::smu_cmd::smu_get_fmax,
+            commands::smu_cmd::smu_profile_save,
+            commands::smu_cmd::smu_profile_load,
         ])
         .setup(move |app| {
             openrevo_core::set_global_event_sink(Arc::new(TauriEventSink::new(app.handle().clone())));

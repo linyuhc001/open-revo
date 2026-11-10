@@ -422,6 +422,17 @@ pub async fn dispatch_plugin_ipc(plugin_id: &str, cmd: &str, args: Value) -> Res
             )?;
             Ok(Value::Number(res.into()))
         }
+        "smu_get_co_single_core" => {
+            // Same payload shapes as the writer: { request: {...} } or flat.
+            let payload = args.get("request").cloned().unwrap_or_else(|| args.clone());
+            let core = payload.get("core").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let ccd = payload.get("ccd").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let ccx = payload.get("ccx").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let res = crate::commands::smu_cmd::smu_get_co_single_core(
+                crate::commands::smu_cmd::CoReadRequest { core, ccd, ccx },
+            )?;
+            Ok(Value::Number(res.into()))
+        }
         "smu_set_co_all_cores" => {
             let margin = args.get("margin").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let res = crate::commands::smu_cmd::smu_set_co_all_cores(margin)?;
@@ -452,6 +463,21 @@ pub async fn dispatch_plugin_ipc(plugin_id: &str, cmd: &str, args: Value) -> Res
         "smu_get_fmax" => {
             let res = crate::commands::smu_cmd::smu_get_fmax()?;
             Ok(Value::Number(res.into()))
+        }
+        "smu_profile_save" => {
+            // Accept either a JSON string or an already-parsed object so the
+            // plugin can pass the profile through without double-encoding.
+            let content = match args.get("content") {
+                Some(Value::String(s)) => s.clone(),
+                Some(other) => other.to_string(),
+                None => args.to_string(),
+            };
+            let res = crate::commands::smu_cmd::smu_profile_save(content)?;
+            Ok(Value::String(res))
+        }
+        "smu_profile_load" => {
+            let res = crate::commands::smu_cmd::smu_profile_load()?;
+            Ok(Value::String(res))
         }
 
         other => {
