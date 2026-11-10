@@ -154,6 +154,22 @@ enum SmuType {
     Unsupported,
 }
 
+/// RSMU command table shared by Zen4 (Raphael/Genoa/DragonRange) and Zen5
+/// (Granite Ridge / Fire Range / Turin) — the mailbox layout and message ids
+/// are identical across those families.
+fn zen45_commands() -> RsmuCommands {
+    RsmuCommands {
+        set_dldo_psm_margin: 0x06,
+        set_all_dldo_psm_margin: 0x07,
+        get_dldo_psm_margin: 0xD5,
+        set_pbo_scalar: 0x5B,
+        get_pbo_scalar: 0x6D,
+        get_boost_limit_frequency: 0x6E,
+        set_boost_limit_all_core: 0x70,
+        set_overclock_cpu_vid: 0x61,
+    }
+}
+
 /// Determine SMU type and RSMU command table from CPU code name.
 fn resolve_commands(code: CpuCodeName) -> (SmuType, RsmuCommands) {
     use CpuCodeName::*;
@@ -191,17 +207,10 @@ fn resolve_commands(code: CpuCodeName) -> (SmuType, RsmuCommands) {
             SmuType::Cpu3
         }
         // Zen4 (Raphael / Genoa / StormPeak / DragonRange)
-        // Zen5 (Granite Ridge / Turin / TurinD / Bergamo / ShimadaPeak) — same RSMU as Zen4
+        // Zen5 (Granite Ridge / Fire Range / Turin / TurinD / Bergamo / ShimadaPeak)
         Raphael | Genoa | StormPeak | DragonRange | GraniteRidge | Turin | TurinD | Bergamo
         | ShimadaPeak => {
-            c.set_dldo_psm_margin = 0x06;
-            c.set_all_dldo_psm_margin = 0x07;
-            c.get_dldo_psm_margin = 0xD5;
-            c.set_pbo_scalar = 0x5B;
-            c.get_pbo_scalar = 0x6D;
-            c.get_boost_limit_frequency = 0x6E;
-            c.set_boost_limit_all_core = 0x70;
-            c.set_overclock_cpu_vid = 0x61;
+            c = zen45_commands();
             SmuType::Cpu4
         }
         // Bristol Ridge / Carrizo / Stoney Ridge (pre-Ryzen)
@@ -288,60 +297,260 @@ extern "system" {
     fn GetLogicalProcessorInformation(buffer: *mut u8, returned_length: *mut u32) -> i32;
 }
 
-// SYSTEM_LOGICAL_PROCESSOR_INFORMATION layout (packed for 32/64-bit).
-// We only care about the Relationship field and the ProcessorMask.
+// SYSTEM_LOGICAL_PROCESSOR_INFORMATION layout.
+//
+// x64: ULONG_PTR ProcessorMask (8) + RELATIONSHIP (4) + padding (4) + union (16) = 32 bytes.
+// The union holds `ULONG64 Reserved[2]`, so it is 8-byte aligned and 16 bytes wide —
+// NOT the 4 bytes a naive `{ usize, u32, u32 }` struct would give. Parsing with the
+// wrong stride silently reads the union as if it were the next entry, so the stride
+// below has to match the real ABI.
 const RELATION_PROCESSOR_CORE: u32 = 0;
+const RELATION_CACHE: u32 = 2;
+const CACHE_UNIFIED: u32 = 0;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
+#[allow(dead_code)]
 struct SystemLogicalProcessorInformation {
     processor_mask: usize,
     relationship: u32,
-    flags: u32,
-    // union payload ignored; we never read past relationship.
+    _reserved: u32,
+    /// union bytes 0..8 — for caches: Level | Assoc<<8 | LineSize<<16 | CacheSize<<32
+    payload0: u64,
+    /// union bytes 8..16 — for caches: low dword is PROCESSOR_CACHE_TYPE
+    payload1: u64,
 }
 
-/// Count physical cores via GetLogicalProcessorInformation (RelationProcessorCore).
-fn detect_physical_core_count() -> u32 {
+/// One physical core as reported by Windows, plus the L3 it shares.
+#[derive(Clone, Copy)]
+struct WinCoreInfo {
+    l3_kb: u32,
+    /// Cache descriptor mask of the L3 slice this core reports into.
+    /// 0 when Windows did not describe an L3 for it.
+    l3_mask: usize,
+}
+
+/// Read the full logical-processor topology from the kernel.
+fn read_topology() -> Option<Vec<SystemLogicalProcessorInformation>> {
     unsafe {
         let mut needed: u32 = 0;
-        let r = GetLogicalProcessorInformation(std::ptr::null_mut(), &mut needed);
-        if r != 0 || needed == 0 {
-            // Fallback to available_parallelism / 2 (SMT) heuristic.
-            let logical = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0) as u32;
-            return if logical > 0 { (logical + 1) / 2 } else { 0 };
+        GetLogicalProcessorInformation(std::ptr::null_mut(), &mut needed);
+        if needed == 0 {
+            return None;
         }
-
         let byte_len = needed as usize;
         let mut buf: Vec<u8> = vec![0u8; byte_len];
-        let r = GetLogicalProcessorInformation(buf.as_mut_ptr(), &mut needed);
-        if r == 0 {
-            let logical = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0) as u32;
-            return if logical > 0 { (logical + 1) / 2 } else { 0 };
+        if GetLogicalProcessorInformation(buf.as_mut_ptr(), &mut needed) == 0 {
+            return None;
         }
 
         let elem_size = std::mem::size_of::<SystemLogicalProcessorInformation>();
         let count = byte_len / elem_size;
-        let mut cores: u32 = 0;
+        if count == 0 || byte_len % elem_size != 0 {
+            // Layout mismatch — refuse to parse rather than return garbage.
+            return None;
+        }
+
+        let mut out = Vec::with_capacity(count);
         for i in 0..count {
-            let e = *(buf.as_ptr().add(i * elem_size) as *const SystemLogicalProcessorInformation);
-            if e.relationship == RELATION_PROCESSOR_CORE {
-                cores += 1;
+            out.push(*(buf.as_ptr().add(i * elem_size)
+                as *const SystemLogicalProcessorInformation));
+        }
+        Some(out)
+    }
+}
+
+fn smt_heuristic_core_count() -> u32 {
+    let logical = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0) as u32;
+    if logical > 0 {
+        (logical + 1) / 2
+    } else {
+        0
+    }
+}
+
+// ---- CPUID identification (fallback when RyzenSMU.bin predates the SKU) ----
+
+/// (family, model, package type) of the current CPU.
+fn cpuid_identity() -> Option<(u32, u32, u32)> {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        let leaf1 = core::arch::x86_64::__cpuid(1);
+        let base_family = (leaf1.eax >> 8) & 0xF;
+        let base_model = (leaf1.eax >> 4) & 0xF;
+        let ext_family = (leaf1.eax >> 20) & 0xFF;
+        let ext_model = (leaf1.eax >> 16) & 0xF;
+        let family = if base_family == 0xF {
+            base_family + ext_family
+        } else {
+            base_family
+        };
+        let model = if base_family == 0xF || base_family == 0x6 {
+            (ext_model << 4) | base_model
+        } else {
+            base_model
+        };
+        let ext = core::arch::x86_64::__cpuid(0x8000_0001);
+        let pkg = (ext.ecx >> 28) & 0xFF;
+        Some((family, model, pkg))
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        None
+    }
+}
+
+/// Marketing name from the CPUID brand string ("AMD Ryzen 9 9955HX3D …").
+fn cpuid_brand_string() -> String {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        let mut bytes = [0u8; 48];
+        for (i, leaf) in [0x8000_0002u32, 0x8000_0003, 0x8000_0004]
+            .iter()
+            .enumerate()
+        {
+            let r = core::arch::x86_64::__cpuid(*leaf);
+            let chunk = [r.eax, r.ebx, r.ecx, r.edx];
+            for (j, v) in chunk.iter().enumerate() {
+                bytes[i * 16 + j * 4..i * 16 + j * 4 + 4].copy_from_slice(&v.to_le_bytes());
             }
         }
-        cores
+        String::from_utf8_lossy(&bytes)
+            .trim_matches(|c: char| c == '\0' || c.is_whitespace())
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
     }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        String::new()
+    }
+}
+
+/// Map CPUID family/model to a code name for parts the installed RyzenSMU blob
+/// may not know about. Covers the Zen4/Zen5 server and consumer lines; anything
+/// else falls through to `Undefined`.
+fn detect_code_name_from_cpuid() -> CpuCodeName {
+    use CpuCodeName::*;
+    let Some((family, model, pkg)) = cpuid_identity() else {
+        return Undefined;
+    };
+    match (family, model) {
+        // Zen5 (family 1Ah)
+        (0x1A, 0x02) => Turin,
+        (0x1A, 0x08) => ShimadaPeak,
+        (0x1A, 0x11) => TurinD,
+        (0x1A, 0x20) | (0x1A, 0x24) => StrixPoint,
+        // Fire Range — the mobile HX die used by 9955HX / 9955HX3D.
+        (0x1A, 0x44) => GraniteRidge,
+        (0x1A, 0x60) => KrackanPoint,
+        (0x1A, 0x68) => KrackanPoint2,
+        (0x1A, 0x70) => StrixHalo,
+        // Zen4 (family 19h)
+        (0x19, 0x00) | (0x19, 0x01) => Milan,
+        (0x19, 0x08) => Chagall,
+        (0x19, 0x11) => Genoa,
+        (0x19, 0x18) => StormPeak,
+        (0x19, 0x20) | (0x19, 0x21) => Vermeer,
+        (0x19, 0x44) => Rembrandt,
+        (0x19, 0x50) => Cezanne,
+        (0x19, 0x61) => {
+            if pkg == 1 {
+                DragonRange
+            } else {
+                Raphael
+            }
+        }
+        (0x19, 0x74) | (0x19, 0x75) => Phoenix,
+        (0x19, 0x78) => Phoenix2,
+        (0x19, 0x7C) => HawkPoint,
+        (0x19, 0xA0) => Bergamo,
+        _ => Undefined,
+    }
+}
+
+/// Enumerate physical cores with the size of the L3 slice each one sees.
+///
+/// The L3 grouping is what tells a X3D part apart from a plain one: on a
+/// dual-CCD X3D (e.g. 9955HX3D) one CCD reports a ~96 MB unified L3 while the
+/// other reports 32 MB.
+fn detect_cores() -> Vec<WinCoreInfo> {
+    let Some(entries) = read_topology() else {
+        return Vec::new();
+    };
+
+    let mut core_masks: Vec<usize> = Vec::new();
+    let mut l3_slices: Vec<(usize, u32)> = Vec::new();
+
+    for e in &entries {
+        match e.relationship {
+            RELATION_PROCESSOR_CORE => core_masks.push(e.processor_mask),
+            RELATION_CACHE => {
+                let level = (e.payload0 & 0xFF) as u32;
+                let size_bytes = ((e.payload0 >> 32) & 0xFFFF_FFFF) as u32;
+                let cache_type = (e.payload1 & 0xFFFF_FFFF) as u32;
+                if level == 3 && cache_type == CACHE_UNIFIED {
+                    l3_slices.push((e.processor_mask, size_bytes / 1024));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // GetLogicalProcessorInformation lists cores in LP order; sort defensively so
+    // core index == position in the returned vec.
+    core_masks.sort_unstable();
+
+    core_masks
+        .into_iter()
+        .map(|mask| {
+            let slice = l3_slices.iter().find(|(m, _)| (m & mask) != 0);
+            let (l3_kb, l3_mask) = match slice {
+                Some((m, kb)) => (*kb, *m),
+                None => (0, 0),
+            };
+            WinCoreInfo { l3_kb, l3_mask }
+        })
+        .collect()
+}
+
+/// Count physical cores via GetLogicalProcessorInformation (RelationProcessorCore).
+fn detect_physical_core_count() -> u32 {
+    let cores = detect_cores();
+    if !cores.is_empty() {
+        return cores.len() as u32;
+    }
+    smt_heuristic_core_count()
 }
 
 /// Build the per-core (core, ccd, ccx) placement table.
 ///
-/// Matches ZenStates-Core's fallback mapping:
-///   - 19h family (Zen3+): 1 CCX per CCD, 8 cores per CCD  -> ccd = core / 8, ccx = core / 8
-///   - pre-19h family:     2 CCX per CCD, 4 cores per CCX -> ccd = core / 8, ccx = core / 4
+/// CCD membership is taken from the L3 slice each core reports into, which is
+/// exact instead of guessed: on a 9955HX3D the two slices are 96 MB (3D V-Cache
+/// CCD) and 32 MB, and Windows tags every core with the slice it belongs to.
+/// When the L3 information is unavailable we fall back to the classic 8
+/// cores-per-CCD arithmetic used by every Ryzen desktop/mobile HX part.
 pub fn get_core_layout() -> Vec<CorePlacement> {
-    let core_count = detect_physical_core_count();
-    if core_count == 0 {
-        return Vec::new();
+    let cores = detect_cores();
+    let slice_count = cores
+        .iter()
+        .map(|c| c.l3_mask)
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    let l3_grouping_usable = !cores.is_empty()
+        && cores.iter().all(|c| c.l3_mask != 0)
+        && slice_count > 1;
+
+    // Order the L3 slices by the smallest core index inside them so CCD 0 is
+    // always the one containing core 0, matching what Ryzen Master reports.
+    let mut slice_order: Vec<usize> = Vec::new();
+    if l3_grouping_usable {
+        let mut seen = std::collections::BTreeSet::new();
+        for c in &cores {
+            if seen.insert(c.l3_mask) {
+                slice_order.push(c.l3_mask);
+            }
+        }
     }
 
     let is_zen3_plus = {
@@ -352,11 +561,33 @@ pub fn get_core_layout() -> Vec<CorePlacement> {
             .unwrap_or(true)
     };
 
+    let core_count = if cores.is_empty() {
+        let fallback = smt_heuristic_core_count();
+        if fallback == 0 {
+            return Vec::new();
+        }
+        fallback
+    } else {
+        cores.len() as u32
+    };
+
     (0..core_count)
         .map(|core| {
-            let ccd = core / 8;
-            let ccx = if is_zen3_plus { core / 8 } else { core / 4 };
-            CorePlacement { core, ccd, ccx }
+            let info = cores.get(core as usize);
+            let ccd = match info {
+                Some(c) if l3_grouping_usable => slice_order
+                    .iter()
+                    .position(|m| *m == c.l3_mask)
+                    .unwrap_or((core / 8) as usize) as u32,
+                _ => core / 8,
+            };
+            let ccx = if is_zen3_plus { ccd } else { core / 4 };
+            CorePlacement {
+                core,
+                ccd,
+                ccx,
+                l3_kb: info.map(|c| c.l3_kb).unwrap_or(0),
+            }
         })
         .collect()
 }
@@ -367,6 +598,8 @@ pub fn get_core_layout() -> Vec<CorePlacement> {
 pub struct SmuInfo {
     pub supported: bool,
     pub code_name: String,
+    /// Marketing name read from the CPUID brand string.
+    pub cpu_name: String,
     pub smu_type: u32,
     pub smu_version: u32,
     pub pm_table_version: u32,
@@ -388,6 +621,9 @@ pub struct CorePlacement {
     pub ccd: u32,
     /// Physical CCX within the CCD.
     pub ccx: u32,
+    /// Size of the L3 slice this core shares, in KB (0 when unknown).
+    /// A large value on a dual-CCD part marks the 3D V-Cache CCD.
+    pub l3_kb: u32,
 }
 
 impl SmuBridge {
@@ -395,6 +631,7 @@ impl SmuBridge {
         SmuInfo {
             supported: self.smu_type != SmuType::Unsupported,
             code_name: format!("{:?}", self.code_name),
+            cpu_name: cpuid_brand_string(),
             smu_type: smu_type_u32(self.smu_type),
             smu_version: self.smu_version,
             pm_table_version: self.pm_table_version,
@@ -435,13 +672,46 @@ pub fn init_smu() -> Result<SmuInfo, String> {
     let blob: &[u8] = include_bytes!("../../../assets/smu/RyzenSMU.bin");
     let pawn = PawnIo::load_module_from_bytes(blob)?;
 
-    let code_name = {
-        let out = pawn.execute(FN_GET_CODE_NAME, &[], 1)?;
-        // Driver returns the code name as a signed 32-bit int (0xFFFFFFFF = -1 = Undefined).
-        CpuCodeName::from_i64((out[0] & 0xFFFF_FFFF) as i32 as i64)
+    let mut code_name = {
+        match pawn.execute(FN_GET_CODE_NAME, &[], 1) {
+            Ok(out) => {
+                // Driver returns the code name as a signed 32-bit int (0xFFFFFFFF = -1 = Undefined).
+                CpuCodeName::from_i64((out[0] & 0xFFFF_FFFF) as i32 as i64)
+            }
+            Err(e) => {
+                // Never let an unknown-code-name IOCTL failure sink the whole bridge:
+                // CPUID can identify the part on its own.
+                eprintln!("[smu] ioctl_get_code_name failed: {e}");
+                CpuCodeName::Undefined
+            }
+        }
     };
 
-    let (smu_type, commands) = resolve_commands(code_name);
+    // The bundled RyzenSMU blob may predate the installed SKU (Fire Range / 1Ah
+    // model 44h is a common miss). Identify from CPUID instead of giving up.
+    if code_name == CpuCodeName::Undefined {
+        let guess = detect_code_name_from_cpuid();
+        if guess != CpuCodeName::Undefined {
+            eprintln!("[smu] code name unresolved by RyzenSMU.bin, CPUID says {:?}", guess);
+            code_name = guess;
+        }
+    }
+
+    let (mut smu_type, mut commands) = resolve_commands(code_name);
+    if smu_type == SmuType::Unsupported {
+        // Last resort: family 19h/1Ah all speak the same RSMU dialect, so try the
+        // Zen4/Zen5 table rather than refusing to start on an unrecognised SKU.
+        if let Some((family, model, _)) = cpuid_identity() {
+            if family == 0x19 || family == 0x1A {
+                eprintln!(
+                    "[smu] unsupported code name {:?} (family {:#x} model {:#x}), using generic Zen4/5 RSMU table",
+                    code_name, family, model
+                );
+                smu_type = SmuType::Cpu4;
+                commands = zen45_commands();
+            }
+        }
+    }
     if smu_type == SmuType::Unsupported {
         return Err(format!("Unsupported CPU code name: {:?}", code_name));
     }

@@ -156,6 +156,17 @@
       color: var(--text-dim);
       letter-spacing: 0;
     }
+    .ccd-title .x3d-badge {
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.3px;
+      padding: 1px 5px;
+      border-radius: 4px;
+      background: rgba(250, 204, 21, 0.16);
+      color: #facc15;
+      border: 1px solid rgba(250, 204, 21, 0.42);
+      white-space: nowrap;
+    }
     .ccd-actions { display: flex; gap: 5px; }
 
     .ccd-grid {
@@ -309,6 +320,7 @@
   </div>
 
   <div class="platform-grid" id="platformGrid" style="display:none;">
+    <div class="platform-card"><div class="label">CPU 型号</div><div class="value" id="pCpuName">-</div></div>
     <div class="platform-card"><div class="label">CPU 代号</div><div class="value" id="pCodeName">-</div></div>
     <div class="platform-card"><div class="label">物理核心</div><div class="value" id="pCores">-</div></div>
     <div class="platform-card"><div class="label">CCD 数量</div><div class="value" id="pCcds">-</div></div>
@@ -463,7 +475,7 @@
       try {
         const layout = await rpc('smu_get_core_layout');
         const list = Array.isArray(layout) ? layout : [];
-        STATE.cores = list.map(x => ({ core: x.core, ccd: x.ccd, ccx: x.ccx }));
+        STATE.cores = list.map(x => ({ core: x.core, ccd: x.ccd, ccx: x.ccx, l3_kb: x.l3_kb || 0 }));
         STATE.topologyKnown = STATE.cores.length > 0;
         if (STATE.topologyKnown) {
           log(`[+] 检测到 ${STATE.cores.length} 个物理核心 / ${countCcds()} 个 CCD`);
@@ -486,7 +498,7 @@
       const physical = Math.max(1, Math.floor(hc / 2));
       STATE.cores = [];
       for (let i = 0; i < physical; i++) {
-        STATE.cores.push({ core: i, ccd: Math.floor(i / 8), ccx: Math.floor(i / 8) });
+        STATE.cores.push({ core: i, ccd: Math.floor(i / 8), ccx: Math.floor(i / 8), l3_kb: 0 });
       }
       STATE.topologyKnown = false;
       log(`[!] 拓扑不可用，已按 SMT-2 推算 ${physical} 个物理核心（CCD 分组仅供参考，写入已禁用）`);
@@ -499,6 +511,7 @@
 
     function renderPlatform(info) {
       document.getElementById('platformGrid').style.display = 'grid';
+      document.getElementById('pCpuName').textContent = info.cpu_name || '-';
       document.getElementById('pCodeName').textContent = info.code_name;
       document.getElementById('pSmuType').textContent = '0x' + Number(info.smu_type).toString(16).toUpperCase();
       document.getElementById('pSmuVersion').textContent = '0x' + Number(info.smu_version).toString(16).toUpperCase();
@@ -510,6 +523,7 @@
       document.getElementById('pCores').textContent = STATE.cores.length;
       document.getElementById('pCcds').textContent = countCcds();
       if (!STATE.smuInfo) {
+        document.getElementById('pCpuName').textContent = '-';
         document.getElementById('pCodeName').textContent = '未识别';
         document.getElementById('pSmuType').textContent = '-';
         document.getElementById('pSmuVersion').textContent = '-';
@@ -542,8 +556,14 @@
 
         const head = document.createElement('div');
         head.className = 'ccd-head';
+        // The L3 slice size is the only reliable X3D marker Windows exposes:
+        // the cache CCD reports ~96 MB on a 9955HX3D, the plain one 32 MB.
+        const l3kb = cores.reduce((m, c) => Math.max(m, c.l3_kb || 0), 0);
+        const isX3d = l3kb >= 64 * 1024;
+        const l3Text = l3kb ? ` · L3 ${Math.round(l3kb / 1024)}MB` : '';
+        const x3dBadge = isX3d ? '<span class="x3d-badge">3D V-Cache</span>' : '';
         head.innerHTML = `
-          <div class="ccd-title">CCD ${ccdId}<span class="ccd-sub">${cores.length} 核 · C${cores[0].core}–C${cores[cores.length - 1].core}</span></div>
+          <div class="ccd-title">CCD ${ccdId}${x3dBadge}<span class="ccd-sub">${cores.length} 核 · C${cores[0].core}–C${cores[cores.length - 1].core}${l3Text}</span></div>
           <div class="ccd-actions">
             <button class="mini" data-act="zero" title="本 CCD 全部归零">↺</button>
             <button class="mini" data-act="minus" title="本 CCD 全部 −1">−</button>
