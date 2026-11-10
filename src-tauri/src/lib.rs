@@ -256,6 +256,11 @@ fn run_slint_pure_daemon() {
     // 14. Watcher Hub & Enabled Plugins Bootstrap
     crate::commands::system_cmd::bootstrap_enabled_plugins();
 
+    // 14.5 Re-apply the saved PBO profile when the user opted into auto-apply.
+    // This is the default entry point, so the hook cannot live only in the
+    // classic Tauri runtime's setup closure (that closure never runs here).
+    crate::commands::smu_cmd::spawn_auto_apply_on_boot();
+
     // 15. Autostart Alignment
     crate::system::autostart::sync_autostart_target_path();
 
@@ -688,16 +693,10 @@ pub fn run_tauri_runtime() {
                 crate::system::device_switches::start_hardware_state_watcher(Some(app.handle().clone()), ec_for_watcher);
             });
 
-            // Step 6.8: Re-apply the saved PBO profile when the user opted into
-            // auto-apply. Delayed so PawnIO and the SMU mailbox are usable, and
-            // run off-thread so a slow/hung SMU can never block startup.
-            std::thread::spawn(|| {
-                std::thread::sleep(std::time::Duration::from_secs(8));
-                match crate::commands::smu_cmd::auto_apply_profile() {
-                    Ok(msg) => crate::log_info!("PBO_AUTO", "profile auto-apply: {}", msg),
-                    Err(e) => crate::log_info!("PBO_AUTO", "profile auto-apply skipped: {}", e),
-                }
-            });
+            // Step 6.8b: Re-apply the saved PBO profile when the user opted into
+            // auto-apply. The spawn is shared with the Slint daemon entry point,
+            // which is the default runtime and never reaches this closure.
+            crate::commands::smu_cmd::spawn_auto_apply_on_boot();
 
             // Step 6.8: Initialize display tuning engine
             crate::system::boot_trace::boot_scope("Step 6.8: Display Tuning", || {

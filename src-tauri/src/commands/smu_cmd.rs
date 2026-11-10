@@ -170,3 +170,39 @@ pub fn auto_apply_profile() -> Result<String, String> {
 
     Ok(format!("applied {applied} cores ({failed} failed)"))
 }
+
+/// Kick off the boot-time profile re-apply on a detached thread.
+///
+/// The spawn lives here because OpenRevo has two mutually exclusive entry points
+/// (`run_slint_pure_daemon`, which is the default, and `run_tauri_runtime` for
+/// `use_classic_webview`), and they share no setup closure. Hanging this off the
+/// Tauri setup hook only silently skipped it on every default install. The delay
+/// gives PawnIO and the SMU mailbox time to come up; failures are logged, never
+/// propagated, so a broken profile can never affect startup.
+pub fn spawn_auto_apply_on_boot() {
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_secs(8));
+        let outcome = match auto_apply_profile() {
+            Ok(msg) => format!("ok: {msg}"),
+            Err(e) => format!("skipped: {e}"),
+        };
+        crate::log_info!("PBO_AUTO", "profile auto-apply: {}", outcome);
+        append_auto_apply_trace(&outcome);
+    });
+}
+
+/// Append the auto-apply outcome to `pbo_auto_apply.log` in the config dir.
+///
+/// The default log level writes nothing to disk, so without this trace a silent
+/// skip is indistinguishable from a working apply. Kept tiny and append-only.
+fn append_auto_apply_trace(outcome: &str) {
+    use std::io::Write;
+    let path = crate::system::config::get_config_dir().join("pbo_auto_apply.log");
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(f, "[{ts}] {outcome}");
+    }
+}

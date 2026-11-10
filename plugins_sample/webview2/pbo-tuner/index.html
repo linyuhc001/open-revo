@@ -122,7 +122,9 @@
     /* ---- CCD panels ---- */
     .ccd-wrap {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      /* Always two columns: the two CCDs must sit side by side for comparison.
+         auto-fit would wrap them into two rows as soon as the panel narrows. */
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 14px;
       align-items: start;
     }
@@ -172,8 +174,12 @@
 
     .ccd-grid {
       display: grid;
-      grid-template-columns: 1fr;
-      gap: 5px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      /* Column-major fill: C0-C3 down the left column, C4-C7 down the right.
+         The row count is set per card in JS so CPUs with 6 cores per CCD still
+         split evenly instead of overflowing into a third column. */
+      grid-auto-flow: column;
+      gap: 5px 12px;
       padding: 11px;
     }
 
@@ -193,21 +199,20 @@
     .core-row input {
       flex: 1;
       min-width: 0;
-      max-width: 120px;
+      max-width: 92px;
       width: 100%;
       background: #0b0f17;
       border: 1px solid var(--border-medium);
       border-radius: 5px;
       color: var(--text-primary);
       text-align: center;
-      padding: 5px 4px;
+      padding: 5px 2px 5px 4px;
       font-size: 13px;
       font-weight: 600;
       font-family: "Consolas", monospace;
-      -moz-appearance: textfield;
     }
-    .core-row input::-webkit-outer-spin-button,
-    .core-row input::-webkit-inner-spin-button,
+    /* Per-core inputs keep the native spinner arrows (fine ±1 stepping);
+       the toolbar-style inputs below hide them. */
     .row input[type="number"]::-webkit-outer-spin-button,
     .row input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
     .core-row input:focus { outline: none; border-color: var(--ccd-color, var(--accent)); }
@@ -517,7 +522,12 @@
       // Auto-apply is a host-side setting; reflect whatever the saved profile says.
       try {
         const saved = await loadProfile(true);
-        document.getElementById('chkAutoApply').checked = !!(saved && saved.autoApply === true);
+        const on = !!(saved && saved.autoApply === true);
+        document.getElementById('chkAutoApply').checked = on;
+        if (saved && saved.savedAt) {
+          document.getElementById('profileHint').textContent =
+            `上次保存: ${new Date(saved.savedAt).toLocaleString()}` + (on ? ' · 开机自动应用' : '');
+        }
       } catch (_) {}
     }
 
@@ -603,6 +613,9 @@
 
         const grid = document.createElement('div');
         grid.className = 'ccd-grid';
+        // grid-auto-flow: column needs an explicit row count, otherwise the
+        // 8 cores would run sideways into 8 columns.
+        grid.style.gridTemplateRows = `repeat(${Math.ceil(cores.length / 2)}, auto)`;
 
         cores.forEach(c => {
           const row = document.createElement('div');
@@ -801,6 +814,32 @@
       }
     }
 
+    // The auto-apply checkbox is a host-side setting: the host reads it from the
+    // profile file at boot, so the choice has to be written back the moment it
+    // changes. The existing file is merged instead of rebuilt — a freshly opened
+    // page reads 0 from hardware for cores that were never applied, and saving
+    // the on-screen state would wipe the margins already stored in the file.
+    async function persistAutoApply(enabled) {
+      const hint = document.getElementById('profileHint');
+      let profile = await loadProfile(true);
+      if (profile) {
+        profile.autoApply = enabled;
+      } else {
+        profile = buildProfileObject();  // nothing saved yet: capture the screen
+        profile.autoApply = enabled;
+      }
+      try {
+        await rpc('smu_profile_save', { content: JSON.stringify(profile) });
+        hint.textContent = enabled
+          ? '自动应用已开启 · 下次启动 8 秒后下发'
+          : '自动应用已关闭并写回 Profile';
+        log(`[+] 开机自动应用: ${enabled ? '开启' : '关闭'}（已写回 Profile）`);
+      } catch (e) {
+        hint.textContent = '自动应用设置写入失败';
+        log('[-] 写入自动应用设置失败: ' + e);
+      }
+    }
+
     async function loadProfile(silent = false) {
       let raw = '';
       try {
@@ -949,6 +988,7 @@
     });
     document.getElementById('btnSaveProfile').addEventListener('click', saveProfile);
     document.getElementById('btnLoadProfile').addEventListener('click', loadProfileToUi);
+    document.getElementById('chkAutoApply').addEventListener('change', (e) => persistAutoApply(e.target.checked));
 
     document.getElementById('btnApplyFmax').addEventListener('click', async () => {
       const fmax = parseInt(document.getElementById('inputFmax').value, 10) || 0;
