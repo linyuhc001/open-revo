@@ -811,7 +811,7 @@
       }
       for (const c of STATE.cores) {
         try {
-          const v = await rpc('smu_get_co_single_core', { request: { core: c.core, ccd: c.ccd, ccx: c.ccx } });
+          const v = await rpc('smu_get_co_single_core', { core: c.core, ccd: c.ccd, ccx: c.ccx });
           const n = Number(v);
           STATE.values[c.core] = Number.isFinite(n) ? Math.max(CO_MIN, Math.min(CO_MAX, n)) : 0;
           ok++;
@@ -1027,8 +1027,12 @@
         for (const c of STATE.cores) {
           const margin = STATE.values[c.core] === undefined ? 0 : STATE.values[c.core];
           try {
+            // Flat body: the sidecar reads core/ccd/ccx from the top level.
+            // The old invoke-style `{ request: {...} }` envelope was rejected
+            // with "core missing", which silently disabled both read-back and
+            // Apply.
             const status = await rpc('smu_set_co_single_core',
-              { request: { core: c.core, ccd: c.ccd, ccx: c.ccx, margin } });
+              { core: c.core, ccd: c.ccd, ccx: c.ccx, margin });
             if (Number(status) === 1) ok++;
             else { fail++; log(`[-] Core ${c.core} (CCD${c.ccd}) 返回 status 0x${Number(status).toString(16)}`); }
           } catch (e) {

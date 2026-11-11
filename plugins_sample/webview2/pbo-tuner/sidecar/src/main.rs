@@ -171,7 +171,7 @@ fn route(method: &str, path: &str, body: &[u8]) -> Result<Value, String> {
         }
         "/api/smu_set_co_single_core" => {
             let (core, ccd, ccx) = placement(&req)?;
-            let margin = req
+            let margin = params(&req)
                 .get("margin")
                 .and_then(|v| v.as_i64())
                 .ok_or("margin missing")? as i32;
@@ -214,10 +214,23 @@ fn route(method: &str, path: &str, body: &[u8]) -> Result<Value, String> {
     }
 }
 
+/// Endpoints take a flat JSON body (`{core, ccd, ccx, margin}`). The page used
+/// to wrap them in a `{"request": {...}}` envelope — the shape the host-scoped
+/// invoke expected — and a cached page can still send that, so unwrap it here
+/// instead of answering "core missing" and silently failing every write.
+fn params(req: &Value) -> &Value {
+    let flat = req.get("core").is_some() || req.get("margin").is_some();
+    match req.get("request") {
+        Some(inner) if !flat && inner.is_object() => inner,
+        _ => req,
+    }
+}
+
 /// `{core, ccd, ccx}` — the page always sends all three.
 fn placement(req: &Value) -> Result<(u32, u32, u32), String> {
+    let p = params(req);
     let get = |k: &str| -> Result<u32, String> {
-        req.get(k)
+        p.get(k)
             .and_then(|v| v.as_u64())
             .map(|v| v as u32)
             .ok_or_else(|| format!("{k} missing"))
