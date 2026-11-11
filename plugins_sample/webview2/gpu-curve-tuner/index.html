@@ -307,6 +307,37 @@
       width: 100%;
       height: 200px;
       display: block;
+      cursor: crosshair;
+      touch-action: none;
+    }
+    /* While dragging, the cursor must not flicker between the crosshair and
+       the resize arrow as the pointer crosses the hovered anchor. */
+    #vfCanvas.dragging { cursor: ns-resize; }
+
+    /* Curve editing toolbar (manual anchor editing, Afterburner style) */
+    .curve-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 8px;
+      flex-wrap: wrap;
+    }
+    .curve-toolbar .hint {
+      font-size: 11px;
+      color: var(--text-dim);
+      margin-right: auto;
+    }
+    .curve-toolbar .hint b { color: var(--text-secondary); font-weight: 600; }
+    .curve-badge {
+      font-size: 11px;
+      font-family: "Consolas", monospace;
+      padding: 3px 8px;
+      border-radius: 5px;
+      background: rgba(6, 182, 212, 0.12);
+      border: 1px solid rgba(6, 182, 212, 0.35);
+      color: #22d3ee;
+      min-width: 210px;
+      text-align: center;
     }
 
     .canvas-legend {
@@ -551,9 +582,25 @@
           </div>
           <div class="legend-item">
             <span class="legend-color" style="background: #06b6d4;"></span>
-            <span>当前生效 V/F 曲线 (平移降压)</span>
+            <span>待写入 V/F 曲线</span>
+          </div>
+          <div class="legend-item">
+            <span class="legend-color" style="background: #10b981;"></span>
+            <span>当前锚点</span>
           </div>
         </div>
+      </div>
+
+      <!-- Manual anchor editing -->
+      <div class="curve-toolbar">
+        <span class="hint">
+          <b>拖动锚点</b> 上下调整该点频率 · <b>Shift + 拖动</b> 平移该点及右侧所有点 ·
+          <b>双击</b> 单点归零
+        </span>
+        <span class="curve-badge" id="curveReadout">未选中锚点</span>
+        <button class="btn btn-secondary" style="padding: 5px 10px; font-size: 11.5px;" onclick="undoCurveEdit()">↶ 撤销</button>
+        <button class="btn btn-secondary" style="padding: 5px 10px; font-size: 11.5px;" onclick="reloadCurveFromHardware()">⟳ 读回硬件</button>
+        <button class="btn btn-secondary" style="padding: 5px 10px; font-size: 11.5px;" onclick="flattenCurveToZero()">0 全部归零</button>
       </div>
     </div>
 
@@ -590,7 +637,10 @@
       targetVolt: 875,
       targetFreq: 2450,
       activeMode: '出厂默认',
-      hostPowerMode: null
+      hostPowerMode: null,
+      hoverIndex: -1,     // anchor under the pointer (manual curve editing)
+      geom: null,         // last canvas geometry, shared by painter + hit test
+      undo: []            // snapshots of plannedDeltas for the undo button
     };
 
     // --- Unified RPC Invoker ---
@@ -801,19 +851,81 @@
       drawCurve();
     }
 
-    // --- Drawing the V/F Curve on Canvas ---
-    function drawCurve() {
-      const canvas = document.getElementById('vfCanvas');
-      if (!canvas) return;
-      const ctx = canvas.getContext('2d');
-      const dpr = window.devicePixelRatio || 1;
-      const rect = canvas.getBoundingClientRect();
-      canvas.width = rect.width * dpr;
-      canvas.height = rect.height * dpr;
-      ctx.scale(dpr, dpr);
+    // --- V/F curve canvas: geometry, painter, manual anchor editing ---
+    // Afterburner-style editing: drag an anchor up/down to move that point,
+    // Shift+drag to carry the whole right-hand segment rigidly, double-click to
+    // zero one point. Nothing here touches the GPU: edits only change the
+    // in-memory delta table, and the Apply button pushes it.
+    const CURVE_V_MIN = 450;
+    const CURVE_V_MAX = 1150;
+    const CURVE_HIT_PX = 14;
+    const CURVE_DELTA_MIN = -500;
+    const CURVE_DELTA_MAX = 300;
+    const DRAG = { active: false, index: -1, startFreq: 0, snapshot: null, shift: false, moved: false, raf: 0, lastEv: null };
 
-      const w = rect.width;
-      const h = rect.height;
+    function curveGeom() {
+      const canvas = document.getElementById('vfCanvas');
+      if (!canvas) return null;
+      const rect = canvas.getBoundingClientRect();
+      const w = rect.width || 1;
+      const h = rect.height || 1;
+      const padL = 45, padR = 20, padT = 18, padB = 30;
+      const plotW = Math.max(10, w - padL - padR);
+      const plotH = Math.max(10, h - padT - padB);
+
+      // The Y window follows the anchors. A laptop 5070 Ti curve spans roughly
+      // 900-2700 MHz, so the old fixed 200..2800 axis wasted half the canvas.
+      const pts = STATE.vfPoints || [];
+      let fMin = Infinity, fMax = -Infinity;
+      for (const p of pts) {
+        const stock = p.freq_mhz - p.delta_mhz;
+        fMin = Math.min(fMin, stock, p.freq_mhz);
+        fMax = Math.max(fMax, stock, p.freq_mhz);
+      }
+      if (!Number.isFinite(fMin) || fMax - fMin < 100) { fMin = 800; fMax = 2800; }
+      const margin = Math.max(60, (fMax - fMin) * 0.12);
+      const yMin = Math.floor((fMin - margin) / 50) * 50;
+      const yMax = Math.ceil((fMax + margin) / 50) * 50;
+
+      const toX = v => padL + ((v - CURVE_V_MIN) / (CURVE_V_MAX - CURVE_V_MIN)) * plotW;
+      const toY = f => h - padB - ((f - yMin) / (yMax - yMin)) * plotH;
+      const yToFreq = y => yMin + ((h - padB - y) / plotH) * (yMax - yMin);
+
+      return { canvas, ctx: canvas.getContext('2d'), w, h, padL, padR, padT, padB, plotW, plotH, yMin, yMax, toX, toY, yToFreq };
+    }
+
+    function stockFreqAt(i) {
+      const p = STATE.vfPoints[i];
+      return p.freq_mhz - p.delta_mhz;
+    }
+
+    // The hardware delta table is the source of truth when the user has not
+    // edited anything yet, so seed the edit buffer from it.
+    function ensureDeltas() {
+      if (!Array.isArray(STATE.plannedDeltas) || STATE.plannedDeltas.length !== STATE.vfPoints.length) {
+        STATE.plannedDeltas = STATE.vfPoints.map(p => p.delta_mhz || 0);
+      }
+      return STATE.plannedDeltas;
+    }
+
+    function effectiveFreqAt(i) {
+      const p = STATE.vfPoints[i];
+      const d = STATE.plannedDeltas && STATE.plannedDeltas[i] !== undefined
+        ? STATE.plannedDeltas[i]
+        : (p.delta_mhz || 0);
+      return stockFreqAt(i) + d;
+    }
+
+    function drawCurve() {
+      const g = curveGeom();
+      if (!g) return;
+      STATE.geom = g;
+      const { ctx, w, h, padL, padR, padT, padB, yMin, yMax, toX, toY } = g;
+      const canvas = g.canvas;
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.max(1, Math.round(w * dpr));
+      canvas.height = Math.max(1, Math.round(h * dpr));
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, w, h);
 
       if (!STATE.vfPoints || STATE.vfPoints.length === 0) {
@@ -824,111 +936,304 @@
         return;
       }
 
-      const points = STATE.vfPoints;
-      const minV = 450;
-      const maxV = 1150;
-      const minF = 200;
-      const maxF = 2800;
-
-      const paddingLeft = 45;
-      const paddingRight = 20;
-      const paddingTop = 20;
-      const paddingBottom = 30;
-
-      const plotW = w - paddingLeft - paddingRight;
-      const plotH = h - paddingTop - paddingBottom;
-
-      function toX(volt) {
-        return paddingLeft + ((volt - minV) / (maxV - minV)) * plotW;
-      }
-      function toY(freq) {
-        return h - paddingBottom - ((freq - minF) / (maxF - minF)) * plotH;
-      }
-
-      // Draw Grid Lines
+      // Grid: frequency rows, voltage columns.
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
       ctx.lineWidth = 1;
-      ctx.fillStyle = '#64748b';
       ctx.font = '10px monospace';
+      ctx.fillStyle = '#64748b';
       ctx.textAlign = 'right';
-
-      // Horizontal freq ticks
-      for (let f = 500; f <= 2500; f += 500) {
+      for (let f = Math.ceil(yMin / 200) * 200; f <= yMax; f += 200) {
         const y = toY(f);
         ctx.beginPath();
-        ctx.moveTo(paddingLeft, y);
-        ctx.lineTo(w - paddingRight, y);
+        ctx.moveTo(padL, y);
+        ctx.lineTo(w - padR, y);
         ctx.stroke();
-        ctx.fillText(f + 'M', paddingLeft - 6, y + 3);
+        ctx.fillText(f + 'M', padL - 6, y + 3);
       }
-
-      // Vertical volt ticks
       ctx.textAlign = 'center';
-      for (let v = 600; v <= 1100; v += 100) {
+      for (let v = 500; v <= 1100; v += 100) {
         const x = toX(v);
         ctx.beginPath();
-        ctx.moveTo(x, paddingTop);
-        ctx.lineTo(x, h - paddingBottom);
+        ctx.moveTo(x, padT);
+        ctx.lineTo(x, h - padB);
         ctx.stroke();
         ctx.fillText(v + 'mV', x, h - 12);
       }
 
-      // 1. Draw Stock Curve (Dashed line)
+      // 1. Stock curve (dashed).
       ctx.beginPath();
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
       ctx.lineWidth = 1.5;
       ctx.setLineDash([4, 4]);
       let started = false;
-      for (let i = 0; i < points.length; i++) {
-        const p = points[i];
-        if (p.volt_mv < minV || p.volt_mv > maxV) continue;
-        const stockF = p.freq_mhz - p.delta_mhz;
+      for (let i = 0; i < STATE.vfPoints.length; i++) {
+        const p = STATE.vfPoints[i];
+        if (p.volt_mv < CURVE_V_MIN || p.volt_mv > CURVE_V_MAX) continue;
         const x = toX(p.volt_mv);
-        const y = toY(stockF);
+        const y = toY(stockFreqAt(i));
         if (!started) { ctx.moveTo(x, y); started = true; }
         else { ctx.lineTo(x, y); }
       }
       ctx.stroke();
       ctx.setLineDash([]);
 
-      // 2. Draw Active / Planned Undervolt Curve (Cyan Solid Line with Glow)
+      // 2. Edited / active curve (cyan, glowing).
       ctx.beginPath();
       ctx.strokeStyle = '#06b6d4';
       ctx.lineWidth = 2.5;
       ctx.shadowColor = 'rgba(6, 182, 212, 0.6)';
       ctx.shadowBlur = 8;
       started = false;
-
-      for (let i = 0; i < points.length; i++) {
-        const p = points[i];
-        if (p.volt_mv < minV || p.volt_mv > maxV) continue;
-        const stockF = p.freq_mhz - p.delta_mhz;
-        const delta = STATE.plannedDeltas ? STATE.plannedDeltas[i] : p.delta_mhz;
-        const effF = stockF + delta;
+      for (let i = 0; i < STATE.vfPoints.length; i++) {
+        const p = STATE.vfPoints[i];
+        if (p.volt_mv < CURVE_V_MIN || p.volt_mv > CURVE_V_MAX) continue;
         const x = toX(p.volt_mv);
-        const y = toY(effF);
+        const y = toY(effectiveFreqAt(i));
         if (!started) { ctx.moveTo(x, y); started = true; }
         else { ctx.lineTo(x, y); }
       }
       ctx.stroke();
-      ctx.shadowBlur = 0; // reset shadow
+      ctx.shadowBlur = 0;
 
-      // 3. Highlight Target Anchor Point
-      if (STATE.targetVolt) {
-        const targetX = toX(STATE.targetVolt);
-        const targetY = toY(STATE.targetFreq);
-        ctx.fillStyle = '#10b981';
+      // 3. Anchor handles. Anchor 0 is the hardware baseline root and is not
+      // writable (the driver skips it), so it gets no handle.
+      const activeIdx = DRAG.active ? DRAG.index : STATE.hoverIndex;
+      for (let i = 1; i < STATE.vfPoints.length; i++) {
+        const p = STATE.vfPoints[i];
+        if (p.volt_mv < CURVE_V_MIN || p.volt_mv > CURVE_V_MAX) continue;
+        const x = toX(p.volt_mv);
+        const y = toY(effectiveFreqAt(i));
+        const hot = i === activeIdx;
         ctx.beginPath();
-        ctx.arc(targetX, targetY, 5, 0, Math.PI * 2);
+        ctx.arc(x, y, hot ? 4.5 : 1.8, 0, Math.PI * 2);
+        ctx.fillStyle = hot ? '#10b981' : 'rgba(6, 182, 212, 0.55)';
         ctx.fill();
-        ctx.strokeStyle = '#fff';
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-
-        ctx.fillStyle = '#10b981';
-        ctx.font = 'bold 11px monospace';
-        ctx.fillText(`[${STATE.targetVolt}mV, ${STATE.targetFreq}MHz]`, targetX, targetY - 10);
+        if (hot) {
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.setLineDash([3, 3]);
+          ctx.strokeStyle = 'rgba(16, 185, 129, 0.35)';
+          ctx.lineWidth = 1;
+          ctx.moveTo(padL, y);
+          ctx.lineTo(w - padR, y);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
       }
+
+      // 4. Preset target marker, kept from the automatic undertvolt workflow.
+      if (STATE.targetVolt && STATE.targetFreq) {
+        const tx = toX(STATE.targetVolt);
+        const ty = toY(STATE.targetFreq);
+        ctx.beginPath();
+        ctx.arc(tx, ty, 3, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(16, 185, 129, 0.85)';
+        ctx.fill();
+      }
+    }
+
+    // --- Manual anchor editing ---
+    function updateCurveReadout(index) {
+      const el = document.getElementById('curveReadout');
+      if (!el) return;
+      if (!STATE.vfPoints || index < 0 || index >= STATE.vfPoints.length) {
+        el.textContent = '未选中锚点';
+        return;
+      }
+      const p = STATE.vfPoints[index];
+      const d = STATE.plannedDeltas && STATE.plannedDeltas[index] !== undefined
+        ? STATE.plannedDeltas[index]
+        : (p.delta_mhz || 0);
+      const eff = Math.round(stockFreqAt(index) + d);
+      el.textContent = `锚点 #${index} · ${p.volt_mv} mV · ${eff} MHz (${d > 0 ? '+' : ''}${d})`;
+    }
+
+    function nearestAnchor(px) {
+      const g = STATE.geom;
+      if (!g || !STATE.vfPoints || STATE.vfPoints.length < 2) return -1;
+      let best = -1;
+      let bestDx = Infinity;
+      for (let i = 1; i < STATE.vfPoints.length; i++) {
+        const dx = Math.abs(g.toX(STATE.vfPoints[i].volt_mv) - px);
+        if (dx < bestDx) { bestDx = dx; best = i; }
+      }
+      return bestDx <= CURVE_HIT_PX ? best : -1;
+    }
+
+    function pushCurveUndo() {
+      if (!Array.isArray(STATE.plannedDeltas)) return;
+      STATE.undo.push(STATE.plannedDeltas.slice());
+      if (STATE.undo.length > 40) STATE.undo.shift();
+    }
+
+    function markManualCurve() {
+      STATE.activeMode = '手动曲线';
+      const el = document.getElementById('statModeText');
+      if (el) el.textContent = '手动曲线';
+    }
+
+    // Move a single anchor. Anything to its right that would end up below it is
+    // lifted along, which keeps the curve monotonic - the only shape the driver
+    // accepts without silently reordering or dropping points.
+    function setAnchorFreq(index, targetFreq) {
+      const deltas = ensureDeltas();
+      const stock = stockFreqAt(index);
+      const floor = index > 1 ? stockFreqAt(index - 1) + deltas[index - 1] : 0;
+      const f = Math.max(floor, targetFreq);
+      let d = Math.round((f - stock) / 5) * 5;
+      d = Math.max(CURVE_DELTA_MIN, Math.min(CURVE_DELTA_MAX, d));
+      deltas[index] = d;
+
+      let prev = stock + d;
+      for (let i = index + 1; i < STATE.vfPoints.length; i++) {
+        const e = stockFreqAt(i) + deltas[i];
+        if (e < prev) {
+          const nd = Math.max(CURVE_DELTA_MIN, Math.min(CURVE_DELTA_MAX, Math.round((prev - stockFreqAt(i)) / 5) * 5));
+          deltas[i] = nd;
+          prev = stockFreqAt(i) + nd;
+        } else {
+          prev = e;
+        }
+      }
+      markManualCurve();
+    }
+
+    // Shift-drag: move the anchor and everything to its right by the same step,
+    // so a whole segment keeps its shape instead of being reshaped point by
+    // point.
+    function shiftAnchorsFrom(index, stepMhz) {
+      const deltas = ensureDeltas();
+      for (let i = index; i < deltas.length; i++) {
+        deltas[i] = Math.max(CURVE_DELTA_MIN, Math.min(CURVE_DELTA_MAX, (deltas[i] || 0) + stepMhz));
+      }
+      markManualCurve();
+    }
+
+    function curvePointerPos(ev) {
+      const rect = STATE.geom.canvas.getBoundingClientRect();
+      return { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
+    }
+
+    function onCurvePointerDown(ev) {
+      if (!STATE.vfPoints || STATE.vfPoints.length < 16) return;
+      const g = curveGeom();
+      if (!g) return;
+      STATE.geom = g;
+      const pos = curvePointerPos(ev);
+      const idx = nearestAnchor(pos.x);
+      if (idx < 0) return;
+
+      ensureDeltas();
+      pushCurveUndo();
+      DRAG.active = true;
+      DRAG.index = idx;
+      DRAG.shift = ev.shiftKey;
+      DRAG.moved = false;
+      DRAG.startFreq = g.yToFreq(pos.y);
+      DRAG.snapshot = STATE.plannedDeltas.slice();
+      g.canvas.classList.add('dragging');
+      try { g.canvas.setPointerCapture(ev.pointerId); } catch (_) {}
+      updateCurveReadout(idx);
+      drawCurve();
+      ev.preventDefault();
+    }
+
+    function onCurvePointerMove(ev) {
+      if (!STATE.vfPoints || !STATE.vfPoints.length) return;
+      const g = curveGeom();
+      if (!g) return;
+      STATE.geom = g;
+      const pos = curvePointerPos(ev);
+
+      if (!DRAG.active) {
+        const idx = nearestAnchor(pos.x);
+        if (idx !== STATE.hoverIndex) {
+          STATE.hoverIndex = idx;
+          updateCurveReadout(idx);
+          drawCurve();
+        }
+        return;
+      }
+
+      DRAG.lastEv = { pos, g };
+      if (DRAG.raf) return;
+      DRAG.raf = requestAnimationFrame(() => {
+        DRAG.raf = 0;
+        const pending = DRAG.lastEv;
+        if (!pending || !DRAG.active) return;
+        const targetFreq = pending.g.yToFreq(pending.pos.y);
+        if (DRAG.shift) {
+          STATE.plannedDeltas = DRAG.snapshot.slice();
+          const step = Math.round((targetFreq - DRAG.startFreq) / 5) * 5;
+          shiftAnchorsFrom(DRAG.index, step);
+        } else {
+          setAnchorFreq(DRAG.index, targetFreq);
+        }
+        DRAG.moved = true;
+        updateCurveReadout(DRAG.index);
+        drawCurve();
+      });
+    }
+
+    function onCurvePointerUp() {
+      if (!DRAG.active) return;
+      const idx = DRAG.index;
+      DRAG.active = false;
+      if (STATE.geom && STATE.geom.canvas) STATE.geom.canvas.classList.remove('dragging');
+      if (DRAG.moved && idx >= 0) {
+        const d = STATE.plannedDeltas[idx];
+        log(`[✎] 手动调整锚点 #${idx} (${STATE.vfPoints[idx].volt_mv}mV) → ${d > 0 ? '+' : ''}${d} MHz（缓冲区已更新，点“一键写入显卡硬件生效”下发）`);
+      } else {
+        STATE.undo.pop(); // a plain click is not an edit
+      }
+      DRAG.index = -1;
+      DRAG.snapshot = null;
+      updateCurveReadout(STATE.hoverIndex);
+    }
+
+    function onCurveDoubleClick(ev) {
+      const g = STATE.geom || curveGeom();
+      if (!g) return;
+      STATE.geom = g;
+      const pos = curvePointerPos(ev);
+      const idx = nearestAnchor(pos.x);
+      if (idx < 0) return;
+      ensureDeltas();
+      pushCurveUndo();
+      STATE.plannedDeltas[idx] = 0;
+      markManualCurve();
+      updateCurveReadout(idx);
+      drawCurve();
+      log(`[⟲] 锚点 #${idx} 已归零`);
+    }
+
+    function undoCurveEdit() {
+      const snap = STATE.undo.pop();
+      if (!snap) { log('[!] 没有可撤销的曲线修改'); return; }
+      STATE.plannedDeltas = snap;
+      drawCurve();
+      log('[↶] 已撤销上一步曲线修改');
+    }
+
+    async function reloadCurveFromHardware() {
+      await refreshHardwareInfo();
+      if (STATE.vfPoints && STATE.vfPoints.length) {
+        STATE.plannedDeltas = STATE.vfPoints.map(p => p.delta_mhz || 0);
+        drawCurve();
+        log('[⟳] 已从显卡读回当前 V/F 曲线，编辑缓冲区同步');
+      }
+    }
+
+    function flattenCurveToZero() {
+      if (!STATE.vfPoints || !STATE.vfPoints.length) return;
+      ensureDeltas();
+      pushCurveUndo();
+      STATE.plannedDeltas = new Array(STATE.vfPoints.length).fill(0);
+      markManualCurve();
+      drawCurve();
+      log('[*] 曲线已全部归零（等同出厂），点“一键写入”下发');
     }
 
     // --- Hardware Actions ---
@@ -1068,6 +1373,25 @@
         }
       } catch (err) {
         console.warn('Failed to attach gpu-clock-offsets-changed listener:', err);
+      }
+
+      // 4. Bind manual curve editing to the canvas
+      const curveCanvas = document.getElementById('vfCanvas');
+      if (curveCanvas) {
+        curveCanvas.addEventListener('pointerdown', onCurvePointerDown);
+        curveCanvas.addEventListener('pointermove', onCurvePointerMove);
+        curveCanvas.addEventListener('pointerup', onCurvePointerUp);
+        curveCanvas.addEventListener('pointercancel', onCurvePointerUp);
+        curveCanvas.addEventListener('pointerleave', () => {
+          if (DRAG.active) return;
+          if (STATE.hoverIndex !== -1) {
+            STATE.hoverIndex = -1;
+            updateCurveReadout(-1);
+            drawCurve();
+          }
+        });
+        curveCanvas.addEventListener('dblclick', onCurveDoubleClick);
+        log('[✓] 曲线编辑器就绪：拖动锚点可手动调整 V/F 曲线');
       }
     });
   </script>
