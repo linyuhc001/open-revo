@@ -296,6 +296,46 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+
+    /* Voltage ceiling switch. Sits next to the numeric target inputs because
+       it modifies what "target voltage" means: a hint, or a hard limit. */
+    .cap-toggle {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 6px 11px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border-medium);
+      background: rgba(239, 68, 68, 0.07);
+      font-size: 11.5px;
+      color: var(--text-secondary);
+      cursor: pointer;
+      user-select: none;
+      transition: all 0.15s ease;
+    }
+    .cap-toggle:hover {
+      border-color: rgba(239, 68, 68, 0.55);
+      color: var(--text-primary);
+    }
+    .cap-toggle input {
+      accent-color: #ef4444;
+      width: 13px;
+      height: 13px;
+      cursor: pointer;
+      margin: 0;
+    }
+    .cap-toggle b {
+      color: #ef4444;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+    .cap-toggle.off {
+      background: rgba(255, 255, 255, 0.03);
+      opacity: 0.65;
+    }
+    .cap-toggle.off b {
+      color: var(--text-dim);
+    }
     .preset-btn:hover {
       background: rgba(255, 255, 255, 0.08);
       color: var(--text-primary);
@@ -624,6 +664,11 @@
         <button class="btn btn-secondary" style="padding: 5px 12px; font-size: 11.5px;" onclick="applyCustomUndervoltInputs()">
           📐 计算并绘制曲线
         </button>
+        <label class="cap-toggle" id="capToggle"
+          title="勾选后，所有高于该电压的锚点会被削平到同一频率，显卡再也无法靠提压换频率，因此电压真正封顶在设定值；取消勾选则只抬高该点，更高电压仍会继续爬频">
+          <input type="checkbox" id="chkCapLock" checked onchange="onCapLockChange(this.checked)" />
+          <span>锁定 <b id="capVoltLabel">875</b> mV 为电压上限</span>
+        </label>
       </div>
 
       <!-- V/F Curve Visualizer -->
@@ -648,8 +693,7 @@
       <!-- Manual anchor editing -->
       <div class="curve-toolbar">
         <span class="hint">
-          <b>拖动锚点</b> 上下调整该点频率 · <b>Shift + 拖动</b> 平移该点及右侧所有点 ·
-          <b>双击</b> 单点归零
+          <b>拖动锚点</b> 调频 · <b>Shift + 拖动</b> 平移右侧 · <b>双击</b> 归零 · 锁定上限时拖动红点带动整段平线
         </span>
         <span class="curve-badge" id="curveReadout">未选中锚点</span>
         <button class="btn btn-secondary" style="padding: 5px 10px; font-size: 11.5px;" onclick="undoCurveEdit()">↶ 撤销</button>
@@ -690,6 +734,15 @@
       plannedDeltas: null,
       targetVolt: 875,
       targetFreq: 2450,
+      // Voltage ceiling. A per-anchor frequency offset alone can never cap the
+      // voltage: the boost algorithm always walks up the curve and takes the
+      // fastest point it can sustain, so a point at 875 mV that is merely
+      // faster than stock still loses to the 925 mV point above it. The only
+      // shape the hardware respects as a ceiling is a flat tail - every anchor
+      // above voltCap pinned to the same clock. capLocked is the user's opt-in
+      // for that flattening.
+      voltCap: 875,
+      capLocked: true,
       activeMode: '出厂默认',
       hostPowerMode: null,
       hoverIndex: -1,     // anchor under the pointer (manual curve editing)
@@ -738,6 +791,13 @@
         if (stored && typeof stored === 'object' && Object.keys(stored).length > 0) {
           if (typeof stored.target_volt === 'number') STATE.targetVolt = stored.target_volt;
           if (typeof stored.target_freq === 'number') STATE.targetFreq = stored.target_freq;
+          // Ceiling first, then the curve: a restored curve was flattened
+          // against this cap, so the label must agree with it. Older saves have
+          // no volt_cap - their preset target is the natural ceiling.
+          if (typeof stored.volt_cap === 'number') STATE.voltCap = stored.volt_cap;
+          else if (typeof stored.target_volt === 'number') STATE.voltCap = stored.target_volt;
+          if (typeof stored.cap_locked === 'boolean') STATE.capLocked = stored.cap_locked;
+          syncCapUi();
           if (typeof stored.active_mode === 'string') STATE.activeMode = stored.active_mode;
           if (Array.isArray(stored.planned_deltas)) {
             STATE.plannedDeltas = stored.planned_deltas;
@@ -762,6 +822,8 @@
       const config = {
         target_volt: STATE.targetVolt,
         target_freq: STATE.targetFreq,
+        volt_cap: STATE.voltCap,
+        cap_locked: STATE.capLocked,
         core_offset: STATE.coreOffset,
         mem_offset: STATE.memOffset,
         active_mode: STATE.activeMode,
@@ -865,6 +927,12 @@
       STATE.targetVolt = targetVolt;
       STATE.targetFreq = targetFreq;
       STATE.activeMode = label;
+      // A preset is by definition "lock this voltage", so the ceiling follows
+      // it - including re-enabling it, since the preset already produces a flat
+      // tail and leaving the switch off would contradict the drawn shape.
+      STATE.voltCap = targetVolt;
+      STATE.capLocked = true;
+      syncCapUi();
       document.getElementById('statModeText').textContent = label;
 
       if (!STATE.vfPoints || STATE.vfPoints.length < 16) {
@@ -910,7 +978,9 @@
       }
 
       STATE.plannedDeltas = newDeltas;
+      const over = enforceVoltCap(newDeltas);
       log(`[✓] 已计算曲线方案 [${label}]: 低压段抬升 +${baseBoost}MHz, 超出 ${targetVolt}mV 后强制削平锁频至 ${targetFreq}MHz.`);
+      if (over > 25) log(`[!] 削平段仍有 ${over}MHz 高于目标频率，目标频率对高压段来说偏低`);
       drawCurve();
     }
 
@@ -977,6 +1047,98 @@
         ? STATE.plannedDeltas[i]
         : (p.delta_mhz || 0);
       return stockFreqAt(i) + d;
+    }
+
+    // --- Voltage ceiling ---------------------------------------------------
+    // The delta table only stores frequency offsets, so it cannot say "stop at
+    // 875 mV". What the boost algorithm does respect is shape: if every anchor
+    // above the ceiling offers the same clock as the ceiling anchor, raising
+    // the voltage buys nothing and the card settles on the lowest voltage that
+    // reaches that clock. A single edited point is therefore never a cap - the
+    // 925 mV point is still faster, so the card simply walks up to it. This is
+    // the plateau Afterburner draws, and it must be re-applied after every edit
+    // or the tail drifts back up.
+    function capAnchorIndex() {
+      if (!STATE.vfPoints || STATE.vfPoints.length < 2 || STATE.voltCap == null) return -1;
+      let best = -1, bestV = -1;
+      for (let i = 1; i < STATE.vfPoints.length; i++) {
+        const v = STATE.vfPoints[i].volt_mv;
+        if (v <= STATE.voltCap && v >= bestV) { bestV = v; best = i; }
+      }
+      return best;
+    }
+
+    function isStockCurve(deltas) {
+      if (!Array.isArray(deltas)) return true;
+      for (let i = 0; i < deltas.length; i++) if (deltas[i]) return false;
+      return true;
+    }
+
+    // Pin every anchor above the ceiling to the ceiling anchor's clock.
+    // Returns the worst residual overflow in MHz (0 = the tail really is flat).
+    function enforceVoltCap(deltas) {
+      if (!STATE.capLocked || !Array.isArray(deltas)) return 0;
+      const idx = capAnchorIndex();
+      // A zeroed table means "factory curve", not "cap at the factory clock" -
+      // enforcing here would silently sabotage the reset button.
+      if (idx < 1 || isStockCurve(deltas)) return 0;
+      const effCap = stockFreqAt(idx) + (deltas[idx] || 0);
+      let worst = 0;
+      for (let i = idx + 1; i < deltas.length; i++) {
+        const want = effCap - stockFreqAt(i);
+        const d = Math.max(CURVE_DELTA_MIN, Math.min(CURVE_DELTA_MAX, Math.round(want / 5) * 5));
+        deltas[i] = d;
+        const over = stockFreqAt(i) + d - effCap;
+        if (over > worst) worst = over;
+      }
+      return worst;
+    }
+
+    // Same measurement against the live buffer, without touching it.
+    function capResidual() {
+      const deltas = STATE.plannedDeltas;
+      if (!STATE.capLocked || !Array.isArray(deltas)) return 0;
+      const idx = capAnchorIndex();
+      if (idx < 1 || isStockCurve(deltas)) return 0;
+      const effCap = stockFreqAt(idx) + (deltas[idx] || 0);
+      let worst = 0;
+      for (let i = idx + 1; i < deltas.length; i++) {
+        const over = stockFreqAt(i) + (deltas[i] || 0) - effCap;
+        if (over > worst) worst = over;
+      }
+      return worst;
+    }
+
+    function syncCapUi() {
+      const label = document.getElementById('capVoltLabel');
+      const chk = document.getElementById('chkCapLock');
+      const box = document.getElementById('capToggle');
+      if (label) label.textContent = String(Math.round(STATE.voltCap));
+      if (chk) chk.checked = !!STATE.capLocked;
+      if (box) box.classList.toggle('off', !STATE.capLocked);
+    }
+
+    function onCapLockChange(checked) {
+      STATE.capLocked = !!checked;
+      syncCapUi();
+      if (!STATE.capLocked) {
+        log('[🔓] 电压上限已解除：曲线恢复自由形态，更高电压点会继续爬频');
+        drawCurve();
+        return;
+      }
+      if (!STATE.vfPoints || STATE.vfPoints.length < 16) { drawCurve(); return; }
+      const deltas = ensureDeltas();
+      pushCurveUndo();
+      const over = enforceVoltCap(deltas);
+      markManualCurve();
+      drawCurve();
+      if (isStockCurve(deltas)) {
+        log(`[🔒] 已锁定 ${Math.round(STATE.voltCap)}mV 上限：先把上限锚点拖上去（或点预设），才会生成削平段`);
+      } else if (over > 25) {
+        log(`[!] 上限削平后仍高出 ${over}MHz（受 -500MHz 单点下限限制），请把上限锚点频率抬低一些`);
+      } else {
+        log(`[🔒] 已按 ${Math.round(STATE.voltCap)}mV 上限削平更高电压点，显卡不会再跳到更高电压`);
+      }
     }
 
     function drawCurve() {
@@ -1058,6 +1220,42 @@
       ctx.stroke();
       ctx.shadowBlur = 0;
 
+      // 2.5 Voltage ceiling. The wash marks the region the plateau owns, so
+      // "everything to the right is flattened" is readable at a glance; it
+      // turns amber when the tail could not be pinned all the way down.
+      if (STATE.capLocked && STATE.voltCap != null) {
+        const cx = toX(STATE.voltCap);
+        if (cx >= padL && cx <= w - padR) {
+          const residual = capResidual();
+          const broken = residual > 25;
+          const tone = broken ? '245, 158, 11' : '239, 68, 68';
+          ctx.fillStyle = `rgba(${tone}, 0.05)`;
+          ctx.fillRect(cx, padT, (w - padR) - cx, h - padT - padB);
+          ctx.setLineDash([3, 4]);
+          ctx.strokeStyle = `rgba(${tone}, 0.6)`;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(cx, padT);
+          ctx.lineTo(cx, h - padB);
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          ctx.font = '10px monospace';
+          ctx.textAlign = 'left';
+          ctx.fillStyle = `rgba(${tone}, 0.95)`;
+          ctx.fillText(broken ? `上限 ${Math.round(STATE.voltCap)}mV (削平不全)` : `上限 ${Math.round(STATE.voltCap)}mV`, Math.min(cx + 5, w - padR - 96), padT + 10);
+
+          const capIdx = capAnchorIndex();
+          if (capIdx > 0) {
+            const ky = toY(effectiveFreqAt(capIdx));
+            ctx.beginPath();
+            ctx.arc(cx, ky, 3.5, 0, Math.PI * 2);
+            ctx.fillStyle = broken ? '#f59e0b' : '#ef4444';
+            ctx.fill();
+          }
+        }
+      }
+
       // 3. Anchor handles. Anchor 0 is the hardware baseline root and is not
       // writable (the driver skips it), so it gets no handle.
       const activeIdx = DRAG.active ? DRAG.index : STATE.hoverIndex;
@@ -1114,7 +1312,11 @@
         ? STATE.plannedDeltas[index]
         : (p.delta_mhz || 0);
       const eff = Math.round(stockFreqAt(index) + d);
-      el.textContent = `锚点 #${index} · ${p.volt_mv} mV · ${eff} MHz (${d > 0 ? '+' : ''}${d})`;
+      const capIdx = STATE.capLocked ? capAnchorIndex() : -1;
+      let tag = '';
+      if (capIdx === index) tag = ' · 电压上限';
+      else if (capIdx > 0 && index > capIdx) tag = ' · 已削平';
+      el.textContent = `锚点 #${index} · ${p.volt_mv} mV · ${eff} MHz (${d > 0 ? '+' : ''}${d})${tag}`;
     }
 
     function nearestAnchor(px) {
@@ -1143,9 +1345,21 @@
 
     // Move a single anchor. Anything to its right that would end up below it is
     // lifted along, which keeps the curve monotonic - the only shape the driver
-    // accepts without silently reordering or dropping points.
+    // accepts without silently reordering or dropping points. With the ceiling
+    // locked the tail is then re-pinned to this anchor, so dragging the knee
+    // moves the whole flat segment instead of breaking the cap.
     function setAnchorFreq(index, targetFreq) {
       const deltas = ensureDeltas();
+
+      // Dragging a point above the ceiling means the knee itself moved: adopt
+      // that voltage rather than snapping the drag back down onto the old
+      // plateau (which would look like the drag was ignored).
+      if (STATE.capLocked && STATE.voltCap != null &&
+          STATE.vfPoints[index].volt_mv > STATE.voltCap + 0.5) {
+        STATE.voltCap = STATE.vfPoints[index].volt_mv;
+        syncCapUi();
+      }
+
       const stock = stockFreqAt(index);
       const floor = index > 1 ? stockFreqAt(index - 1) + deltas[index - 1] : 0;
       const f = Math.max(floor, targetFreq);
@@ -1164,7 +1378,12 @@
           prev = e;
         }
       }
+
+      const over = enforceVoltCap(deltas);
       markManualCurve();
+      if (over > 25) {
+        log(`[!] 上限削平后仍有 ${over}MHz 溢出，请降低上限锚点频率`);
+      }
     }
 
     // Shift-drag: move the anchor and everything to its right by the same step,
@@ -1172,9 +1391,17 @@
     // point.
     function shiftAnchorsFrom(index, stepMhz) {
       const deltas = ensureDeltas();
-      for (let i = index; i < deltas.length; i++) {
+      let from = index;
+      if (STATE.capLocked) {
+        // Shifting inside the flat region is meaningless (the ceiling re-pins
+        // it immediately), so move the whole plateau by starting at the knee.
+        const capIdx = capAnchorIndex();
+        if (capIdx > 0 && index > capIdx) from = capIdx;
+      }
+      for (let i = from; i < deltas.length; i++) {
         deltas[i] = Math.max(CURVE_DELTA_MIN, Math.min(CURVE_DELTA_MAX, (deltas[i] || 0) + stepMhz));
       }
+      enforceVoltCap(deltas);
       markManualCurve();
     }
 
@@ -1270,6 +1497,7 @@
       ensureDeltas();
       pushCurveUndo();
       STATE.plannedDeltas[idx] = 0;
+      enforceVoltCap(STATE.plannedDeltas);
       markManualCurve();
       updateCurveReadout(idx);
       drawCurve();
@@ -1363,7 +1591,11 @@
         if (d < lo) lo = d;
         if (d > hi) hi = d;
       }
-      log(`[💾] 手动曲线已保存：${deltas.length} 个锚点，${changed} 个已调整（${lo} ~ +${hi} MHz），下次打开面板自动恢复，点“一键写入”才下发硬件。`);
+      const capIdx = STATE.capLocked ? capAnchorIndex() : -1;
+      const capNote = capIdx > 0
+        ? `，上限 ${Math.round(STATE.voltCap)}mV 以上削平至 ${Math.round(stockFreqAt(capIdx) + (STATE.plannedDeltas[capIdx] || 0))}MHz`
+        : '，未锁定电压上限';
+      log(`[💾] 手动曲线已保存：${deltas.length} 个锚点，${changed} 个已调整（${lo} ~ +${hi} MHz）${capNote}，下次打开面板自动恢复，点“一键写入”才下发硬件。`);
       flashSaveButton();
     }
 
@@ -1385,6 +1617,18 @@
 
     async function applyFullUndervoltToHardware() {
       try {
+        // A positive core offset is added on top of the V/F curve, so it lifts
+        // the whole plateau and drags the card back onto a higher voltage
+        // point - the exact symptom the ceiling exists to prevent.
+        if (STATE.capLocked && STATE.coreOffset > 0) {
+          log(`[!] 核心频率偏移 +${STATE.coreOffset}MHz 会叠加在曲线上并抬高实际电压，可能让 ${Math.round(STATE.voltCap)}mV 上限失效；建议先把核心频率滑块归零`);
+        }
+
+        const over = enforceVoltCap(STATE.plannedDeltas);
+        if (STATE.capLocked && over > 25) {
+          log(`[!] 削平段仍高出目标频率 ${over}MHz（受单点 -500MHz 下限限制），实际电压可能仍会爬升`);
+        }
+
         // 1. Apply memory offset first
         if (STATE.memOffset !== 0) {
           log(`正在同步显存频率加成 +${STATE.memOffset} MHz...`);
@@ -1396,7 +1640,12 @@
 
         // 2. Apply planned V/F curve
         if (STATE.plannedDeltas && STATE.plannedDeltas.length >= 16) {
-          log(`正在向 NVIDIA 驱动写入 ${STATE.plannedDeltas.length} 锚点平移降压曲线...`);
+          const capIdx = STATE.capLocked ? capAnchorIndex() : -1;
+          if (capIdx > 0) {
+            log(`正在写入 ${STATE.plannedDeltas.length} 锚点曲线：${Math.round(STATE.voltCap)}mV 以下抬频，以上全部削平至 ${Math.round(stockFreqAt(capIdx) + (STATE.plannedDeltas[capIdx] || 0))}MHz...`);
+          } else {
+            log(`正在向 NVIDIA 驱动写入 ${STATE.plannedDeltas.length} 锚点平移降压曲线...`);
+          }
           await rpc('set_gpu_vf_curve_deltas', { deltasMhz: STATE.plannedDeltas });
         } else {
           log(`正在生成并下发目标降压曲线 (${STATE.targetVolt}mV @ ${STATE.targetFreq}MHz)...`);
@@ -1406,7 +1655,9 @@
           });
         }
 
-        log('🎉 恭喜！免小飞机降压曲线已全量下发至显卡驱动生效！');
+        log(STATE.capLocked && capAnchorIndex() > 0
+          ? `🎉 曲线已下发：电压上限 ${Math.round(STATE.voltCap)}mV，超出该电压的锚点已削平。`
+          : '🎉 恭喜！免小飞机降压曲线已全量下发至显卡驱动生效！');
         await savePluginStorage();
         refreshHardwareInfo();
       } catch (err) {
@@ -1483,6 +1734,10 @@
     window.addEventListener('load', async () => {
       // 1. Load sandboxed plugin storage
       await loadPluginStorage();
+      // The ceiling switch is markup-defaulted, so a fresh install (nothing in
+      // storage) still has to agree with STATE.
+      syncCapUi();
+      drawCurve();
 
       // 2. Refresh physical hardware state
       await refreshHardwareInfo();
