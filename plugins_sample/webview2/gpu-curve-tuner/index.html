@@ -731,7 +731,14 @@
       coreOffset: 0,
       memOffset: 0,
       vfPoints: [],
+      // Factory clock per anchor, captured by zeroing the boost table once per
+      // session. Without it every delta is applied on top of an unknown
+      // baseline and the result drifts (see stockFreqAt).
+      stockPoints: null,
       plannedDeltas: null,
+      // Set when storage holds a curve derived from the old, wrong baseline so
+      // the load path can rebuild it instead of pushing garbage to the card.
+      legacyDeltas: false,
       targetVolt: 875,
       targetFreq: 2450,
       // Voltage ceiling. A per-anchor frequency offset alone can never cap the
@@ -801,6 +808,10 @@
           if (typeof stored.active_mode === 'string') STATE.activeMode = stored.active_mode;
           if (Array.isArray(stored.planned_deltas)) {
             STATE.plannedDeltas = stored.planned_deltas;
+            // Schema 2 deltas were computed against a real factory baseline.
+            // Anything older was computed against "readback minus delta", which
+            // double-counts whatever the driver already applied.
+            STATE.legacyDeltas = stored.schema !== 2;
             // Restored from disk: the restored curve counts as saved, so the
             // button does not open with a stale unsaved dot.
             SAVED_CURVE_SIG = curveSignature(STATE.plannedDeltas);
@@ -820,6 +831,7 @@
 
     async function savePluginStorage() {
       const config = {
+        schema: 2,
         target_volt: STATE.targetVolt,
         target_freq: STATE.targetFreq,
         volt_cap: STATE.voltCap,
@@ -952,13 +964,19 @@
       }
 
       const currentPoints = STATE.vfPoints;
-      const stockFreqAtTarget = currentPoints[targetIdx].freq_mhz - currentPoints[targetIdx].delta_mhz;
+      // The knee is the anchor the plateau is actually pinned to: the largest
+      // voltage at or below the target, which is not always the closest one
+      // (875mV can sit between two anchors). Deriving the boost from the wrong
+      // one puts the whole plateau a few MHz off the number the user typed.
+      const capIdx = STATE.capLocked ? capAnchorIndex() : -1;
+      const kneeIdx = capIdx > 0 ? capIdx : targetIdx;
+      const stockFreqAtTarget = stockFreqAt(kneeIdx);
       const baseBoost = Math.max(-300, Math.min(250, targetFreq - stockFreqAtTarget));
 
       const newDeltas = new Array(currentPoints.length).fill(0);
       for (let i = 1; i < currentPoints.length; i++) {
-        const stockFreq = currentPoints[i].freq_mhz - currentPoints[i].delta_mhz;
-        if (i <= targetIdx) {
+        const stockFreq = stockFreqAt(i);
+        if (i <= kneeIdx) {
           newDeltas[i] = baseBoost;
         } else {
           const deltaToFlat = targetFreq - stockFreq;
@@ -967,9 +985,9 @@
       }
 
       // Monotonic sanity check
-      let prevFreq = currentPoints[0].freq_mhz;
+      let prevFreq = stockFreqAt(0);
       for (let i = 1; i < currentPoints.length; i++) {
-        const stockFreq = currentPoints[i].freq_mhz - currentPoints[i].delta_mhz;
+        const stockFreq = stockFreqAt(i);
         const effFreq = stockFreq + newDeltas[i];
         if (effFreq < prevFreq - 25) {
           newDeltas[i] = Math.max(-500, Math.min(300, prevFreq - stockFreq));
@@ -1006,9 +1024,16 @@
       const plotW = Math.max(10, w - padL - padR);
       const plotH = Math.max(10, h - padT - padB);
 
-      // The Y window follows the anchors. A laptop 5070 Ti curve spans roughly
-      // 900-2700 MHz, so the old fixed 200..2800 axis wasted half the canvas.
+      // The voltage window follows the anchors too: this card runs 450-1240 mV,
+      // and a hardcoded 1150 ceiling silently hid the top dozen anchors (the
+      // exact ones a flattening request pushes against).
       const pts = STATE.vfPoints || [];
+      let vMin = CURVE_V_MIN, vMax = CURVE_V_MAX;
+      if (pts.length > 1) {
+        vMin = Math.max(300, Math.floor((pts[0].volt_mv - 25) / 50) * 50);
+        vMax = Math.ceil((pts[pts.length - 1].volt_mv + 25) / 50) * 50;
+      }
+
       let fMin = Infinity, fMax = -Infinity;
       for (const p of pts) {
         const stock = p.freq_mhz - p.delta_mhz;
@@ -1020,16 +1045,66 @@
       const yMin = Math.floor((fMin - margin) / 50) * 50;
       const yMax = Math.ceil((fMax + margin) / 50) * 50;
 
-      const toX = v => padL + ((v - CURVE_V_MIN) / (CURVE_V_MAX - CURVE_V_MIN)) * plotW;
+      const toX = v => padL + ((v - vMin) / (vMax - vMin)) * plotW;
       const toY = f => h - padB - ((f - yMin) / (yMax - yMin)) * plotH;
       const yToFreq = y => yMin + ((h - padB - y) / plotH) * (yMax - yMin);
 
-      return { canvas, ctx: canvas.getContext('2d'), w, h, padL, padR, padT, padB, plotW, plotH, yMin, yMax, toX, toY, yToFreq };
+      return { canvas, ctx: canvas.getContext('2d'), w, h, padL, padR, padT, padB, plotW, plotH, yMin, yMax, vMin, vMax, toX, toY, yToFreq };
     }
 
     function stockFreqAt(i) {
+      // The status curve NVIDIA returns is the curve the card is *running*, and
+      // once deltas are programmed it is already delta-applied (the driver even
+      // re-clamps it to stay monotonic). Subtracting the requested delta from it
+      // does NOT give the factory curve - doing so double-counts the offset and
+      // every subsequent edit drifts further off. So the factory curve is
+      // captured once by zeroing the table and reading it back; see
+      // captureStockBaseline().
+      if (STATE.stockPoints && STATE.stockPoints[i] !== undefined) return STATE.stockPoints[i];
       const p = STATE.vfPoints[i];
       return p.freq_mhz - p.delta_mhz;
+    }
+
+    // --- Factory baseline -------------------------------------------------
+    // The only reliable way to learn the delta-free curve is to ask the driver
+    // for it with an empty delta table: write zeros, read, then put the user's
+    // curve back. It costs two NVAPI calls and is invisible in practice, but
+    // without it "stock" is a guess and the whole editor computes against a
+    // moving baseline.
+    async function captureStockBaseline() {
+      if (!STATE.vfPoints || STATE.vfPoints.length < 16) return false;
+      const len = STATE.vfPoints.length;
+      const applied = STATE.vfPoints.map(p => p.delta_mhz || 0);
+      const dirty = applied.some(d => d !== 0);
+
+      if (!dirty) {
+        STATE.stockPoints = STATE.vfPoints.map(p => p.freq_mhz);
+        log(`[⌁] 已取得出厂基线（${len} 个锚点，当前曲线为出厂状态）`);
+        return true;
+      }
+
+      try {
+        log('[⌁] 正在读取出厂基线：先把偏移表清零采样，随后立即恢复当前曲线...');
+        await rpc('set_gpu_vf_curve_deltas', { deltasMhz: new Array(len).fill(0) });
+        // The driver publishes the new curve asynchronously; reading straight
+        // away can hand back the previous one.
+        await new Promise(r => setTimeout(r, 120));
+        const info = await rpc('get_gpu_tuning_info');
+        const clean = (info && info.vf_points) || [];
+        if (clean.length !== len) throw new Error('采样返回的锚点数不一致');
+
+        STATE.stockPoints = clean.map(p => p.freq_mhz);
+        STATE.vfPoints = clean.map(p => ({ volt_mv: p.volt_mv, freq_mhz: p.freq_mhz, delta_mhz: 0 }));
+
+        await rpc('set_gpu_vf_curve_deltas', { deltasMhz: applied });
+        await refreshHardwareInfo();
+        log(`[⌁] 出厂基线已采样完成（${len} 个锚点，峰值 ${Math.max(...STATE.stockPoints)}MHz），原曲线已恢复`);
+        return true;
+      } catch (err) {
+        STATE.stockPoints = null;
+        log(`[!] 出厂基线采样失败: ${err.message || err}，将退回“读回值减偏移”的估算方式，曲线可能有偏差`);
+        return false;
+      }
     }
 
     // The hardware delta table is the source of truth when the user has not
@@ -1145,7 +1220,7 @@
       const g = curveGeom();
       if (!g) return;
       STATE.geom = g;
-      const { ctx, w, h, padL, padR, padT, padB, yMin, yMax, toX, toY } = g;
+      const { ctx, w, h, padL, padR, padT, padB, yMin, yMax, vMin, vMax, toX, toY } = g;
       const canvas = g.canvas;
       const dpr = window.devicePixelRatio || 1;
       canvas.width = Math.max(1, Math.round(w * dpr));
@@ -1176,7 +1251,7 @@
         ctx.fillText(f + 'M', padL - 6, y + 3);
       }
       ctx.textAlign = 'center';
-      for (let v = 500; v <= 1100; v += 100) {
+      for (let v = Math.ceil(vMin / 100) * 100; v <= vMax; v += 100) {
         const x = toX(v);
         ctx.beginPath();
         ctx.moveTo(x, padT);
@@ -1193,7 +1268,7 @@
       let started = false;
       for (let i = 0; i < STATE.vfPoints.length; i++) {
         const p = STATE.vfPoints[i];
-        if (p.volt_mv < CURVE_V_MIN || p.volt_mv > CURVE_V_MAX) continue;
+        if (p.volt_mv < g.vMin || p.volt_mv > g.vMax) continue;
         const x = toX(p.volt_mv);
         const y = toY(stockFreqAt(i));
         if (!started) { ctx.moveTo(x, y); started = true; }
@@ -1211,7 +1286,7 @@
       started = false;
       for (let i = 0; i < STATE.vfPoints.length; i++) {
         const p = STATE.vfPoints[i];
-        if (p.volt_mv < CURVE_V_MIN || p.volt_mv > CURVE_V_MAX) continue;
+        if (p.volt_mv < g.vMin || p.volt_mv > g.vMax) continue;
         const x = toX(p.volt_mv);
         const y = toY(effectiveFreqAt(i));
         if (!started) { ctx.moveTo(x, y); started = true; }
@@ -1261,7 +1336,7 @@
       const activeIdx = DRAG.active ? DRAG.index : STATE.hoverIndex;
       for (let i = 1; i < STATE.vfPoints.length; i++) {
         const p = STATE.vfPoints[i];
-        if (p.volt_mv < CURVE_V_MIN || p.volt_mv > CURVE_V_MAX) continue;
+        if (p.volt_mv < g.vMin || p.volt_mv > g.vMax) continue;
         const x = toX(p.volt_mv);
         const y = toY(effectiveFreqAt(i));
         const hot = i === activeIdx;
@@ -1351,17 +1426,39 @@
     function setAnchorFreq(index, targetFreq) {
       const deltas = ensureDeltas();
 
-      // Dragging a point above the ceiling means the knee itself moved: adopt
-      // that voltage rather than snapping the drag back down onto the old
-      // plateau (which would look like the drag was ignored).
-      if (STATE.capLocked && STATE.voltCap != null &&
-          STATE.vfPoints[index].volt_mv > STATE.voltCap + 0.5) {
-        STATE.voltCap = STATE.vfPoints[index].volt_mv;
-        syncCapUi();
+      // With the ceiling locked the flat region is one object: grabbing any
+      // anchor inside it has to move the whole plateau, otherwise the monotonic
+      // floor of the point to its left blocks the drag. Drags above the ceiling
+      // are therefore redirected to the ceiling anchor - moving the ceiling
+      // itself is the 目标锁压 field's job, not a drag's.
+      if (STATE.capLocked) {
+        const capIdx = capAnchorIndex();
+        if (capIdx > 0 && index > capIdx) index = capIdx;
       }
 
       const stock = stockFreqAt(index);
-      const floor = index > 1 ? stockFreqAt(index - 1) + deltas[index - 1] : 0;
+      let floor = index > 1 ? stockFreqAt(index - 1) + deltas[index - 1] : 0;
+
+      // Dragging down can hit the anchor on the left, which a preset has lifted
+      // along with the rest of the low segment. Refusing the drag there makes
+      // the knee feel stuck, so shave that lift off the nearest anchors instead
+      // and let the whole undervolt come down with the drag.
+      if (targetFreq < floor && index > 1) {
+        let excess = floor - targetFreq;
+        for (let i = index - 1; i >= 1 && excess > 0; i--) {
+          const cur = deltas[i] || 0;
+          // Allowed to go below zero: dragging the knee under the factory clock
+          // there is a legitimate downclock, and the curve has to stay monotonic
+          // or the driver silently re-clamps it.
+          const cut = Math.min(cur - CURVE_DELTA_MIN, excess);
+          if (cut > 0) {
+            deltas[i] = cur - cut;
+            excess -= cut;
+          }
+        }
+        floor = stockFreqAt(index - 1) + (deltas[index - 1] || 0);
+      }
+
       const f = Math.max(floor, targetFreq);
       let d = Math.round((f - stock) / 5) * 5;
       d = Math.max(CURVE_DELTA_MIN, Math.min(CURVE_DELTA_MAX, d));
@@ -1515,6 +1612,9 @@
     async function reloadCurveFromHardware() {
       await refreshHardwareInfo();
       if (STATE.vfPoints && STATE.vfPoints.length) {
+        // The factory baseline survives a curve write, but re-sampling here is
+        // cheap and keeps the editor honest after a driver reset.
+        await captureStockBaseline();
         STATE.plannedDeltas = STATE.vfPoints.map(p => p.delta_mhz || 0);
         drawCurve();
         log('[⟳] 已从显卡读回当前 V/F 曲线，编辑缓冲区同步');
@@ -1617,6 +1717,10 @@
 
     async function applyFullUndervoltToHardware() {
       try {
+        // Never write a delta table that was computed against an unknown
+        // baseline - that is how the ceiling ended up clamped into a staircase.
+        if (!STATE.stockPoints) await captureStockBaseline();
+
         // A positive core offset is added on top of the V/F curve, so it lifts
         // the whole plateau and drags the card back onto a higher voltage
         // point - the exact symptom the ceiling exists to prevent.
@@ -1765,6 +1869,20 @@
 
       // 2. Refresh physical hardware state
       await refreshHardwareInfo();
+
+      // 2b. Learn the factory curve before any editing math runs. Everything
+      // downstream (deltas, flat tail, ceiling) is expressed relative to it.
+      await captureStockBaseline();
+      if (STATE.legacyDeltas) {
+        STATE.legacyDeltas = false;
+        STATE.plannedDeltas = null;
+        if (STATE.targetVolt && STATE.targetFreq) {
+          calculatePlannedCurve(STATE.targetVolt, STATE.targetFreq, STATE.activeMode);
+        }
+        log('[!] 旧版保存的曲线是用错误的出厂基线算出来的，已按当前目标电压/频率在真实基线上重建；如形状与预期不同，重新拖一下即可');
+      } else {
+        drawCurve();
+      }
 
       // 3. Register Tauri Event Listener for host-wide clock offset sync
       try {
