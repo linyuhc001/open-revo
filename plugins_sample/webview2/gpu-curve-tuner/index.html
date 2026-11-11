@@ -417,6 +417,12 @@
       background: rgba(239, 68, 68, 0.2);
     }
 
+    .btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+
     /* Console */
     .console-box {
       background: #04070c;
@@ -594,12 +600,14 @@
       <!-- Manual anchor editing -->
       <div class="curve-toolbar">
         <span class="hint">
-          <b>拖动</b> 右侧整段跟随（下压拉平 / 上抬齐升）· <b>Shift+拖动</b> 整段刚性平移 ·
+          <b>拖动</b> 单点调整 · <b>Shift+拖动</b> 右侧整段跟随（下压拉平 / 上移齐抬）·
           <b>双击</b> 单点归零
         </span>
         <span class="curve-badge" id="curveReadout">未选中锚点</span>
         <button class="btn btn-secondary" style="padding: 5px 10px; font-size: 11.5px;" onclick="undoCurveEdit()">↶ 撤销</button>
         <button class="btn btn-secondary" style="padding: 5px 10px; font-size: 11.5px;" onclick="reloadCurveFromHardware()">⟳ 读回硬件</button>
+        <button class="btn btn-secondary" style="padding: 5px 10px; font-size: 11.5px;" onclick="saveManualCurve()">💾 保存曲线</button>
+        <button class="btn btn-secondary" id="btnLoadManualCurve" style="padding: 5px 10px; font-size: 11.5px;" onclick="loadManualCurve()">📂 读取曲线</button>
       </div>
     </div>
 
@@ -644,7 +652,8 @@
       hostPowerMode: null,
       hoverIndex: -1,     // anchor under the pointer (manual curve editing)
       geom: null,         // last canvas geometry, shared by painter + hit test
-      undo: []            // snapshots of plannedDeltas for the undo button
+      undo: [],           // snapshots of plannedDeltas for the undo button
+      savedManualCurve: null // last curve parked in plugin_storage by the save button
     };
 
     // --- Unified RPC Invoker ---
@@ -695,6 +704,17 @@
             log('[*] 存档中的曲线偏移是用旧基线算的，已丢弃，稍后按目标电压/频率重新计算');
           }
 
+          // A curve parked by the save button. Same schema gate as above: the
+          // deltas are absolute offsets against the factory table, so they are
+          // only reusable when they were written under the same convention.
+          if (stored.schema === 2 && stored.manual_curve && Array.isArray(stored.manual_curve.deltas)) {
+            STATE.savedManualCurve = stored.manual_curve;
+            const when = stored.manual_curve.saved_at
+              ? new Date(stored.manual_curve.saved_at).toLocaleString()
+              : '未知时间';
+            log(`[*] plugin_storage 里有手动曲线存档（${stored.manual_curve.deltas.length} 锚点，保存于 ${when}），点“📂 读取曲线”可载入`);
+          }
+
           document.getElementById('inputTargetVolt').value = STATE.targetVolt;
           document.getElementById('inputTargetFreq').value = STATE.targetFreq;
           document.getElementById('statModeText').textContent = STATE.activeMode;
@@ -719,6 +739,7 @@
         mem_offset: STATE.memOffset,
         active_mode: STATE.activeMode,
         planned_deltas: STATE.plannedDeltas,
+        manual_curve: STATE.savedManualCurve,
         updated_at: new Date().toISOString()
       };
 
@@ -898,7 +919,7 @@
     const CURVE_HIT_PX = 14;
     const CURVE_DELTA_MIN = -500;
     const CURVE_DELTA_MAX = 300;
-    const DRAG = { active: false, index: -1, startFreq: 0, snapshot: null, shift: false, moved: false, raf: 0, lastEv: null };
+    const DRAG = { active: false, index: -1, startFreq: 0, snapshot: null, shift: false, moved: false, raf: 0, lastEv: null, mode: 'single' };
 
     function curveGeom() {
       const canvas = document.getElementById('vfCanvas');
@@ -1147,7 +1168,10 @@
       return Math.max(CURVE_DELTA_MIN, Math.min(CURVE_DELTA_MAX, d));
     }
 
-    // Drag an anchor and let the whole right-hand side follow it, both ways:
+    // --- Drag semantics ---
+    //
+    // A plain drag moves exactly one anchor. Shift+drag carries the whole
+    // segment to its right:
     //
     //   down - the segment to the right is levelled to this anchor's new clock.
     //          That is the only shape the driver reads as a limit: it runs the
@@ -1168,16 +1192,35 @@
     const DRAG_LEVEL_ANCHORS = 32;
     const DRAG_PLATEAU_TOL = 25;   // one quantisation step, in MHz
 
-    function setAnchorFreq(index, targetFreq) {
+    // Plain drag: one anchor, nothing else. Deliberately unclamped - the point
+    // has to go where the pointer is, even if that leaves a step against its
+    // neighbours, because otherwise a plateau (every anchor on the same clock)
+    // would be frozen in both directions. The step is reported on release:
+    // the driver runs the table through a running maximum, so a point below its
+    // left neighbour is lifted back when written.
+    function setAnchorFreqSingle(index, targetFreq) {
+      const deltas = ensureDeltas();
+      deltas[index] = deltaFor(index, targetFreq);
+      markManualCurve();
+    }
+
+    // Shift+drag: the anchor plus everything to its right follows.
+    function setAnchorFreqFollow(index, targetFreq) {
       const deltas = ensureDeltas();
       const n = STATE.vfPoints.length;
       const startFreq = effectiveFreqAt(index);
       const down = targetFreq < startFreq;
 
-      // Plateau or slope? Look one anchor to the right: a locked region has its
-      // neighbours at (almost exactly) the same clock, a ramp does not.
-      const plateau = index + 1 < n &&
-        Math.abs(effectiveFreqAt(index + 1) - startFreq) <= DRAG_PLATEAU_TOL;
+      // Plateau or slope? Three anchors to the right, not just one: a locked
+      // region drifts a few MHz per step (2445, 2445, 2452, 2460) while the
+      // ramp climbs 150MHz in two steps. Looking one neighbour only is enough
+      // to mistake a shallow ramp step (2047 -> 2062) for a plateau and flatten
+      // it during a downward drag.
+      let hiNear = startFreq;
+      for (let i = index + 1; i < Math.min(n, index + 4); i++) {
+        hiNear = Math.max(hiNear, effectiveFreqAt(i));
+      }
+      const plateau = hiNear - startFreq <= DRAG_PLATEAU_TOL;
 
       // A downward drag can only go as low as the first neighbour that already
       // sits at or below the requested clock; whatever is above it belongs to
@@ -1220,17 +1263,6 @@
       if (stuck > 0) {
         log(`[!] #${index} 之后有 ${stuck} 个锚点已到 ${CURVE_DELTA_MIN}MHz 单点下限，跟不到 ${Math.round(newFreq)}MHz`);
       }
-    }
-
-    // Shift-drag: move the anchor and everything to its right by the same step,
-    // so a whole segment keeps its shape instead of being reshaped point by
-    // point.
-    function shiftAnchorsFrom(index, stepMhz) {
-      const deltas = ensureDeltas();
-      for (let i = index; i < deltas.length; i++) {
-        deltas[i] = Math.max(CURVE_DELTA_MIN, Math.min(CURVE_DELTA_MAX, (deltas[i] || 0) + stepMhz));
-      }
-      markManualCurve();
     }
 
     function curvePointerPos(ev) {
@@ -1279,19 +1311,22 @@
         return;
       }
 
-      DRAG.lastEv = { pos, g };
+      DRAG.lastEv = { pos, g, shift: ev.shiftKey };
       if (DRAG.raf) return;
       DRAG.raf = requestAnimationFrame(() => {
         DRAG.raf = 0;
         const pending = DRAG.lastEv;
         if (!pending || !DRAG.active) return;
         const targetFreq = pending.g.yToFreq(pending.pos.y);
-        if (DRAG.shift) {
-          STATE.plannedDeltas = DRAG.snapshot.slice();
-          const step = Math.round((targetFreq - DRAG.startFreq) / 5) * 5;
-          shiftAnchorsFrom(DRAG.index, step);
+        // Always rebuild from the pointer-down snapshot: one drag is one edit,
+        // and toggling Shift mid-drag switches mode without stacking both.
+        STATE.plannedDeltas = DRAG.snapshot.slice();
+        if (pending.shift) {
+          DRAG.mode = 'follow';
+          setAnchorFreqFollow(DRAG.index, targetFreq);
         } else {
-          setAnchorFreq(DRAG.index, targetFreq);
+          DRAG.mode = 'single';
+          setAnchorFreqSingle(DRAG.index, targetFreq);
         }
         DRAG.moved = true;
         updateCurveReadout(DRAG.index);
@@ -1309,7 +1344,20 @@
         const d = STATE.plannedDeltas[idx];
         const knee = Math.round(effectiveFreqAt(idx));
         const tail = Math.round(effectiveFreqAt(STATE.vfPoints.length - 1));
-        log(`[✎] 锚点 #${idx} (${p.volt_mv}mV) → ${knee}MHz，右侧末端 ${tail}MHz（偏移 ${d > 0 ? '+' : ''}${d}MHz，缓冲区已更新，点“一键写入显卡硬件生效”下发）`);
+        const how = DRAG.mode === 'follow' ? 'Shift 右侧整段跟随' : '单点调整';
+        log(`[✎] ${how}：锚点 #${idx} (${p.volt_mv}mV) → ${knee}MHz，右侧末端 ${tail}MHz（偏移 ${d > 0 ? '+' : ''}${d}MHz，缓冲区已更新，点“一键写入显卡硬件生效”下发）`);
+
+        // A single-anchor edit can leave the point off the monotonic line. Say
+        // so on release instead of letting the driver quietly fix it later.
+        if (DRAG.mode === 'single') {
+          const left = idx > 0 ? Math.round(effectiveFreqAt(idx - 1)) : null;
+          const right = idx + 1 < STATE.vfPoints.length ? Math.round(effectiveFreqAt(idx + 1)) : null;
+          if (left !== null && knee < left - 1) {
+            log(`[!] 该点比左侧 ${left}MHz 低 ${left - knee}MHz，驱动按 running-max 会把它抬回 ${left}MHz；要连右侧一起压低请用 Shift+拖动`);
+          } else if (right !== null && knee > right + 1) {
+            log(`[!] 该点比右侧 ${right}MHz 高 ${knee - right}MHz，写入后驱动会把右侧抬到 ${knee}MHz；要整段抬升请用 Shift+拖动`);
+          }
+        }
       } else {
         STATE.undo.pop(); // a plain click is not an edit
       }
@@ -1349,6 +1397,75 @@
         drawCurve();
         log('[⟳] 已从显卡读回当前 V/F 曲线，编辑缓冲区同步');
       }
+    }
+
+    // --- Manual curve slots (save / load through plugin_storage) ---
+    // The offsets are absolute against the factory table, so a saved curve
+    // stays valid across restarts and even after the card has been reset. What
+    // it cannot survive is a different anchor count, so that is checked on load
+    // instead of silently writing a table of the wrong length.
+    function refreshManualCurveButton() {
+      const btn = document.getElementById('btnLoadManualCurve');
+      if (!btn) return;
+      const snap = STATE.savedManualCurve;
+      const ok = !!(snap && Array.isArray(snap.deltas));
+      btn.disabled = !ok;
+      btn.title = ok
+        ? `存档：${snap.deltas.length} 锚点${snap.saved_at ? '，' + new Date(snap.saved_at).toLocaleString() : ''}`
+        : '还没有保存过手动曲线';
+    }
+
+    async function saveManualCurve() {
+      if (!STATE.vfPoints || STATE.vfPoints.length < 16) {
+        log('[!] 还没读到硬件曲线，现在保存没有意义');
+        return;
+      }
+      const deltas = ensureDeltas().slice();
+      const snap = {
+        schema: 2,
+        deltas,
+        anchors: deltas.length,
+        target_volt: STATE.targetVolt,
+        target_freq: STATE.targetFreq,
+        saved_at: new Date().toISOString()
+      };
+      STATE.savedManualCurve = snap;
+      await savePluginStorage();
+      refreshManualCurveButton();
+
+      const tail = Math.round(effectiveFreqAt(STATE.vfPoints.length - 1));
+      const dMin = Math.min(...deltas);
+      const dMax = Math.max(...deltas);
+      log(`[💾] 已保存手动曲线到 plugin_storage：${deltas.length} 个锚点，末端 ${tail}MHz，偏移 ${dMin} ~ ${dMax}MHz`);
+    }
+
+    function loadManualCurve() {
+      const snap = STATE.savedManualCurve;
+      if (!snap || !Array.isArray(snap.deltas)) {
+        log('[!] plugin_storage 里没有保存过的手动曲线');
+        return;
+      }
+      if (!STATE.vfPoints || STATE.vfPoints.length < 16) {
+        log('[!] 硬件曲线还没加载，无法套用手动曲线');
+        return;
+      }
+      if (STATE.vfPoints.length !== snap.deltas.length) {
+        log(`[!] 存档是 ${snap.deltas.length} 锚点，当前硬件是 ${STATE.vfPoints.length} 锚点，长度不一致，已放弃（不做截断写入）`);
+        return;
+      }
+
+      pushCurveUndo();
+      STATE.plannedDeltas = snap.deltas.slice();
+      STATE.targetVolt = typeof snap.target_volt === 'number' ? snap.target_volt : STATE.targetVolt;
+      STATE.targetFreq = typeof snap.target_freq === 'number' ? snap.target_freq : STATE.targetFreq;
+      document.getElementById('inputTargetVolt').value = STATE.targetVolt;
+      document.getElementById('inputTargetFreq').value = STATE.targetFreq;
+      markManualCurve();
+      drawCurve();
+
+      const tail = Math.round(effectiveFreqAt(STATE.vfPoints.length - 1));
+      const when = snap.saved_at ? new Date(snap.saved_at).toLocaleString() : '未知时间';
+      log(`[📂] 已读回手动曲线（保存于 ${when}）：末端 ${tail}MHz，已灌入编辑缓冲区，点“💾 一键写入显卡硬件生效”下发`);
     }
 
     // --- Hardware Actions ---
@@ -1467,6 +1584,7 @@
     window.addEventListener('load', async () => {
       // 1. Load sandboxed plugin storage
       await loadPluginStorage();
+      refreshManualCurveButton();
 
       // 2. Refresh physical hardware state, then capture the factory curve so
       // every offset is computed against a stable baseline.
