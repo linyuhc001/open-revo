@@ -539,25 +539,19 @@
     // ---- Shift：右侧整段跟随 ----
     // 下压：右侧每个点都压到与选中点相同的频率（拉平）。
     // 上移：右侧每个点加上相同的位移（保形状）。
+    // 左侧完全不动（用户明确要求）。
     function setFollow(index, targetFreq) {
       const start = eff(index);
       const step = targetFreq - start;
       const down = step < 0;
 
       if (down) {
-        // 下压拉平：选中点及其右侧全部压到 targetFreq，但受单调约束，
-        // 左侧高于 targetFreq 的点也要一起降（否则驱动 running-max 会抬回）。
+        // 下压拉平：选中点及其右侧全部压到 targetFreq。左侧一个点都不碰。
         for (let i = index; i < S.deltas.length; i++) {
           S.deltas[i] = deltaFor(i, targetFreq);
         }
-        // 左侧：比 targetFreq 高的点降到 targetFreq（有界窗口）。
-        for (let i = index - 1; i >= 1; i--) {
-          if (eff(i) <= targetFreq) break;
-          S.deltas[i] = deltaFor(i, targetFreq);
-          if (index - i > 32) break;
-        }
       } else {
-        // 上移齐抬：右侧整体 +step。
+        // 上移齐抬：右侧整体 +step。左侧同样不动。
         for (let i = index; i < S.deltas.length; i++) {
           const want = eff(i) + step;
           S.deltas[i] = deltaFor(i, want);
@@ -640,6 +634,16 @@
           const left = idx > 0 ? Math.round(eff(idx - 1)) : null;
           if (left !== null && knee < left - 1) {
             log("[!] 该点比左侧 " + left + "MHz 低 " + (left - knee) + "MHz，驱动 running-max 会把它抬回；要连右侧一起压低请用 Shift+拖动");
+          }
+        } else if (drag.mode === "follow") {
+          // Shift 下压拉平后，左侧保持不动；若左侧有更高的锚点，驱动的
+          // running-max 会在写入时把压平段抬回，这里提示用户。
+          let leftHigher = -1;
+          for (let i = idx - 1; i >= 1; i--) {
+            if (eff(i) > knee + 1) { leftHigher = i; break; }
+          }
+          if (leftHigher >= 0) {
+            log("[!] 左侧 " + S.anchors[leftHigher].volt_mv + "mV 仍高于 " + knee + "MHz，写入后驱动会把压平段抬回该高度；如需整体压低请先压低左侧锚点");
           }
         }
       } else {
