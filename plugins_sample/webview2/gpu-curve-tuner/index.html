@@ -230,7 +230,7 @@
       </div>
 
       <div class="toolbar">
-        <span class="hint"><b>拖动</b> 单点调整 · <b>Shift+拖动</b> 右侧整段跟随（下压拉平 / 上移齐抬）· <b>双击</b> 单点归零</span>
+        <span class="hint"><b>拖动</b> 单点调整 · <b>Shift+下拉</b> 右侧整段压平（压过左邻自动吸附到左邻频率）· <b>Shift+上移</b> 右侧齐抬 · <b>双击</b> 单点归零</span>
         <span class="readout" id="readout">未选中锚点</span>
         <button class="btn btn-secondary" style="padding: 5px 10px; font-size: 11.5px;" onclick="undoEdit()">↶ 撤销</button>
         <button class="btn btn-secondary" style="padding: 5px 10px; font-size: 11.5px;" onclick="reloadCurve()">⟳ 读回硬件</button>
@@ -509,7 +509,9 @@
       if (idx < 0 || idx >= S.anchors.length) { el.textContent = "未选中锚点"; return; }
       const p = S.anchors[idx];
       const d = S.deltas[idx] || 0;
-      el.textContent = "锚点 #" + idx + " · " + p.volt_mv + " mV · " + Math.round(eff(idx)) + " MHz (" + (d > 0 ? "+" : "") + d + ")";
+      let txt = "锚点 #" + idx + " · " + p.volt_mv + " mV · " + Math.round(eff(idx)) + " MHz (" + (d > 0 ? "+" : "") + d + ")";
+      if (snapInfo) txt += " · 已吸附 " + S.anchors[snapInfo.at].volt_mv + "mV @" + snapInfo.level + "MHz";
+      el.textContent = txt;
     }
 
     function pushUndo() { S.undo.push(S.deltas.slice()); if (S.undo.length > 40) S.undo.shift(); }
@@ -537,18 +539,29 @@
     }
 
     // ---- Shift：右侧整段跟随 ----
-    // 下压：右侧每个点都压到与选中点相同的频率（拉平）。
+    // 下压：一旦压到低于左侧锚点（875mV）的频率，就把选中点及其右侧
+    //       整段吸附到那个频率上 —— 885 低于 875 后，885~末端全部与 875 齐平。
     // 上移：右侧每个点加上相同的位移（保形状）。
     // 左侧完全不动（用户明确要求）。
+    let snapInfo = null;   // { at: 左侧锚点下标, level: 吸附频率 } 仅用于读数提示
+
     function setFollow(index, targetFreq) {
       const start = eff(index);
       const step = targetFreq - start;
       const down = step < 0;
+      snapInfo = null;
 
       if (down) {
-        // 下压拉平：选中点及其右侧全部压到 targetFreq。左侧一个点都不碰。
+        // 左侧锚点的频率就是吸附线。压过头时不再跟着鼠标继续降，
+        // 而是整段贴到这条线上，保证曲线不会在选中点处出现向下的台阶。
+        const leftFreq = index > 0 ? eff(index - 1) : null;
+        let level = targetFreq;
+        if (leftFreq !== null && targetFreq < leftFreq) {
+          level = leftFreq;
+          snapInfo = { at: index - 1, level: Math.round(level) };
+        }
         for (let i = index; i < S.deltas.length; i++) {
-          S.deltas[i] = deltaFor(i, targetFreq);
+          S.deltas[i] = deltaFor(i, level);
         }
       } else {
         // 上移齐抬：右侧整体 +step。左侧同样不动。
@@ -557,6 +570,15 @@
           S.deltas[i] = deltaFor(i, want);
         }
       }
+    }
+
+    // 统计右侧有多少锚点因为 -500MHz 单点下限而压不到目标（触底后曲线会重新上翘）。
+    function countFloored(fromIdx, level) {
+      let n = 0, first = -1;
+      for (let i = fromIdx; i < S.deltas.length; i++) {
+        if (S.deltas[i] <= DELTA_MIN + 1 && eff(i) > level + 2) { n++; if (first < 0) first = i; }
+      }
+      return { n, first };
     }
 
     function ptrPos(ev) {
@@ -573,6 +595,7 @@
 
       ensureDeltas();
       pushUndo();
+      snapInfo = null;
       drag.active = true;
       drag.index = idx;
       drag.shift = ev.shiftKey;   // 按下时锁定，不随拖动切换
@@ -636,6 +659,16 @@
             log("[!] 该点比左侧 " + left + "MHz 低 " + (left - knee) + "MHz，驱动 running-max 会把它抬回；要连右侧一起压低请用 Shift+拖动");
           }
         } else if (drag.mode === "follow") {
+          // 吸附：压过左侧锚点后整段贴到那条频率线上。
+          if (snapInfo) {
+            const a = S.anchors[snapInfo.at];
+            log("[⇥] " + p.volt_mv + "mV 已压到 " + a.volt_mv + "mV 以下，整段吸附到 " + a.volt_mv + "mV 的 " + snapInfo.level + "MHz（" + p.volt_mv + "~末端全部齐平）");
+          }
+          // -500MHz 单点下限：高电压段出厂频率太高，触底后压不下去，曲线会重新上翘。
+          const fl = countFloored(idx, Math.round(eff(idx)));
+          if (fl.n > 0) {
+            log("[!] 从 " + S.anchors[fl.first].volt_mv + "mV 起有 " + fl.n + " 个锚点已到 -500MHz 单点下限，压不到 " + Math.round(eff(idx)) + "MHz（出厂该段频率约 " + Math.round(S.stock[fl.first]) + "MHz），这一段会重新上翘——这是驱动的单点下限，不是拖拽逻辑问题");
+          }
           // Shift 下压拉平后，左侧保持不动；若左侧有更高的锚点，驱动的
           // running-max 会在写入时把压平段抬回，这里提示用户。
           let leftHigher = -1;
@@ -651,6 +684,7 @@
       }
       drag.index = -1;
       drag.snapshot = null;
+      snapInfo = null;
       readout(S.hover);
     }
 
