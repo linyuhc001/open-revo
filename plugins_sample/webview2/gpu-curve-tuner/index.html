@@ -265,8 +265,12 @@
     /* Preset Buttons */
     .preset-pill-row {
       display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
+      /* Always one row: the four pills must stay side by side, so the presets
+         shrink (and ellipsize) instead of wrapping the save action onto a
+         second line. */
+      flex-wrap: nowrap;
+      align-items: stretch;
+      gap: 6px;
     }
 
     .preset-btn {
@@ -274,14 +278,23 @@
       border: 1px solid var(--border-medium);
       color: var(--text-secondary);
       border-radius: var(--radius-sm);
-      padding: 8px 14px;
-      font-size: 12px;
+      padding: 8px 9px;
+      font-size: 11px;
       font-weight: 600;
       cursor: pointer;
       transition: all 0.15s ease;
       display: flex;
       align-items: center;
+      justify-content: center;
       gap: 6px;
+      flex: 1 1 auto;
+      min-width: 0;
+      white-space: nowrap;
+    }
+    .preset-label {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .preset-btn:hover {
       background: rgba(255, 255, 255, 0.08);
@@ -305,6 +318,8 @@
     }
 
     .preset-btn.save {
+      /* Never squeezed: its label is short and it must always be clickable. */
+      flex: 0 0 auto;
       border-color: rgba(16, 185, 129, 0.4);
       color: #34d399;
     }
@@ -578,19 +593,19 @@
 
       <!-- Quick Preset Capsules -->
       <div class="preset-pill-row">
-        <button class="preset-btn" onclick="applyPreset(850, 2250, '极致低温 (850mV)')">
-          ❄️ 极致低温 (850mV @ 2250MHz)
+        <button class="preset-btn" title="锁压 850 mV @ 2250 MHz" onclick="applyPreset(850, 2250, '极致低温 (850mV)')">
+          <span class="preset-label">❄️ 极致低温 850mV@2250</span>
         </button>
-        <button class="preset-btn active" onclick="applyPreset(875, 2450, '黄金甜点 (875mV)')">
-          ⚡ 黄金甜点 (875mV @ 2450MHz)
+        <button class="preset-btn active" title="锁压 875 mV @ 2450 MHz" onclick="applyPreset(875, 2450, '黄金甜点 (875mV)')">
+          <span class="preset-label">⚡ 黄金甜点 875mV@2450</span>
         </button>
-        <button class="preset-btn" onclick="applyPreset(900, 2600, '极客能效 (900mV)')">
-          🚀 极客能效 (900mV @ 2600MHz)
+        <button class="preset-btn" title="锁压 900 mV @ 2600 MHz" onclick="applyPreset(900, 2600, '极客能效 (900mV)')">
+          <span class="preset-label">🚀 极客能效 900mV@2600</span>
         </button>
         <div class="preset-divider"></div>
         <button class="preset-btn save" id="btnSaveCurve" onclick="saveManualCurve()"
           title="把当前手动拖动出来的曲线保存到插件存储，下次打开面板自动恢复（只存方案，不写显卡）">
-          💾 保存手动曲线
+          <span class="preset-label">💾 保存手动曲线</span>
         </button>
       </div>
 
@@ -1319,11 +1334,14 @@
     function flashSaveButton() {
       const btn = document.getElementById('btnSaveCurve');
       if (!btn) return;
-      if (!btn.dataset.label) btn.dataset.label = btn.textContent.trim();
-      btn.textContent = '✓ 已保存';
+      // The label lives in its own span (it is the ellipsis box), so flash the
+      // span instead of the button and keep the markup intact.
+      const label = btn.querySelector('.preset-label') || btn;
+      if (!label.dataset.label) label.dataset.label = label.textContent.trim();
+      label.textContent = '✓ 已保存';
       clearTimeout(saveFlashTimer);
       saveFlashTimer = setTimeout(() => {
-        btn.textContent = btn.dataset.label || '💾 保存手动曲线';
+        label.textContent = label.dataset.label || '💾 保存手动曲线';
       }, 1400);
     }
 
