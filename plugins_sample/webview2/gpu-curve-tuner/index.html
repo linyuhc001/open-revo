@@ -265,12 +265,8 @@
     /* Preset Buttons */
     .preset-pill-row {
       display: flex;
-      /* Always one row: the four pills must stay side by side, so the presets
-         shrink (and ellipsize) instead of wrapping the save action onto a
-         second line. */
-      flex-wrap: nowrap;
-      align-items: stretch;
-      gap: 6px;
+      flex-wrap: wrap;
+      gap: 8px;
     }
 
     .preset-btn {
@@ -278,63 +274,14 @@
       border: 1px solid var(--border-medium);
       color: var(--text-secondary);
       border-radius: var(--radius-sm);
-      padding: 8px 9px;
-      font-size: 11px;
+      padding: 8px 14px;
+      font-size: 12px;
       font-weight: 600;
       cursor: pointer;
       transition: all 0.15s ease;
       display: flex;
       align-items: center;
-      justify-content: center;
       gap: 6px;
-      flex: 1 1 auto;
-      min-width: 0;
-      white-space: nowrap;
-    }
-    .preset-label {
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    /* Voltage ceiling switch. Sits next to the numeric target inputs because
-       it modifies what "target voltage" means: a hint, or a hard limit. */
-    .cap-toggle {
-      display: flex;
-      align-items: center;
-      gap: 7px;
-      padding: 6px 11px;
-      border-radius: var(--radius-sm);
-      border: 1px solid var(--border-medium);
-      background: rgba(239, 68, 68, 0.07);
-      font-size: 11.5px;
-      color: var(--text-secondary);
-      cursor: pointer;
-      user-select: none;
-      transition: all 0.15s ease;
-    }
-    .cap-toggle:hover {
-      border-color: rgba(239, 68, 68, 0.55);
-      color: var(--text-primary);
-    }
-    .cap-toggle input {
-      accent-color: #ef4444;
-      width: 13px;
-      height: 13px;
-      cursor: pointer;
-      margin: 0;
-    }
-    .cap-toggle b {
-      color: #ef4444;
-      font-weight: 700;
-      font-variant-numeric: tabular-nums;
-    }
-    .cap-toggle.off {
-      background: rgba(255, 255, 255, 0.03);
-      opacity: 0.65;
-    }
-    .cap-toggle.off b {
-      color: var(--text-dim);
     }
     .preset-btn:hover {
       background: rgba(255, 255, 255, 0.08);
@@ -345,42 +292,6 @@
       background: rgba(6, 182, 212, 0.15);
       border-color: var(--accent-cyan);
       color: var(--accent-cyan);
-    }
-
-    /* Thin rule between the three presets and the save action: same pill
-       geometry, but it is not a preset and must not read like a fourth one. */
-    .preset-divider {
-      width: 1px;
-      align-self: center;
-      height: 20px;
-      background: var(--border-medium);
-      margin: 0 2px;
-    }
-
-    .preset-btn.save {
-      /* Never squeezed: its label is short and it must always be clickable. */
-      flex: 0 0 auto;
-      border-color: rgba(16, 185, 129, 0.4);
-      color: #34d399;
-    }
-    .preset-btn.save:hover {
-      background: rgba(16, 185, 129, 0.12);
-      border-color: var(--status-ok);
-      color: #6ee7b7;
-    }
-    .preset-btn.save.saved {
-      background: rgba(16, 185, 129, 0.15);
-      border-color: var(--status-ok);
-      color: #6ee7b7;
-    }
-    /* Unsaved hand edits: an amber dot, so a stray drag is not forgotten. */
-    .preset-btn.save.dirty::after {
-      content: '';
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background: #f59e0b;
-      box-shadow: 0 0 6px rgba(245, 158, 11, 0.8);
     }
 
     /* Curve Visualization Canvas */
@@ -415,20 +326,8 @@
       font-size: 11px;
       color: var(--text-dim);
       margin-right: auto;
-      /* The toolbar carries five buttons now; the hint has to give up room
-         first, otherwise the buttons wrap onto a second row. */
-      flex: 1 1 0;
-      min-width: 0;
-      overflow: hidden;
-      white-space: nowrap;
-      text-overflow: ellipsis;
     }
     .curve-toolbar .hint b { color: var(--text-secondary); font-weight: 600; }
-    .toolbar-btn {
-      flex: 0 0 auto;
-      padding: 5px 9px;
-      font-size: 11.5px;
-    }
     .curve-badge {
       font-size: 11px;
       font-family: "Consolas", monospace;
@@ -437,11 +336,7 @@
       background: rgba(6, 182, 212, 0.12);
       border: 1px solid rgba(6, 182, 212, 0.35);
       color: #22d3ee;
-      min-width: 168px;
-      max-width: 252px;
-      overflow: hidden;
-      white-space: nowrap;
-      text-overflow: ellipsis;
+      min-width: 210px;
       text-align: center;
     }
 
@@ -649,19 +544,14 @@
 
       <!-- Quick Preset Capsules -->
       <div class="preset-pill-row">
-        <button class="preset-btn" title="锁压 850 mV @ 2250 MHz" onclick="applyPreset(850, 2250, '极致低温 (850mV)')">
-          <span class="preset-label">❄️ 极致低温 850mV@2250</span>
+        <button class="preset-btn" onclick="applyPreset(850, 2250, '极致低温 (850mV)')">
+          ❄️ 极致低温 (850mV @ 2250MHz)
         </button>
-        <button class="preset-btn active" title="锁压 875 mV @ 2450 MHz" onclick="applyPreset(875, 2450, '黄金甜点 (875mV)')">
-          <span class="preset-label">⚡ 黄金甜点 875mV@2450</span>
+        <button class="preset-btn active" onclick="applyPreset(875, 2450, '黄金甜点 (875mV)')">
+          ⚡ 黄金甜点 (875mV @ 2450MHz)
         </button>
-        <button class="preset-btn" title="锁压 900 mV @ 2600 MHz" onclick="applyPreset(900, 2600, '极客能效 (900mV)')">
-          <span class="preset-label">🚀 极客能效 900mV@2600</span>
-        </button>
-        <div class="preset-divider"></div>
-        <button class="preset-btn save" id="btnSaveCurve" onclick="saveManualCurve()"
-          title="把当前手动拖动出来的曲线保存到插件存储，下次打开面板自动恢复（只存方案，不写显卡）">
-          <span class="preset-label">💾 保存手动曲线</span>
+        <button class="preset-btn" onclick="applyPreset(900, 2600, '极客能效 (900mV)')">
+          🚀 极客能效 (900mV @ 2600MHz)
         </button>
       </div>
 
@@ -680,11 +570,6 @@
         <button class="btn btn-secondary" style="padding: 5px 12px; font-size: 11.5px;" onclick="applyCustomUndervoltInputs()">
           📐 计算并绘制曲线
         </button>
-        <label class="cap-toggle" id="capToggle"
-          title="勾选后，所有高于该电压的锚点会被削平到同一频率，显卡再也无法靠提压换频率，因此电压真正封顶在设定值；取消勾选则只抬高该点，更高电压仍会继续爬频">
-          <input type="checkbox" id="chkCapLock" checked onchange="onCapLockChange(this.checked)" />
-          <span>锁定 <b id="capVoltLabel">875</b> mV 为电压上限</span>
-        </label>
       </div>
 
       <!-- V/F Curve Visualizer -->
@@ -708,15 +593,13 @@
 
       <!-- Manual anchor editing -->
       <div class="curve-toolbar">
-        <span class="hint" title="拖动锚点=只改这一个点（右侧仅在会被压住时抬升）；Shift+拖动=平移该点及右侧；双击=以该点为拐点把右侧削平；Shift+双击=单点归零">
-          <b>拖动</b> 单点 · <b>Shift+拖</b> 平移右侧 · <b>双击</b> 以该点削平右侧
+        <span class="hint">
+          <b>拖动锚点</b> 上下调整该点频率 · <b>Shift + 拖动</b> 平移该点及右侧所有点 ·
+          <b>双击</b> 单点归零
         </span>
         <span class="curve-badge" id="curveReadout">未选中锚点</span>
-        <button class="btn btn-secondary toolbar-btn" onclick="undoCurveEdit()">↶ 撤销</button>
-        <button class="btn btn-secondary toolbar-btn" onclick="flattenFromAnchor()" title="把选中的锚点设为拐点，它上面（更高电压）的锚点全部削平到这个频率">⌁ 削平</button>
-        <button class="btn btn-secondary toolbar-btn" onclick="loadSavedCurve()" title="读取上次点“保存手动曲线”存下的曲线">📂 存档</button>
-        <button class="btn btn-secondary toolbar-btn" onclick="reloadCurveFromHardware()" title="从显卡读回当前实际生效的曲线到编辑缓冲区">⟳ 读回</button>
-        <button class="btn btn-secondary toolbar-btn" onclick="flattenCurveToZero()" title="把编辑缓冲区全部清零，等同出厂曲线（不会自动下发）">0 归零</button>
+        <button class="btn btn-secondary" style="padding: 5px 10px; font-size: 11.5px;" onclick="undoCurveEdit()">↶ 撤销</button>
+        <button class="btn btn-secondary" style="padding: 5px 10px; font-size: 11.5px;" onclick="reloadCurveFromHardware()">⟳ 读回硬件</button>
       </div>
     </div>
 
@@ -749,31 +632,17 @@
       coreOffset: 0,
       memOffset: 0,
       vfPoints: [],
-      // Factory clock per anchor, captured by zeroing the boost table once per
-      // session. Without it every delta is applied on top of an unknown
-      // baseline and the result drifts (see stockFreqAt).
+      // Factory clock per anchor. The status curve NVIDIA returns is already
+      // delta-applied once offsets are programmed, so it cannot be used to
+      // derive the factory curve. Captured once by zeroing the table and
+      // reading it back; see captureStockBaseline().
       stockPoints: null,
       plannedDeltas: null,
-      // Set when storage holds a curve derived from the old, wrong baseline so
-      // the load path can rebuild it instead of pushing garbage to the card.
-      legacyDeltas: false,
       targetVolt: 875,
       targetFreq: 2450,
-      // Voltage ceiling. A per-anchor frequency offset alone can never cap the
-      // voltage: the boost algorithm always walks up the curve and takes the
-      // fastest point it can sustain, so a point at 875 mV that is merely
-      // faster than stock still loses to the 925 mV point above it. The only
-      // shape the hardware respects as a ceiling is a flat tail - every anchor
-      // above voltCap pinned to the same clock. capLocked is the user's opt-in
-      // for that flattening.
-      voltCap: 875,
-      capLocked: true,
       activeMode: '出厂默认',
       hostPowerMode: null,
       hoverIndex: -1,     // anchor under the pointer (manual curve editing)
-      selectedIndex: -1,  // last anchor the user grabbed - survives the pointer
-                          // leaving the canvas, so toolbar actions still know
-                          // which anchor they apply to
       geom: null,         // last canvas geometry, shared by painter + hit test
       undo: []            // snapshots of plannedDeltas for the undo button
     };
@@ -819,23 +688,11 @@
         if (stored && typeof stored === 'object' && Object.keys(stored).length > 0) {
           if (typeof stored.target_volt === 'number') STATE.targetVolt = stored.target_volt;
           if (typeof stored.target_freq === 'number') STATE.targetFreq = stored.target_freq;
-          // Ceiling first, then the curve: a restored curve was flattened
-          // against this cap, so the label must agree with it. Older saves have
-          // no volt_cap - their preset target is the natural ceiling.
-          if (typeof stored.volt_cap === 'number') STATE.voltCap = stored.volt_cap;
-          else if (typeof stored.target_volt === 'number') STATE.voltCap = stored.target_volt;
-          if (typeof stored.cap_locked === 'boolean') STATE.capLocked = stored.cap_locked;
-          syncCapUi();
           if (typeof stored.active_mode === 'string') STATE.activeMode = stored.active_mode;
-          if (Array.isArray(stored.planned_deltas)) {
+          if (Array.isArray(stored.planned_deltas) && stored.schema === 2) {
             STATE.plannedDeltas = stored.planned_deltas;
-            // Schema 2 deltas were computed against a real factory baseline.
-            // Anything older was computed against "readback minus delta", which
-            // double-counts whatever the driver already applied.
-            STATE.legacyDeltas = stored.schema !== 2;
-            // Restored from disk: the restored curve counts as saved, so the
-            // button does not open with a stale unsaved dot.
-            SAVED_CURVE_SIG = curveSignature(STATE.plannedDeltas);
+          } else if (Array.isArray(stored.planned_deltas)) {
+            log('[*] 存档中的曲线偏移是用旧基线算的，已丢弃，稍后按目标电压/频率重新计算');
           }
 
           document.getElementById('inputTargetVolt').value = STATE.targetVolt;
@@ -852,11 +709,12 @@
 
     async function savePluginStorage() {
       const config = {
+        // Schema 2 means the deltas were computed against the captured factory
+        // baseline. Older saves were derived from "readback minus delta", which
+        // double-counts what the driver already applied, so they are not loaded.
         schema: 2,
         target_volt: STATE.targetVolt,
         target_freq: STATE.targetFreq,
-        volt_cap: STATE.voltCap,
-        cap_locked: STATE.capLocked,
         core_offset: STATE.coreOffset,
         mem_offset: STATE.memOffset,
         active_mode: STATE.activeMode,
@@ -882,12 +740,6 @@
       } catch (e) {
         console.warn('[Storage] Save failed:', e);
       }
-
-      // The buffer is now the persisted one (localStorage above always
-      // succeeded), so clear the save button's unsaved marker. Must run on
-      // every branch: the storage backends above used to return early.
-      SAVED_CURVE_SIG = curveSignature(config.planned_deltas);
-      refreshSaveIndicator();
     }
 
     // --- Hardware Data Loading ---
@@ -960,12 +812,6 @@
       STATE.targetVolt = targetVolt;
       STATE.targetFreq = targetFreq;
       STATE.activeMode = label;
-      // A preset is by definition "lock this voltage", so the ceiling follows
-      // it - including re-enabling it, since the preset already produces a flat
-      // tail and leaving the switch off would contradict the drawn shape.
-      STATE.voltCap = targetVolt;
-      STATE.capLocked = true;
-      syncCapUi();
       document.getElementById('statModeText').textContent = label;
 
       if (!STATE.vfPoints || STATE.vfPoints.length < 16) {
@@ -985,28 +831,14 @@
       }
 
       const currentPoints = STATE.vfPoints;
-      // The knee is the anchor the plateau is actually pinned to: the largest
-      // voltage at or below the target, which is not always the closest one
-      // (875mV can sit between two anchors). Deriving the boost from the wrong
-      // one puts the whole plateau a few MHz off the number the user typed.
-      const capIdx = STATE.capLocked ? capAnchorIndex() : -1;
-      const kneeIdx = capIdx > 0 ? capIdx : targetIdx;
-      const stockFreqAtTarget = stockFreqAt(kneeIdx);
+      const stockFreqAtTarget = stockFreqAt(targetIdx);
       const baseBoost = Math.max(-300, Math.min(250, targetFreq - stockFreqAtTarget));
 
       const newDeltas = new Array(currentPoints.length).fill(0);
       for (let i = 1; i < currentPoints.length; i++) {
         const stockFreq = stockFreqAt(i);
-        if (i <= kneeIdx) {
-          // Lift the low segment only near the knee, tapering to nothing about
-          // 120 mV below it. A flat +150MHz across the whole segment is what
-          // made the knee impossible to drag down later: every anchor to its
-          // left was sitting at the same clock, so any downward move broke
-          // monotonicity and had to drag the entire chart with it.
-          const dist = kneeIdx - i;
-          const t = Math.max(0, 1 - dist / PRESET_RAMP_ANCHORS);
-          const ramp = t * t * (3 - 2 * t); // smoothstep
-          newDeltas[i] = Math.round((baseBoost * ramp) / 5) * 5;
+        if (i <= targetIdx) {
+          newDeltas[i] = baseBoost;
         } else {
           const deltaToFlat = targetFreq - stockFreq;
           newDeltas[i] = Math.max(-500, Math.min(baseBoost, deltaToFlat));
@@ -1025,9 +857,7 @@
       }
 
       STATE.plannedDeltas = newDeltas;
-      const over = enforceVoltCap(newDeltas);
       log(`[✓] 已计算曲线方案 [${label}]: 低压段抬升 +${baseBoost}MHz, 超出 ${targetVolt}mV 后强制削平锁频至 ${targetFreq}MHz.`);
-      if (over > 25) log(`[!] 削平段仍有 ${over}MHz 高于目标频率，目标频率对高压段来说偏低`);
       drawCurve();
     }
 
@@ -1036,20 +866,13 @@
     // Shift+drag to carry the whole right-hand segment rigidly, double-click to
     // zero one point. Nothing here touches the GPU: edits only change the
     // in-memory delta table, and the Apply button pushes it.
+    // The anchors run to ~1240 mV on a laptop 5070 Ti; a 1150 cap hid the top
+    // anchors entirely, so they could not be drawn or dragged.
     const CURVE_V_MIN = 450;
-    const CURVE_V_MAX = 1150;
+    const CURVE_V_MAX = 1250;
     const CURVE_HIT_PX = 14;
     const CURVE_DELTA_MIN = -500;
     const CURVE_DELTA_MAX = 300;
-    // How far below the knee a preset's lift tapers out. ~24 anchors is about
-    // 120mV on a 127-anchor curve: enough to keep the undervolt useful, small
-    // enough that the knee stays draggable without touching the whole chart.
-    const PRESET_RAMP_ANCHORS = 24;
-    // A downward drag may shave the lift off at most this many anchors to its
-    // left, and never further. Eight anchors (~40mV) is enough to bring a knee
-    // down 300MHz, and keeps the edit reading as "the knee moved" instead of
-    // "a third of the chart moved".
-    const DRAG_SHAVE_ANCHORS = 8;
     const DRAG = { active: false, index: -1, startFreq: 0, snapshot: null, shift: false, moved: false, raf: 0, lastEv: null };
 
     function curveGeom() {
@@ -1062,55 +885,41 @@
       const plotW = Math.max(10, w - padL - padR);
       const plotH = Math.max(10, h - padT - padB);
 
-      // The voltage window follows the anchors too: this card runs 450-1240 mV,
-      // and a hardcoded 1150 ceiling silently hid the top dozen anchors (the
-      // exact ones a flattening request pushes against).
+      // The Y window follows the anchors. A laptop 5070 Ti curve spans roughly
+      // 900-2700 MHz, so the old fixed 200..2800 axis wasted half the canvas.
       const pts = STATE.vfPoints || [];
-      let vMin = CURVE_V_MIN, vMax = CURVE_V_MAX;
-      if (pts.length > 1) {
-        vMin = Math.max(300, Math.floor((pts[0].volt_mv - 25) / 50) * 50);
-        vMax = Math.ceil((pts[pts.length - 1].volt_mv + 25) / 50) * 50;
-      }
-
       let fMin = Infinity, fMax = -Infinity;
-      pts.forEach((p, i) => {
-        // Use the captured factory baseline, not "readback minus delta" - the
-        // readback already has the deltas applied.
+      for (let i = 0; i < pts.length; i++) {
         const stock = stockFreqAt(i);
-        fMin = Math.min(fMin, stock, p.freq_mhz);
-        fMax = Math.max(fMax, stock, p.freq_mhz);
-      });
+        const eff = stock + ((STATE.plannedDeltas && STATE.plannedDeltas[i]) || 0);
+        fMin = Math.min(fMin, stock, eff);
+        fMax = Math.max(fMax, stock, eff);
+      }
       if (!Number.isFinite(fMin) || fMax - fMin < 100) { fMin = 800; fMax = 2800; }
       const margin = Math.max(60, (fMax - fMin) * 0.12);
       const yMin = Math.floor((fMin - margin) / 50) * 50;
       const yMax = Math.ceil((fMax + margin) / 50) * 50;
 
-      const toX = v => padL + ((v - vMin) / (vMax - vMin)) * plotW;
+      const toX = v => padL + ((v - CURVE_V_MIN) / (CURVE_V_MAX - CURVE_V_MIN)) * plotW;
       const toY = f => h - padB - ((f - yMin) / (yMax - yMin)) * plotH;
       const yToFreq = y => yMin + ((h - padB - y) / plotH) * (yMax - yMin);
 
-      return { canvas, ctx: canvas.getContext('2d'), w, h, padL, padR, padT, padB, plotW, plotH, yMin, yMax, vMin, vMax, toX, toY, yToFreq };
+      return { canvas, ctx: canvas.getContext('2d'), w, h, padL, padR, padT, padB, plotW, plotH, yMin, yMax, toX, toY, yToFreq };
     }
 
     function stockFreqAt(i) {
-      // The status curve NVIDIA returns is the curve the card is *running*, and
-      // once deltas are programmed it is already delta-applied (the driver even
-      // re-clamps it to stay monotonic). Subtracting the requested delta from it
-      // does NOT give the factory curve - doing so double-counts the offset and
-      // every subsequent edit drifts further off. So the factory curve is
-      // captured once by zeroing the table and reading it back; see
-      // captureStockBaseline().
+      // Subtracting the requested delta from the readback does NOT give the
+      // factory curve: the readback already has the delta applied, so doing so
+      // double-counts the offset and every later edit drifts further off.
+      // Use the captured baseline when available, fall back to the estimate.
       if (STATE.stockPoints && STATE.stockPoints[i] !== undefined) return STATE.stockPoints[i];
       const p = STATE.vfPoints[i];
       return p.freq_mhz - p.delta_mhz;
     }
 
-    // --- Factory baseline -------------------------------------------------
-    // The only reliable way to learn the delta-free curve is to ask the driver
-    // for it with an empty delta table: write zeros, read, then put the user's
-    // curve back. It costs two NVAPI calls and is invisible in practice, but
-    // without it "stock" is a guess and the whole editor computes against a
-    // moving baseline.
+    // Zero the boost table once, read the curve the card runs at zero offsets,
+    // then put the previous table back. Costs one brief dip to the factory
+    // curve, buys a stable baseline that makes repeated applies idempotent.
     async function captureStockBaseline() {
       if (!STATE.vfPoints || STATE.vfPoints.length < 16) return false;
       const len = STATE.vfPoints.length;
@@ -1119,12 +928,12 @@
 
       if (!dirty) {
         STATE.stockPoints = STATE.vfPoints.map(p => p.freq_mhz);
-        log(`[⌁] 已取得出厂基线（${len} 个锚点，当前曲线为出厂状态）`);
+        log(`[⌁] 已取得出厂基线（${len} 个锚点，当前为出厂曲线）`);
         return true;
       }
 
       try {
-        log('[⌁] 正在读取出厂基线：先把偏移表清零采样，随后立即恢复当前曲线...');
+        log('[⌁] 正在读取出厂基线：清零采样后立即恢复当前曲线...');
         await rpc('set_gpu_vf_curve_deltas', { deltasMhz: new Array(len).fill(0) });
         // The driver publishes the new curve asynchronously; reading straight
         // away can hand back the previous one.
@@ -1142,7 +951,7 @@
         return true;
       } catch (err) {
         STATE.stockPoints = null;
-        log(`[!] 出厂基线采样失败: ${err.message || err}，将退回“读回值减偏移”的估算方式，曲线可能有偏差`);
+        log(`[!] 出厂基线采样失败: ${err.message || err}，退回“读回值减偏移”估算，曲线可能有偏差`);
         return false;
       }
     }
@@ -1164,103 +973,11 @@
       return stockFreqAt(i) + d;
     }
 
-    // --- Voltage ceiling ---------------------------------------------------
-    // The delta table only stores frequency offsets, so it cannot say "stop at
-    // 875 mV". What the boost algorithm does respect is shape: if every anchor
-    // above the ceiling offers the same clock as the ceiling anchor, raising
-    // the voltage buys nothing and the card settles on the lowest voltage that
-    // reaches that clock. A single edited point is therefore never a cap - the
-    // 925 mV point is still faster, so the card simply walks up to it. This is
-    // the plateau Afterburner draws, and it must be re-applied after every edit
-    // or the tail drifts back up.
-    function capAnchorIndex() {
-      if (!STATE.vfPoints || STATE.vfPoints.length < 2 || STATE.voltCap == null) return -1;
-      let best = -1, bestV = -1;
-      for (let i = 1; i < STATE.vfPoints.length; i++) {
-        const v = STATE.vfPoints[i].volt_mv;
-        if (v <= STATE.voltCap && v >= bestV) { bestV = v; best = i; }
-      }
-      return best;
-    }
-
-    function isStockCurve(deltas) {
-      if (!Array.isArray(deltas)) return true;
-      for (let i = 0; i < deltas.length; i++) if (deltas[i]) return false;
-      return true;
-    }
-
-    // Pin every anchor above the ceiling to the ceiling anchor's clock.
-    // Returns the worst residual overflow in MHz (0 = the tail really is flat).
-    function enforceVoltCap(deltas) {
-      if (!STATE.capLocked || !Array.isArray(deltas)) return 0;
-      const idx = capAnchorIndex();
-      // A zeroed table means "factory curve", not "cap at the factory clock" -
-      // enforcing here would silently sabotage the reset button.
-      if (idx < 1 || isStockCurve(deltas)) return 0;
-      const effCap = stockFreqAt(idx) + (deltas[idx] || 0);
-      let worst = 0;
-      for (let i = idx + 1; i < deltas.length; i++) {
-        const want = effCap - stockFreqAt(i);
-        const d = Math.max(CURVE_DELTA_MIN, Math.min(CURVE_DELTA_MAX, Math.round(want / 5) * 5));
-        deltas[i] = d;
-        const over = stockFreqAt(i) + d - effCap;
-        if (over > worst) worst = over;
-      }
-      return worst;
-    }
-
-    // Same measurement against the live buffer, without touching it.
-    function capResidual() {
-      const deltas = STATE.plannedDeltas;
-      if (!STATE.capLocked || !Array.isArray(deltas)) return 0;
-      const idx = capAnchorIndex();
-      if (idx < 1 || isStockCurve(deltas)) return 0;
-      const effCap = stockFreqAt(idx) + (deltas[idx] || 0);
-      let worst = 0;
-      for (let i = idx + 1; i < deltas.length; i++) {
-        const over = stockFreqAt(i) + (deltas[i] || 0) - effCap;
-        if (over > worst) worst = over;
-      }
-      return worst;
-    }
-
-    function syncCapUi() {
-      const label = document.getElementById('capVoltLabel');
-      const chk = document.getElementById('chkCapLock');
-      const box = document.getElementById('capToggle');
-      if (label) label.textContent = String(Math.round(STATE.voltCap));
-      if (chk) chk.checked = !!STATE.capLocked;
-      if (box) box.classList.toggle('off', !STATE.capLocked);
-    }
-
-    function onCapLockChange(checked) {
-      STATE.capLocked = !!checked;
-      syncCapUi();
-      if (!STATE.capLocked) {
-        log('[🔓] 电压上限已解除：曲线恢复自由形态，更高电压点会继续爬频');
-        drawCurve();
-        return;
-      }
-      if (!STATE.vfPoints || STATE.vfPoints.length < 16) { drawCurve(); return; }
-      const deltas = ensureDeltas();
-      pushCurveUndo();
-      const over = enforceVoltCap(deltas);
-      markManualCurve();
-      drawCurve();
-      if (isStockCurve(deltas)) {
-        log(`[🔒] 已锁定 ${Math.round(STATE.voltCap)}mV 上限：先把上限锚点拖上去（或点预设），才会生成削平段`);
-      } else if (over > 25) {
-        log(`[!] 上限削平后仍高出 ${over}MHz（受 -500MHz 单点下限限制），请把上限锚点频率抬低一些`);
-      } else {
-        log(`[🔒] 已按 ${Math.round(STATE.voltCap)}mV 上限削平更高电压点，显卡不会再跳到更高电压`);
-      }
-    }
-
     function drawCurve() {
       const g = curveGeom();
       if (!g) return;
       STATE.geom = g;
-      const { ctx, w, h, padL, padR, padT, padB, yMin, yMax, vMin, vMax, toX, toY } = g;
+      const { ctx, w, h, padL, padR, padT, padB, yMin, yMax, toX, toY } = g;
       const canvas = g.canvas;
       const dpr = window.devicePixelRatio || 1;
       canvas.width = Math.max(1, Math.round(w * dpr));
@@ -1282,7 +999,10 @@
       ctx.font = '10px monospace';
       ctx.fillStyle = '#64748b';
       ctx.textAlign = 'right';
-      for (let f = Math.ceil(yMin / 200) * 200; f <= yMax; f += 200) {
+      // Label spacing follows the window: a 3100MHz span with 200MHz rows puts
+      // sixteen labels in a 250px canvas, which reads as one grey smear.
+      const fStep = (yMax - yMin) > 2400 ? 500 : 200;
+      for (let f = Math.ceil(yMin / fStep) * fStep; f <= yMax; f += fStep) {
         const y = toY(f);
         ctx.beginPath();
         ctx.moveTo(padL, y);
@@ -1291,7 +1011,7 @@
         ctx.fillText(f + 'M', padL - 6, y + 3);
       }
       ctx.textAlign = 'center';
-      for (let v = Math.ceil(vMin / 100) * 100; v <= vMax; v += 100) {
+      for (let v = 500; v <= 1200; v += 100) {
         const x = toX(v);
         ctx.beginPath();
         ctx.moveTo(x, padT);
@@ -1308,7 +1028,7 @@
       let started = false;
       for (let i = 0; i < STATE.vfPoints.length; i++) {
         const p = STATE.vfPoints[i];
-        if (p.volt_mv < g.vMin || p.volt_mv > g.vMax) continue;
+        if (p.volt_mv < CURVE_V_MIN || p.volt_mv > CURVE_V_MAX) continue;
         const x = toX(p.volt_mv);
         const y = toY(stockFreqAt(i));
         if (!started) { ctx.moveTo(x, y); started = true; }
@@ -1326,7 +1046,7 @@
       started = false;
       for (let i = 0; i < STATE.vfPoints.length; i++) {
         const p = STATE.vfPoints[i];
-        if (p.volt_mv < g.vMin || p.volt_mv > g.vMax) continue;
+        if (p.volt_mv < CURVE_V_MIN || p.volt_mv > CURVE_V_MAX) continue;
         const x = toX(p.volt_mv);
         const y = toY(effectiveFreqAt(i));
         if (!started) { ctx.moveTo(x, y); started = true; }
@@ -1335,48 +1055,12 @@
       ctx.stroke();
       ctx.shadowBlur = 0;
 
-      // 2.5 Voltage ceiling. The wash marks the region the plateau owns, so
-      // "everything to the right is flattened" is readable at a glance; it
-      // turns amber when the tail could not be pinned all the way down.
-      if (STATE.capLocked && STATE.voltCap != null) {
-        const cx = toX(STATE.voltCap);
-        if (cx >= padL && cx <= w - padR) {
-          const residual = capResidual();
-          const broken = residual > 25;
-          const tone = broken ? '245, 158, 11' : '239, 68, 68';
-          ctx.fillStyle = `rgba(${tone}, 0.05)`;
-          ctx.fillRect(cx, padT, (w - padR) - cx, h - padT - padB);
-          ctx.setLineDash([3, 4]);
-          ctx.strokeStyle = `rgba(${tone}, 0.6)`;
-          ctx.lineWidth = 1;
-          ctx.beginPath();
-          ctx.moveTo(cx, padT);
-          ctx.lineTo(cx, h - padB);
-          ctx.stroke();
-          ctx.setLineDash([]);
-
-          ctx.font = '10px monospace';
-          ctx.textAlign = 'left';
-          ctx.fillStyle = `rgba(${tone}, 0.95)`;
-          ctx.fillText(broken ? `上限 ${Math.round(STATE.voltCap)}mV (削平不全)` : `上限 ${Math.round(STATE.voltCap)}mV`, Math.min(cx + 5, w - padR - 96), padT + 10);
-
-          const capIdx = capAnchorIndex();
-          if (capIdx > 0) {
-            const ky = toY(effectiveFreqAt(capIdx));
-            ctx.beginPath();
-            ctx.arc(cx, ky, 3.5, 0, Math.PI * 2);
-            ctx.fillStyle = broken ? '#f59e0b' : '#ef4444';
-            ctx.fill();
-          }
-        }
-      }
-
       // 3. Anchor handles. Anchor 0 is the hardware baseline root and is not
       // writable (the driver skips it), so it gets no handle.
       const activeIdx = DRAG.active ? DRAG.index : STATE.hoverIndex;
       for (let i = 1; i < STATE.vfPoints.length; i++) {
         const p = STATE.vfPoints[i];
-        if (p.volt_mv < g.vMin || p.volt_mv > g.vMax) continue;
+        if (p.volt_mv < CURVE_V_MIN || p.volt_mv > CURVE_V_MAX) continue;
         const x = toX(p.volt_mv);
         const y = toY(effectiveFreqAt(i));
         const hot = i === activeIdx;
@@ -1408,10 +1092,6 @@
         ctx.fillStyle = 'rgba(16, 185, 129, 0.85)';
         ctx.fill();
       }
-
-      // Every edit path ends in a repaint, so this is the one place that keeps
-      // the save button's dirty marker honest.
-      refreshSaveIndicator();
     }
 
     // --- Manual anchor editing ---
@@ -1427,11 +1107,7 @@
         ? STATE.plannedDeltas[index]
         : (p.delta_mhz || 0);
       const eff = Math.round(stockFreqAt(index) + d);
-      const capIdx = STATE.capLocked ? capAnchorIndex() : -1;
-      let tag = '';
-      if (capIdx === index) tag = ' · 上限';
-      else if (capIdx > 0 && index > capIdx) tag = ' · 已削平';
-      el.textContent = `#${index} · ${p.volt_mv}mV · ${eff}MHz (${d > 0 ? '+' : ''}${d})${tag}`;
+      el.textContent = `锚点 #${index} · ${p.volt_mv} mV · ${eff} MHz (${d > 0 ? '+' : ''}${d})`;
     }
 
     function nearestAnchor(px) {
@@ -1458,54 +1134,18 @@
       if (el) el.textContent = '手动曲线';
     }
 
-    // Move one anchor. Two rules, both literal:
-    //
-    //   1. Nothing left of the grabbed anchor is touched. A drag edits one
-    //      place, not the curve. (The old code shaved the lift off every left
-    //      neighbour to get past the monotonic floor, which is why a single
-    //      drag read as "the whole chart moved".)
-    //   2. Points to the right are only lifted when they would otherwise end
-    //      up below the dragged one - the driver runs the curve through a
-    //      running maximum, so a point below its left neighbour comes back as
-    //      a staircase. Flattening a segment is a separate, explicit action
-    //      (double-click / 削平右侧), not a side effect of a 3-pixel drag.
-    //
-    // With the ceiling locked, a grab inside the flat run is redirected to the
-    // knee: one point there cannot move on its own (the ceiling re-pins it on
-    // the next frame), and the plateau is genuinely one object.
+    // Move a single anchor. Anything to its right that would end up below it is
+    // lifted along, which keeps the curve monotonic - the only shape the driver
+    // accepts without silently reordering or dropping points.
     function setAnchorFreq(index, targetFreq) {
       const deltas = ensureDeltas();
-      const capIdx = STATE.capLocked ? capAnchorIndex() : -1;
-      if (capIdx > 0 && index > capIdx) index = capIdx;
-
       const stock = stockFreqAt(index);
-      let floor = index > 1 ? stockFreqAt(index - 1) + (deltas[index - 1] || 0) : 0;
-
-      // A knee that cannot go down is worse than useless. When the drag wants
-      // to go below its left neighbour, collect the lift a preset left there -
-      // but only over a bounded window so the change reads as "the knee came
-      // down", not "the whole curve moved".
-      if (targetFreq < floor && index > 1) {
-        let excess = floor - targetFreq;
-        const stop = Math.max(1, index - DRAG_SHAVE_ANCHORS);
-        for (let i = index - 1; i >= stop && excess > 0; i--) {
-          const cur = deltas[i] || 0;
-          const cut = Math.min(cur - CURVE_DELTA_MIN, excess);
-          if (cut > 0) {
-            deltas[i] = cur - cut;
-            excess -= cut;
-          }
-        }
-        floor = stockFreqAt(index - 1) + (deltas[index - 1] || 0);
-      }
-
+      const floor = index > 1 ? stockFreqAt(index - 1) + deltas[index - 1] : 0;
       const f = Math.max(floor, targetFreq);
       let d = Math.round((f - stock) / 5) * 5;
       d = Math.max(CURVE_DELTA_MIN, Math.min(CURVE_DELTA_MAX, d));
       deltas[index] = d;
 
-      // Right side: lift only what the drag pushed through. Never pull down -
-      // that is what the ceiling and 削平右侧 are for.
       let prev = stock + d;
       for (let i = index + 1; i < STATE.vfPoints.length; i++) {
         const e = stockFreqAt(i) + deltas[i];
@@ -1517,54 +1157,7 @@
           prev = e;
         }
       }
-
-      const over = enforceVoltCap(deltas);
       markManualCurve();
-      if (over > 25) {
-        log(`[!] 上限削平后仍有 ${over}MHz 溢出，请降低上限锚点频率`);
-      }
-    }
-
-    // Make one anchor the knee: it becomes the voltage ceiling, and everything
-    // above it is pinned to its clock. This is the explicit "flatten from here"
-    // gesture - the result a drag used to produce by accident, and the only
-    // shape the driver treats as a hard limit. It acts on the anchor the user
-    // last grabbed, so it still works after the pointer walks to the button.
-    function flattenFromAnchor(index) {
-      const idx = (typeof index === 'number' && index >= 1)
-        ? index
-        : (STATE.selectedIndex >= 1 ? STATE.selectedIndex : STATE.hoverIndex);
-      if (!STATE.vfPoints || idx < 1 || idx >= STATE.vfPoints.length) {
-        log('[!] 请先在曲线上点一下要作为拐点的锚点，再点“削平右侧”');
-        return;
-      }
-      pushCurveUndo();
-      const deltas = ensureDeltas();
-      const capIdx = capAnchorIndex();
-      // The knee keeps its clock; the tail is rebuilt against it.
-      const target = stockFreqAt(idx) + (deltas[idx] || 0);
-      const want = Math.max(
-        idx > 1 ? stockFreqAt(idx - 1) + (deltas[idx - 1] || 0) : 0,
-        Math.round(target)
-      );
-      // If the anchor sits below the ceiling it is about to become the ceiling.
-      STATE.voltCap = STATE.vfPoints[idx].volt_mv;
-      STATE.capLocked = true;
-      syncCapUi();
-      // Keep the target fields in step, otherwise the panel claims 875mV while
-      // the ceiling label next to it says 1077mV.
-      STATE.targetVolt = STATE.vfPoints[idx].volt_mv;
-      document.getElementById('inputTargetVolt').value = STATE.targetVolt;
-      const d = Math.max(CURVE_DELTA_MIN, Math.min(CURVE_DELTA_MAX, Math.round((want - stockFreqAt(idx)) / 5) * 5));
-      deltas[idx] = d;
-      STATE.targetFreq = Math.round(stockFreqAt(idx) + d);
-      document.getElementById('inputTargetFreq').value = STATE.targetFreq;
-      const over = enforceVoltCap(deltas);
-      markManualCurve();
-      updateCurveReadout(idx);
-      drawCurve();
-      log(`[⌁] 已把 ${STATE.vfPoints[idx].volt_mv}mV 设为拐点，更高电压段削平至 ${Math.round(stockFreqAt(idx) + d)}MHz${capIdx > 0 && capIdx !== idx ? `（原拐点 #${capIdx}）` : ''}`);
-      if (over > 25) log(`[!] 削平后仍有 ${over}MHz 溢出（受 -500MHz 单点下限限制）`);
     }
 
     // Shift-drag: move the anchor and everything to its right by the same step,
@@ -1572,17 +1165,9 @@
     // point.
     function shiftAnchorsFrom(index, stepMhz) {
       const deltas = ensureDeltas();
-      let from = index;
-      if (STATE.capLocked) {
-        // Shifting inside the flat region is meaningless (the ceiling re-pins
-        // it immediately), so move the whole plateau by starting at the knee.
-        const capIdx = capAnchorIndex();
-        if (capIdx > 0 && index > capIdx) from = capIdx;
-      }
-      for (let i = from; i < deltas.length; i++) {
+      for (let i = index; i < deltas.length; i++) {
         deltas[i] = Math.max(CURVE_DELTA_MIN, Math.min(CURVE_DELTA_MAX, (deltas[i] || 0) + stepMhz));
       }
-      enforceVoltCap(deltas);
       markManualCurve();
     }
 
@@ -1602,15 +1187,8 @@
 
       ensureDeltas();
       pushCurveUndo();
-      // Grabbing inside the flat tail edits the knee: the plateau is one object
-      // and a single point there would be re-pinned on the next frame.
-      const capIdx = STATE.capLocked ? capAnchorIndex() : -1;
-      const dragIdx = (capIdx > 0 && idx > capIdx) ? capIdx : idx;
       DRAG.active = true;
-      DRAG.index = dragIdx;
-      // selectedIndex keeps the anchor the user actually aimed at, so 削平右侧
-      // can turn exactly that one into the new knee.
-      STATE.selectedIndex = idx;
+      DRAG.index = idx;
       DRAG.shift = ev.shiftKey;
       DRAG.moved = false;
       DRAG.startFreq = g.yToFreq(pos.y);
@@ -1672,13 +1250,9 @@
       }
       DRAG.index = -1;
       DRAG.snapshot = null;
-      updateCurveReadout(STATE.selectedIndex >= 0 ? STATE.selectedIndex : STATE.hoverIndex);
+      updateCurveReadout(STATE.hoverIndex);
     }
 
-    // Double-click makes the anchor the knee and flattens everything above it.
-    // That is the "I moved this point, now bring the rest level" gesture - the
-    // one a plain drag deliberately no longer performs. Shift+double-click
-    // keeps the old behaviour (zero that single anchor).
     function onCurveDoubleClick(ev) {
       const g = STATE.geom || curveGeom();
       if (!g) return;
@@ -1686,18 +1260,13 @@
       const pos = curvePointerPos(ev);
       const idx = nearestAnchor(pos.x);
       if (idx < 0) return;
-      if (ev.shiftKey) {
-        ensureDeltas();
-        pushCurveUndo();
-        STATE.plannedDeltas[idx] = 0;
-        enforceVoltCap(STATE.plannedDeltas);
-        markManualCurve();
-        updateCurveReadout(idx);
-        drawCurve();
-        log(`[⟲] 锚点 #${idx} 已归零`);
-        return;
-      }
-      flattenFromAnchor(idx);
+      ensureDeltas();
+      pushCurveUndo();
+      STATE.plannedDeltas[idx] = 0;
+      markManualCurve();
+      updateCurveReadout(idx);
+      drawCurve();
+      log(`[⟲] 锚点 #${idx} 已归零`);
     }
 
     function undoCurveEdit() {
@@ -1711,157 +1280,10 @@
     async function reloadCurveFromHardware() {
       await refreshHardwareInfo();
       if (STATE.vfPoints && STATE.vfPoints.length) {
-        // The factory baseline survives a curve write, but re-sampling here is
-        // cheap and keeps the editor honest after a driver reset.
-        await captureStockBaseline();
         STATE.plannedDeltas = STATE.vfPoints.map(p => p.delta_mhz || 0);
         drawCurve();
         log('[⟳] 已从显卡读回当前 V/F 曲线，编辑缓冲区同步');
       }
-    }
-
-    function flattenCurveToZero() {
-      if (!STATE.vfPoints || !STATE.vfPoints.length) return;
-      ensureDeltas();
-      pushCurveUndo();
-      STATE.plannedDeltas = new Array(STATE.vfPoints.length).fill(0);
-      markManualCurve();
-      drawCurve();
-      log('[*] 曲线已全部归零（等同出厂），点“一键写入”下发');
-    }
-
-    // --- Persisting a hand-edited curve ---
-    // Dragging only touches an in-memory buffer, so without an explicit save the
-    // result disappears when the panel is closed. Apply writes storage as a side
-    // effect, but people routinely want to keep a curve without pushing it to
-    // the GPU. SAVED_CURVE_SIG is the signature of whatever was last persisted,
-    // which is what tells the button whether there are unsaved edits.
-    let SAVED_CURVE_SIG = '';
-
-    function curveSignature(deltas) {
-      if (!Array.isArray(deltas) || deltas.length === 0) return '';
-      let h = 2166136261;
-      for (let i = 0; i < deltas.length; i++) {
-        h ^= (deltas[i] | 0) & 0xffff;
-        h = Math.imul(h, 16777619);
-      }
-      return (h >>> 0).toString(16) + ':' + deltas.length;
-    }
-
-    function refreshSaveIndicator() {
-      const btn = document.getElementById('btnSaveCurve');
-      if (!btn) return;
-      const sig = curveSignature(STATE.plannedDeltas);
-      const dirty = !!sig && sig !== SAVED_CURVE_SIG;
-      btn.classList.toggle('dirty', dirty);
-      btn.classList.toggle('saved', !!sig && !dirty);
-    }
-
-    let saveFlashTimer = 0;
-    function flashSaveButton() {
-      const btn = document.getElementById('btnSaveCurve');
-      if (!btn) return;
-      // The label lives in its own span (it is the ellipsis box), so flash the
-      // span instead of the button and keep the markup intact.
-      const label = btn.querySelector('.preset-label') || btn;
-      if (!label.dataset.label) label.dataset.label = label.textContent.trim();
-      label.textContent = '✓ 已保存';
-      clearTimeout(saveFlashTimer);
-      saveFlashTimer = setTimeout(() => {
-        label.textContent = label.dataset.label || '💾 保存手动曲线';
-      }, 1400);
-    }
-
-    async function saveManualCurve() {
-      if (!STATE.vfPoints || STATE.vfPoints.length < 16) {
-        log('[-] 还没读到 V/F 锚点，暂时无法保存曲线');
-        return;
-      }
-      ensureDeltas();
-      // Note: the mode label is left alone. Dragging already switched it to
-      // “手动曲线”; saving a freshly picked preset must not relabel that preset.
-      await savePluginStorage();
-
-      const deltas = STATE.plannedDeltas;
-      let changed = 0, lo = 0, hi = 0;
-      for (let i = 0; i < deltas.length; i++) {
-        const d = deltas[i];
-        if (d !== 0) changed++;
-        if (d < lo) lo = d;
-        if (d > hi) hi = d;
-      }
-      const capIdx = STATE.capLocked ? capAnchorIndex() : -1;
-      const capNote = capIdx > 0
-        ? `，上限 ${Math.round(STATE.voltCap)}mV 以上削平至 ${Math.round(stockFreqAt(capIdx) + (STATE.plannedDeltas[capIdx] || 0))}MHz`
-        : '，未锁定电压上限';
-      log(`[💾] 手动曲线已保存：${deltas.length} 个锚点，${changed} 个已调整（${lo} ~ +${hi} MHz）${capNote}，下次打开面板自动恢复，点“一键写入”才下发硬件。`);
-      flashSaveButton();
-    }
-
-    // Bring back the curve that was last saved. Opening the panel already
-    // restores it, but once the buffer has been dragged away there was no way
-    // back except forty undos or a reload - which is what "saved curves are
-    // write-only" felt like.
-    async function loadSavedCurve() {
-      if (!STATE.vfPoints || STATE.vfPoints.length < 16) {
-        log('[-] 还没读到 V/F 锚点，暂时无法读取曲线');
-        return;
-      }
-      let stored = null;
-      try {
-        if (window.OpenRevo && window.OpenRevo.storage && typeof window.OpenRevo.storage.get === 'function') {
-          stored = await window.OpenRevo.storage.get();
-        } else if (window.parent && window.parent.__OPENREVO_BRIDGE__ && window.parent.__OPENREVO_BRIDGE__.storage) {
-          stored = await window.parent.__OPENREVO_BRIDGE__.storage.get();
-        } else {
-          try {
-            stored = await rpc('get_plugin_storage', { pluginId: PLUGIN_ID });
-          } catch (_) {
-            const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
-            if (raw) stored = JSON.parse(raw);
-          }
-        }
-      } catch (err) {
-        log(`[-] 读取存档失败: ${err.message || err}`);
-        return;
-      }
-      if (!stored || typeof stored !== 'object' || !Object.keys(stored).length) {
-        log('[!] 还没有保存过曲线：先拖好曲线点“💾 保存手动曲线”');
-        return;
-      }
-
-      pushCurveUndo();
-      if (typeof stored.target_volt === 'number') STATE.targetVolt = stored.target_volt;
-      if (typeof stored.target_freq === 'number') STATE.targetFreq = stored.target_freq;
-      if (typeof stored.volt_cap === 'number') STATE.voltCap = stored.volt_cap;
-      else if (typeof stored.target_volt === 'number') STATE.voltCap = stored.target_volt;
-      if (typeof stored.cap_locked === 'boolean') STATE.capLocked = stored.cap_locked;
-      if (typeof stored.active_mode === 'string') STATE.activeMode = stored.active_mode;
-      syncCapUi();
-      document.getElementById('inputTargetVolt').value = STATE.targetVolt;
-      document.getElementById('inputTargetFreq').value = STATE.targetFreq;
-      document.getElementById('statModeText').textContent = STATE.activeMode;
-
-      const deltas = stored.planned_deltas;
-      const usable = Array.isArray(deltas) && deltas.length === STATE.vfPoints.length && stored.schema === 2;
-      if (usable) {
-        STATE.plannedDeltas = deltas.slice();
-        SAVED_CURVE_SIG = curveSignature(STATE.plannedDeltas);
-      } else {
-        // Old save (built on the wrong baseline) or a different anchor count:
-        // rebuild from its target instead of pushing numbers that would land
-        // somewhere else on the card.
-        STATE.plannedDeltas = null;
-        calculatePlannedCurve(STATE.targetVolt, STATE.targetFreq, STATE.activeMode);
-        SAVED_CURVE_SIG = '';
-      }
-
-      drawCurve();
-      refreshSaveIndicator();
-      const capIdx = STATE.capLocked ? capAnchorIndex() : -1;
-      log(usable
-        ? `[📂] 已读取保存的曲线：${STATE.activeMode}（${STATE.targetVolt}mV @ ${STATE.targetFreq}MHz）${capIdx > 0 ? `，上限 ${Math.round(STATE.voltCap)}mV 以上削平` : ''}`
-        : '[📂] 存档是旧版基线算的，已按目标电压/频率在当前出厂基线上重建，请确认形状后重新保存');
     }
 
     // --- Hardware Actions ---
@@ -1882,22 +1304,6 @@
 
     async function applyFullUndervoltToHardware() {
       try {
-        // Never write a delta table that was computed against an unknown
-        // baseline - that is how the ceiling ended up clamped into a staircase.
-        if (!STATE.stockPoints) await captureStockBaseline();
-
-        // A positive core offset is added on top of the V/F curve, so it lifts
-        // the whole plateau and drags the card back onto a higher voltage
-        // point - the exact symptom the ceiling exists to prevent.
-        if (STATE.capLocked && STATE.coreOffset > 0) {
-          log(`[!] 核心频率偏移 +${STATE.coreOffset}MHz 会叠加在曲线上并抬高实际电压，可能让 ${Math.round(STATE.voltCap)}mV 上限失效；建议先把核心频率滑块归零`);
-        }
-
-        const over = enforceVoltCap(STATE.plannedDeltas);
-        if (STATE.capLocked && over > 25) {
-          log(`[!] 削平段仍高出目标频率 ${over}MHz（受单点 -500MHz 下限限制），实际电压可能仍会爬升`);
-        }
-
         // 1. Apply memory offset first
         if (STATE.memOffset !== 0) {
           log(`正在同步显存频率加成 +${STATE.memOffset} MHz...`);
@@ -1909,12 +1315,7 @@
 
         // 2. Apply planned V/F curve
         if (STATE.plannedDeltas && STATE.plannedDeltas.length >= 16) {
-          const capIdx = STATE.capLocked ? capAnchorIndex() : -1;
-          if (capIdx > 0) {
-            log(`正在写入 ${STATE.plannedDeltas.length} 锚点曲线：${Math.round(STATE.voltCap)}mV 以下抬频，以上全部削平至 ${Math.round(stockFreqAt(capIdx) + (STATE.plannedDeltas[capIdx] || 0))}MHz...`);
-          } else {
-            log(`正在向 NVIDIA 驱动写入 ${STATE.plannedDeltas.length} 锚点平移降压曲线...`);
-          }
+          log(`正在向 NVIDIA 驱动写入 ${STATE.plannedDeltas.length} 锚点平移降压曲线...`);
           await rpc('set_gpu_vf_curve_deltas', { deltasMhz: STATE.plannedDeltas });
         } else {
           log(`正在生成并下发目标降压曲线 (${STATE.targetVolt}mV @ ${STATE.targetFreq}MHz)...`);
@@ -1924,37 +1325,11 @@
           });
         }
 
-        log(STATE.capLocked && capAnchorIndex() > 0
-          ? `🎉 曲线已下发：电压上限 ${Math.round(STATE.voltCap)}mV，超出该电压的锚点已削平。`
-          : '🎉 恭喜！免小飞机降压曲线已全量下发至显卡驱动生效！');
+        log('🎉 恭喜！免小飞机降压曲线已全量下发至显卡驱动生效！');
         await savePluginStorage();
-        await refreshHardwareInfo();
-        verifyVoltCapReadback();
+        refreshHardwareInfo();
       } catch (err) {
         log(`[-] 写入显卡调优失败: ${err.message || err}`);
-      }
-    }
-
-    // The driver may clamp or reorder what we send, and only the readback tells
-    // the truth about the curve that is now running. Comparing the live anchors
-    // above the ceiling is also the cheapest way to answer "why did it still
-    // reach 925mV" without guessing.
-    function verifyVoltCapReadback() {
-      if (!STATE.capLocked) return;
-      const capIdx = capAnchorIndex();
-      if (capIdx < 1 || !STATE.vfPoints || STATE.vfPoints.length <= capIdx) return;
-      // freq_mhz in the status curve is the effective clock, deltas already
-      // included - exactly what the boost algorithm sees.
-      const capFreq = STATE.vfPoints[capIdx].freq_mhz;
-      let worst = 0, worstMv = 0;
-      for (let i = capIdx + 1; i < STATE.vfPoints.length; i++) {
-        const over = STATE.vfPoints[i].freq_mhz - capFreq;
-        if (over > worst) { worst = over; worstMv = STATE.vfPoints[i].volt_mv; }
-      }
-      if (worst > 25) {
-        log(`[!] 读回校验未通过：${worstMv}mV 锚点仍比 ${Math.round(STATE.voltCap)}mV 高出 ${worst}MHz，驱动没有完全接受削平，电压仍可能爬升。可在曲线上直接下调上限锚点频率后重试。`);
-      } else {
-        log(`[✓] 读回校验通过：${Math.round(STATE.voltCap)}mV 以上的锚点已全部削平至 ${capFreq}MHz，电压被真正封顶。`);
       }
     }
 
@@ -2027,29 +1402,20 @@
     window.addEventListener('load', async () => {
       // 1. Load sandboxed plugin storage
       await loadPluginStorage();
-      // The ceiling switch is markup-defaulted, so a fresh install (nothing in
-      // storage) still has to agree with STATE.
-      syncCapUi();
-      drawCurve();
 
-      // 2. Refresh physical hardware state
+      // 2. Refresh physical hardware state, then capture the factory curve so
+      // every offset is computed against a stable baseline.
       await refreshHardwareInfo();
-
-      // 2b. Learn the factory curve before any editing math runs. Everything
-      // downstream (deltas, flat tail, ceiling) is expressed relative to it.
       await captureStockBaseline();
-      if (STATE.legacyDeltas) {
-        STATE.legacyDeltas = false;
-        STATE.plannedDeltas = null;
-        if (STATE.targetVolt && STATE.targetFreq) {
-          calculatePlannedCurve(STATE.targetVolt, STATE.targetFreq, STATE.activeMode);
-        }
-        log('[!] 旧版保存的曲线是用错误的出厂基线算出来的，已按当前目标电压/频率在真实基线上重建；如形状与预期不同，重新拖一下即可');
-      } else {
-        drawCurve();
+
+      // 3. A discarded / missing curve is rebuilt from the saved target, so the
+      // panel never opens on a curve derived from a wrong baseline.
+      if (!Array.isArray(STATE.plannedDeltas) && STATE.activeMode !== '出厂默认' &&
+          STATE.vfPoints && STATE.vfPoints.length >= 16) {
+        calculatePlannedCurve(STATE.targetVolt, STATE.targetFreq, STATE.activeMode);
       }
 
-      // 3. Register Tauri Event Listener for host-wide clock offset sync
+      // 4. Register Tauri Event Listener for host-wide clock offset sync
       try {
         if (window.OpenRevo && typeof window.OpenRevo.listen === 'function') {
           window.OpenRevo.listen('gpu-clock-offsets-changed', (event) => {
@@ -2068,7 +1434,7 @@
         console.warn('Failed to attach gpu-clock-offsets-changed listener:', err);
       }
 
-      // 4. Bind manual curve editing to the canvas
+      // 5. Bind manual curve editing to the canvas
       const curveCanvas = document.getElementById('vfCanvas');
       if (curveCanvas) {
         curveCanvas.addEventListener('pointerdown', onCurvePointerDown);
@@ -2079,9 +1445,7 @@
           if (DRAG.active) return;
           if (STATE.hoverIndex !== -1) {
             STATE.hoverIndex = -1;
-            // Keep the grabbed anchor on screen: the toolbar's 削平右侧 acts on
-            // it, and the pointer has to leave the canvas to reach the button.
-            updateCurveReadout(STATE.selectedIndex >= 0 ? STATE.selectedIndex : -1);
+            updateCurveReadout(-1);
             drawCurve();
           }
         });
