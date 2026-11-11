@@ -305,7 +305,7 @@
 
     #vfCanvas {
       width: 100%;
-      height: 200px;
+      height: 220px;
       display: block;
       cursor: crosshair;
       touch-action: none;
@@ -588,16 +588,12 @@
           </div>
           <div class="legend-item">
             <span class="legend-color" style="background: #06b6d4;"></span>
-            <span>待写入 V/F 曲线</span>
-          </div>
-          <div class="legend-item">
-            <span class="legend-color" style="background: #10b981;"></span>
-            <span>当前锚点</span>
+            <span>当前生效 V/F 曲线 (平移降压)</span>
           </div>
         </div>
       </div>
 
-      <!-- Manual anchor editing -->
+      <!-- Manual anchor editing (Afterburner style) -->
       <div class="curve-toolbar">
         <span class="hint">
           <b>拖动</b> 单点调整 · <b>Shift+拖动</b> 右侧整段跟随（下压拉平 / 上移齐抬）·
@@ -640,20 +636,16 @@
       coreOffset: 0,
       memOffset: 0,
       vfPoints: [],
-      // Factory clock per anchor. The status curve NVIDIA returns is already
-      // delta-applied once offsets are programmed, so it cannot be used to
-      // derive the factory curve. Captured once by zeroing the table and
-      // reading it back; see captureStockBaseline().
-      stockPoints: null,
       plannedDeltas: null,
       targetVolt: 875,
       targetFreq: 2450,
       activeMode: '出厂默认',
       hostPowerMode: null,
-      hoverIndex: -1,     // anchor under the pointer (manual curve editing)
-      geom: null,         // last canvas geometry, shared by painter + hit test
-      undo: [],           // snapshots of plannedDeltas for the undo button
-      savedManualCurve: null // last curve parked in plugin_storage by the save button
+      // Manual curve editing state.
+      hoverIndex: -1,          // anchor under the pointer
+      geom: null,              // last canvas geometry, shared by painter + hit test
+      undo: [],                // snapshots of plannedDeltas for the undo button
+      savedManualCurve: null   // last curve parked in plugin_storage by the save button
     };
 
     // --- Unified RPC Invoker ---
@@ -704,9 +696,7 @@
             log('[*] 存档中的曲线偏移是用旧基线算的，已丢弃，稍后按目标电压/频率重新计算');
           }
 
-          // A curve parked by the save button. Same schema gate as above: the
-          // deltas are absolute offsets against the factory table, so they are
-          // only reusable when they were written under the same convention.
+          // A curve parked by the save button. Same schema gate as above.
           if (stored.schema === 2 && stored.manual_curve && Array.isArray(stored.manual_curve.deltas)) {
             STATE.savedManualCurve = stored.manual_curve;
             const when = stored.manual_curve.saved_at
@@ -729,9 +719,9 @@
 
     async function savePluginStorage() {
       const config = {
-        // Schema 2 means the deltas were computed against the captured factory
-        // baseline. Older saves were derived from "readback minus delta", which
-        // double-counts what the driver already applied, so they are not loaded.
+        // Schema 2 marks offsets computed against the live readback (closed
+        // loop). Older saves used "readback minus delta", which double-counts
+        // what the driver already applied, so they are not loaded.
         schema: 2,
         target_volt: STATE.targetVolt,
         target_freq: STATE.targetFreq,
@@ -751,13 +741,15 @@
         if (window.OpenRevo && window.OpenRevo.storage && typeof window.OpenRevo.storage.set === 'function') {
           await window.OpenRevo.storage.set(config);
           document.getElementById('statStorageHint').textContent = '已保存至 plugin_storage';
-        } else if (window.parent && window.parent.__OPENREVO_BRIDGE__ && window.parent.__OPENREVO_BRIDGE__.storage) {
+          return;
+        }
+        if (window.parent && window.parent.__OPENREVO_BRIDGE__ && window.parent.__OPENREVO_BRIDGE__.storage) {
           await window.parent.__OPENREVO_BRIDGE__.storage.set(config);
           document.getElementById('statStorageHint').textContent = '已保存至 plugin_storage';
-        } else {
-          await rpc('set_plugin_storage', { pluginId: PLUGIN_ID, data: config });
-          document.getElementById('statStorageHint').textContent = '已保存至 plugin_storage';
+          return;
         }
+        await rpc('set_plugin_storage', { pluginId: PLUGIN_ID, data: config });
+        document.getElementById('statStorageHint').textContent = '已保存至 plugin_storage';
       } catch (e) {
         console.warn('[Storage] Save failed:', e);
       }
@@ -831,14 +823,14 @@
 
     // Land the target frequency at the target voltage and hold it above.
     //
-    // The offsets are computed as a *difference* against what the card is
-    // running right now, not against an estimated factory curve. The driver
-    // reports the curve with the deltas already applied, so "target minus
-    // (readback minus delta)" is off by exactly however wrong that estimate is.
-    // That error is why the plateau landed 10-20MHz high while the 875mV anchor
-    // stayed 23MHz below it: the curve kept rising from 875 to 900, and the
-    // boost algorithm simply walked up to the higher voltage. A difference
-    // against a value the card reports about itself cancels the estimate out.
+    // Offsets are computed as a *difference* against what the card is running
+    // right now, not against an estimated factory curve. The driver reports the
+    // curve with the deltas already applied, so "target minus (readback minus
+    // delta)" is off by however wrong that estimate is. That error is why the
+    // plateau landed 10-20MHz high while the 875mV anchor stayed 23MHz below it:
+    // the curve kept rising from 875 to 900, and boost simply walked up to the
+    // higher voltage. A difference against a value the card reports cancels the
+    // estimate out, so the plateau is exactly flat and the ceiling holds.
     function calculatePlannedCurve(targetVolt, targetFreq, label) {
       STATE.targetVolt = targetVolt;
       STATE.targetFreq = targetFreq;
@@ -909,13 +901,11 @@
 
     // --- V/F curve canvas: geometry, painter, manual anchor editing ---
     // Afterburner-style editing: drag an anchor up/down to move that point,
-    // Shift+drag to carry the whole right-hand segment rigidly, double-click to
-    // zero one point. Nothing here touches the GPU: edits only change the
-    // in-memory delta table, and the Apply button pushes it.
-    // The anchors run to ~1240 mV on a laptop 5070 Ti; a 1150 cap hid the top
-    // anchors entirely, so they could not be drawn or dragged.
+    // Shift+drag to carry the whole right-hand segment (down levels it, up lifts
+    // it), double-click to zero one point. Nothing here touches the GPU: edits
+    // only change the in-memory delta table, and the Apply button pushes it.
     const CURVE_V_MIN = 450;
-    const CURVE_V_MAX = 1250;
+    const CURVE_V_MAX = 1250;   // 5070 Ti laptop anchors run to ~1240 mV
     const CURVE_HIT_PX = 14;
     const CURVE_DELTA_MIN = -500;
     const CURVE_DELTA_MAX = 300;
@@ -931,8 +921,7 @@
       const plotW = Math.max(10, w - padL - padR);
       const plotH = Math.max(10, h - padT - padB);
 
-      // The Y window follows the anchors. A laptop 5070 Ti curve spans roughly
-      // 900-2700 MHz, so the old fixed 200..2800 axis wasted half the canvas.
+      // The Y window follows the anchors, not a fixed 200..2800 axis.
       const pts = STATE.vfPoints || [];
       let fMin = Infinity, fMax = -Infinity;
       for (let i = 0; i < pts.length; i++) {
@@ -954,26 +943,8 @@
     }
 
     function stockFreqAt(i) {
-      // Subtracting the requested delta from the readback does NOT give the
-      // factory curve: the readback already has the delta applied, so doing so
-      // double-counts the offset and every later edit drifts further off.
-      // Use the captured baseline when available, fall back to the estimate.
-      if (STATE.stockPoints && STATE.stockPoints[i] !== undefined) return STATE.stockPoints[i];
       const p = STATE.vfPoints[i];
       return p.freq_mhz - p.delta_mhz;
-    }
-
-    // Reference curve for the chart only (the dotted "stock" line and the Y
-    // window). The editing math does not depend on it any more: offsets are a
-    // difference against the live readback, so a wrong estimate here cannot
-    // move the curve. Kept deliberately approximate - sampling it exactly means
-    // zeroing the boost table and waiting for the driver to publish, i.e. two
-    // writes on every panel open to make a dotted line look right.
-    function captureStockBaseline() {
-      if (!STATE.vfPoints || STATE.vfPoints.length < 16) return false;
-      STATE.stockPoints = STATE.vfPoints.map(p => p.freq_mhz - (p.delta_mhz || 0));
-      log(`[⌁] 已载入出厂参考曲线（${STATE.stockPoints.length} 个锚点，峰值 ${Math.max(...STATE.stockPoints)}MHz）`);
-      return true;
     }
 
     // The hardware delta table is the source of truth when the user has not
@@ -996,6 +967,23 @@
       return p.freq_mhz + (d - (p.delta_mhz || 0));
     }
 
+    // Turn a wanted clock into the offset the table has to hold. The offset is
+    // absolute (relative to the factory table), so it is "what the card runs
+    // now" plus the change requested.
+    function deltaFor(i, wantFreq) {
+      const p = STATE.vfPoints[i];
+      const cur = p.delta_mhz || 0;
+      const d = Math.round(cur + (wantFreq - p.freq_mhz));
+      return Math.max(CURVE_DELTA_MIN, Math.min(CURVE_DELTA_MAX, d));
+    }
+
+    function markManualCurve() {
+      STATE.activeMode = '手动曲线';
+      const el = document.getElementById('statModeText');
+      if (el) el.textContent = '手动曲线';
+    }
+
+    // --- Drawing the V/F Curve on Canvas ---
     function drawCurve() {
       const g = curveGeom();
       if (!g) return;
@@ -1008,7 +996,8 @@
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, w, h);
 
-      if (!STATE.vfPoints || STATE.vfPoints.length === 0) {
+      const pts = STATE.vfPoints;
+      if (!pts || pts.length === 0) {
         ctx.fillStyle = '#64748b';
         ctx.font = '12px sans-serif';
         ctx.textAlign = 'center';
@@ -1049,8 +1038,8 @@
       ctx.lineWidth = 1.5;
       ctx.setLineDash([4, 4]);
       let started = false;
-      for (let i = 0; i < STATE.vfPoints.length; i++) {
-        const p = STATE.vfPoints[i];
+      for (let i = 0; i < pts.length; i++) {
+        const p = pts[i];
         if (p.volt_mv < CURVE_V_MIN || p.volt_mv > CURVE_V_MAX) continue;
         const x = toX(p.volt_mv);
         const y = toY(stockFreqAt(i));
@@ -1067,8 +1056,8 @@
       ctx.shadowColor = 'rgba(6, 182, 212, 0.6)';
       ctx.shadowBlur = 8;
       started = false;
-      for (let i = 0; i < STATE.vfPoints.length; i++) {
-        const p = STATE.vfPoints[i];
+      for (let i = 0; i < pts.length; i++) {
+        const p = pts[i];
         if (p.volt_mv < CURVE_V_MIN || p.volt_mv > CURVE_V_MAX) continue;
         const x = toX(p.volt_mv);
         const y = toY(effectiveFreqAt(i));
@@ -1081,8 +1070,8 @@
       // 3. Anchor handles. Anchor 0 is the hardware baseline root and is not
       // writable (the driver skips it), so it gets no handle.
       const activeIdx = DRAG.active ? DRAG.index : STATE.hoverIndex;
-      for (let i = 1; i < STATE.vfPoints.length; i++) {
-        const p = STATE.vfPoints[i];
+      for (let i = 1; i < pts.length; i++) {
+        const p = pts[i];
         if (p.volt_mv < CURVE_V_MIN || p.volt_mv > CURVE_V_MAX) continue;
         const x = toX(p.volt_mv);
         const y = toY(effectiveFreqAt(i));
@@ -1106,7 +1095,7 @@
         }
       }
 
-      // 4. Preset target marker, kept from the automatic undertvolt workflow.
+      // 4. Preset target marker, kept from the automatic undervolt workflow.
       if (STATE.targetVolt && STATE.targetFreq) {
         const tx = toX(STATE.targetVolt);
         const ty = toY(STATE.targetFreq);
@@ -1151,88 +1140,57 @@
       if (STATE.undo.length > 40) STATE.undo.shift();
     }
 
-    function markManualCurve() {
-      STATE.activeMode = '手动曲线';
-      const el = document.getElementById('statModeText');
-      if (el) el.textContent = '手动曲线';
-    }
-
-    // Turn a wanted clock into the offset the table has to hold. The offset is
-    // absolute (relative to the factory table), so it is "what the card runs
-    // now" plus the change requested - not a difference against an estimate of
-    // the factory curve, which double-counted whatever was already programmed.
-    function deltaFor(i, wantFreq) {
-      const p = STATE.vfPoints[i];
-      const cur = p.delta_mhz || 0;
-      const d = Math.round(cur + (wantFreq - p.freq_mhz));
-      return Math.max(CURVE_DELTA_MIN, Math.min(CURVE_DELTA_MAX, d));
+    function undoCurveEdit() {
+      const snap = STATE.undo.pop();
+      if (!snap) { log('[!] 没有可撤销的曲线修改'); return; }
+      STATE.plannedDeltas = snap;
+      drawCurve();
+      log('[↶] 已撤销上一步曲线修改');
     }
 
     // --- Drag semantics ---
     //
     // A plain drag moves exactly one anchor. Shift+drag carries the whole
     // segment to its right:
-    //
-    //   down - the segment to the right is levelled to this anchor's new clock.
-    //          That is the only shape the driver reads as a limit: it runs the
-    //          curve through a running maximum, so a single point that still
-    //          sits higher is enough for the card to climb back to that voltage.
+    //   down - the segment to the right is levelled to this anchor's new clock
+    //          (the only shape the driver reads as a voltage limit)
     //   up   - the segment moves up by the same amount, so a flat tail stays
     //          flat and a shaped one keeps its shape.
     //
-    // "Levelling" only applies when the anchor sits on a plateau - the next
-    // anchor is within one quantisation step of it. Dragging a point on the
-    // rising part of the curve downwards is a whole-curve move, not a flatten;
-    // levelling there would collapse the entire low-voltage ramp into one line.
-    //
-    // Nothing to the left is touched, except the anchors a downward drag cannot
-    // pass: everything left of the knot that still sits above the requested
-    // clock has to come down too, otherwise the running maximum lifts the
-    // levelled part straight back up. That window is bounded.
+    // "Levelling" only applies when the anchor sits on a plateau. Dragging a
+    // point on the rising part downwards is a whole-curve move, not a flatten.
     const DRAG_LEVEL_ANCHORS = 32;
     const DRAG_PLATEAU_TOL = 25;   // one quantisation step, in MHz
 
-    // Plain drag: one anchor, nothing else. Deliberately unclamped - the point
-    // has to go where the pointer is, even if that leaves a step against its
-    // neighbours, because otherwise a plateau (every anchor on the same clock)
-    // would be frozen in both directions. The step is reported on release:
-    // the driver runs the table through a running maximum, so a point below its
-    // left neighbour is lifted back when written.
     function setAnchorFreqSingle(index, targetFreq) {
       const deltas = ensureDeltas();
       deltas[index] = deltaFor(index, targetFreq);
       markManualCurve();
     }
 
-    // Shift+drag: the anchor plus everything to its right follows.
     function setAnchorFreqFollow(index, targetFreq) {
       const deltas = ensureDeltas();
       const n = STATE.vfPoints.length;
       const startFreq = effectiveFreqAt(index);
       const down = targetFreq < startFreq;
 
-      // Plateau or slope? Three anchors to the right, not just one: a locked
-      // region drifts a few MHz per step (2445, 2445, 2452, 2460) while the
-      // ramp climbs 150MHz in two steps. Looking one neighbour only is enough
-      // to mistake a shallow ramp step (2047 -> 2062) for a plateau and flatten
-      // it during a downward drag.
+      // Plateau or slope? Sample three anchors ahead: a locked region drifts a
+      // few MHz per step while a ramp climbs 150MHz in two.
       let hiNear = startFreq;
       for (let i = index + 1; i < Math.min(n, index + 4); i++) {
         hiNear = Math.max(hiNear, effectiveFreqAt(i));
       }
       const plateau = hiNear - startFreq <= DRAG_PLATEAU_TOL;
 
-      // A downward drag can only go as low as the first neighbour that already
-      // sits at or below the requested clock; whatever is above it belongs to
-      // the same plateau and blocks the monotonic floor.
+      // A downward drag can only go as low as the first neighbour already at or
+      // below the requested clock; whatever is above it belongs to the same
+      // plateau and blocks the monotonic floor.
       let f = targetFreq;
       if (down && index > 1) {
         const levelIdx = [];
         for (let i = index - 1; i >= 1; i--) {
           if (effectiveFreqAt(i) <= targetFreq) break;
           if (levelIdx.length >= DRAG_LEVEL_ANCHORS) {
-            // An unbroken run wider than the window: clamp at its edge instead
-            // of rewriting half the chart.
             f = Math.max(targetFreq, effectiveFreqAt(levelIdx[levelIdx.length - 1]));
             break;
           }
@@ -1245,8 +1203,7 @@
       const newFreq = effectiveFreqAt(index);
       const step = newFreq - startFreq;
 
-      // Right-hand side follows. `prev` keeps the result monotonic, which is the
-      // only shape the driver accepts without silently reordering the table.
+      // Right-hand side follows. `prev` keeps the result monotonic.
       let prev = newFreq;
       let stuck = 0;
       for (let i = index + 1; i < n; i++) {
@@ -1318,8 +1275,8 @@
         const pending = DRAG.lastEv;
         if (!pending || !DRAG.active) return;
         const targetFreq = pending.g.yToFreq(pending.pos.y);
-        // Always rebuild from the pointer-down snapshot: one drag is one edit,
-        // and toggling Shift mid-drag switches mode without stacking both.
+        // Rebuild from the pointer-down snapshot each frame: one drag is one
+        // edit, and toggling Shift mid-drag switches mode without stacking both.
         STATE.plannedDeltas = DRAG.snapshot.slice();
         if (pending.shift) {
           DRAG.mode = 'follow';
@@ -1347,8 +1304,6 @@
         const how = DRAG.mode === 'follow' ? 'Shift 右侧整段跟随' : '单点调整';
         log(`[✎] ${how}：锚点 #${idx} (${p.volt_mv}mV) → ${knee}MHz，右侧末端 ${tail}MHz（偏移 ${d > 0 ? '+' : ''}${d}MHz，缓冲区已更新，点“一键写入显卡硬件生效”下发）`);
 
-        // A single-anchor edit can leave the point off the monotonic line. Say
-        // so on release instead of letting the driver quietly fix it later.
         if (DRAG.mode === 'single') {
           const left = idx > 0 ? Math.round(effectiveFreqAt(idx - 1)) : null;
           const right = idx + 1 < STATE.vfPoints.length ? Math.round(effectiveFreqAt(idx + 1)) : null;
@@ -1382,14 +1337,6 @@
       log(`[⟲] 锚点 #${idx} 已归零`);
     }
 
-    function undoCurveEdit() {
-      const snap = STATE.undo.pop();
-      if (!snap) { log('[!] 没有可撤销的曲线修改'); return; }
-      STATE.plannedDeltas = snap;
-      drawCurve();
-      log('[↶] 已撤销上一步曲线修改');
-    }
-
     async function reloadCurveFromHardware() {
       await refreshHardwareInfo();
       if (STATE.vfPoints && STATE.vfPoints.length) {
@@ -1400,10 +1347,6 @@
     }
 
     // --- Manual curve slots (save / load through plugin_storage) ---
-    // The offsets are absolute against the factory table, so a saved curve
-    // stays valid across restarts and even after the card has been reset. What
-    // it cannot survive is a different anchor count, so that is checked on load
-    // instead of silently writing a table of the wrong length.
     function refreshManualCurveButton() {
       const btn = document.getElementById('btnLoadManualCurve');
       if (!btn) return;
@@ -1586,19 +1529,10 @@
       await loadPluginStorage();
       refreshManualCurveButton();
 
-      // 2. Refresh physical hardware state, then capture the factory curve so
-      // every offset is computed against a stable baseline.
+      // 2. Refresh physical hardware state
       await refreshHardwareInfo();
-      captureStockBaseline();
 
-      // 3. A discarded / missing curve is rebuilt from the saved target, so the
-      // panel never opens on a curve derived from a wrong baseline.
-      if (!Array.isArray(STATE.plannedDeltas) && STATE.activeMode !== '出厂默认' &&
-          STATE.vfPoints && STATE.vfPoints.length >= 16) {
-        calculatePlannedCurve(STATE.targetVolt, STATE.targetFreq, STATE.activeMode);
-      }
-
-      // 4. Register Tauri Event Listener for host-wide clock offset sync
+      // 3. Register Tauri Event Listener for host-wide clock offset sync
       try {
         if (window.OpenRevo && typeof window.OpenRevo.listen === 'function') {
           window.OpenRevo.listen('gpu-clock-offsets-changed', (event) => {
@@ -1617,7 +1551,7 @@
         console.warn('Failed to attach gpu-clock-offsets-changed listener:', err);
       }
 
-      // 5. Bind manual curve editing to the canvas
+      // 4. Bind manual curve editing to the canvas
       const curveCanvas = document.getElementById('vfCanvas');
       if (curveCanvas) {
         curveCanvas.addEventListener('pointerdown', onCurvePointerDown);
