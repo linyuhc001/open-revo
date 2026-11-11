@@ -594,7 +594,7 @@
       <!-- Manual anchor editing -->
       <div class="curve-toolbar">
         <span class="hint">
-          <b>拖动锚点</b> 上下调整该点频率 · <b>Shift + 拖动</b> 平移该点及右侧所有点 ·
+          <b>拖动</b> 右侧整段跟随（下压拉平 / 上抬齐升）· <b>Shift+拖动</b> 整段刚性平移 ·
           <b>双击</b> 单点归零
         </span>
         <span class="curve-badge" id="curveReadout">未选中锚点</span>
@@ -916,7 +916,7 @@
       let fMin = Infinity, fMax = -Infinity;
       for (let i = 0; i < pts.length; i++) {
         const stock = stockFreqAt(i);
-        const eff = stock + ((STATE.plannedDeltas && STATE.plannedDeltas[i]) || 0);
+        const eff = effectiveFreqAt(i);
         fMin = Math.min(fMin, stock, eff);
         fMax = Math.max(fMax, stock, eff);
       }
@@ -964,12 +964,15 @@
       return STATE.plannedDeltas;
     }
 
+    // Frequency this anchor would run at under the planned table. Taken straight
+    // from the readback plus the change in offset, so it never depends on an
+    // estimate of the factory curve and cannot drift when the table is refreshed.
     function effectiveFreqAt(i) {
       const p = STATE.vfPoints[i];
       const d = STATE.plannedDeltas && STATE.plannedDeltas[i] !== undefined
         ? STATE.plannedDeltas[i]
         : (p.delta_mhz || 0);
-      return stockFreqAt(i) + d;
+      return p.freq_mhz + (d - (p.delta_mhz || 0));
     }
 
     function drawCurve() {
@@ -1105,7 +1108,7 @@
       const d = STATE.plannedDeltas && STATE.plannedDeltas[index] !== undefined
         ? STATE.plannedDeltas[index]
         : (p.delta_mhz || 0);
-      const eff = Math.round(stockFreqAt(index) + d);
+      const eff = Math.round(effectiveFreqAt(index));
       el.textContent = `锚点 #${index} · ${p.volt_mv} mV · ${eff} MHz (${d > 0 ? '+' : ''}${d})`;
     }
 
@@ -1133,30 +1136,90 @@
       if (el) el.textContent = '手动曲线';
     }
 
-    // Move a single anchor. Anything to its right that would end up below it is
-    // lifted along, which keeps the curve monotonic - the only shape the driver
-    // accepts without silently reordering or dropping points.
+    // Turn a wanted clock into the offset the table has to hold. The offset is
+    // absolute (relative to the factory table), so it is "what the card runs
+    // now" plus the change requested - not a difference against an estimate of
+    // the factory curve, which double-counted whatever was already programmed.
+    function deltaFor(i, wantFreq) {
+      const p = STATE.vfPoints[i];
+      const cur = p.delta_mhz || 0;
+      const d = Math.round(cur + (wantFreq - p.freq_mhz));
+      return Math.max(CURVE_DELTA_MIN, Math.min(CURVE_DELTA_MAX, d));
+    }
+
+    // Drag an anchor and let the whole right-hand side follow it, both ways:
+    //
+    //   down - the segment to the right is levelled to this anchor's new clock.
+    //          That is the only shape the driver reads as a limit: it runs the
+    //          curve through a running maximum, so a single point that still
+    //          sits higher is enough for the card to climb back to that voltage.
+    //   up   - the segment moves up by the same amount, so a flat tail stays
+    //          flat and a shaped one keeps its shape.
+    //
+    // "Levelling" only applies when the anchor sits on a plateau - the next
+    // anchor is within one quantisation step of it. Dragging a point on the
+    // rising part of the curve downwards is a whole-curve move, not a flatten;
+    // levelling there would collapse the entire low-voltage ramp into one line.
+    //
+    // Nothing to the left is touched, except the anchors a downward drag cannot
+    // pass: everything left of the knot that still sits above the requested
+    // clock has to come down too, otherwise the running maximum lifts the
+    // levelled part straight back up. That window is bounded.
+    const DRAG_LEVEL_ANCHORS = 32;
+    const DRAG_PLATEAU_TOL = 25;   // one quantisation step, in MHz
+
     function setAnchorFreq(index, targetFreq) {
       const deltas = ensureDeltas();
-      const stock = stockFreqAt(index);
-      const floor = index > 1 ? stockFreqAt(index - 1) + deltas[index - 1] : 0;
-      const f = Math.max(floor, targetFreq);
-      let d = Math.round((f - stock) / 5) * 5;
-      d = Math.max(CURVE_DELTA_MIN, Math.min(CURVE_DELTA_MAX, d));
-      deltas[index] = d;
+      const n = STATE.vfPoints.length;
+      const startFreq = effectiveFreqAt(index);
+      const down = targetFreq < startFreq;
 
-      let prev = stock + d;
-      for (let i = index + 1; i < STATE.vfPoints.length; i++) {
-        const e = stockFreqAt(i) + deltas[i];
-        if (e < prev) {
-          const nd = Math.max(CURVE_DELTA_MIN, Math.min(CURVE_DELTA_MAX, Math.round((prev - stockFreqAt(i)) / 5) * 5));
-          deltas[i] = nd;
-          prev = stockFreqAt(i) + nd;
-        } else {
-          prev = e;
+      // Plateau or slope? Look one anchor to the right: a locked region has its
+      // neighbours at (almost exactly) the same clock, a ramp does not.
+      const plateau = index + 1 < n &&
+        Math.abs(effectiveFreqAt(index + 1) - startFreq) <= DRAG_PLATEAU_TOL;
+
+      // A downward drag can only go as low as the first neighbour that already
+      // sits at or below the requested clock; whatever is above it belongs to
+      // the same plateau and blocks the monotonic floor.
+      let f = targetFreq;
+      if (down && index > 1) {
+        const levelIdx = [];
+        for (let i = index - 1; i >= 1; i--) {
+          if (effectiveFreqAt(i) <= targetFreq) break;
+          if (levelIdx.length >= DRAG_LEVEL_ANCHORS) {
+            // An unbroken run wider than the window: clamp at its edge instead
+            // of rewriting half the chart.
+            f = Math.max(targetFreq, effectiveFreqAt(levelIdx[levelIdx.length - 1]));
+            break;
+          }
+          levelIdx.push(i);
         }
+        for (const i of levelIdx) deltas[i] = deltaFor(i, f);
       }
+
+      deltas[index] = deltaFor(index, f);
+      const newFreq = effectiveFreqAt(index);
+      const step = newFreq - startFreq;
+
+      // Right-hand side follows. `prev` keeps the result monotonic, which is the
+      // only shape the driver accepts without silently reordering the table.
+      let prev = newFreq;
+      let stuck = 0;
+      for (let i = index + 1; i < n; i++) {
+        const cur = effectiveFreqAt(i);
+        const inPlateau = plateau && Math.abs(cur - startFreq) <= DRAG_PLATEAU_TOL;
+        const want = down && inPlateau ? newFreq : cur + step;
+        const target = Math.max(want, prev);
+        deltas[i] = deltaFor(i, target);
+        prev = effectiveFreqAt(i);
+        if (Math.abs(prev - target) > 25) stuck++;
+      }
+
       markManualCurve();
+      if (stuck > 0) {
+        log(`[!] #${index} 之后有 ${stuck} 个锚点已到 ${CURVE_DELTA_MIN}MHz 单点下限，跟不到 ${Math.round(newFreq)}MHz`);
+      }
     }
 
     // Shift-drag: move the anchor and everything to its right by the same step,
@@ -1242,8 +1305,11 @@
       DRAG.active = false;
       if (STATE.geom && STATE.geom.canvas) STATE.geom.canvas.classList.remove('dragging');
       if (DRAG.moved && idx >= 0) {
+        const p = STATE.vfPoints[idx];
         const d = STATE.plannedDeltas[idx];
-        log(`[✎] 手动调整锚点 #${idx} (${STATE.vfPoints[idx].volt_mv}mV) → ${d > 0 ? '+' : ''}${d} MHz（缓冲区已更新，点“一键写入显卡硬件生效”下发）`);
+        const knee = Math.round(effectiveFreqAt(idx));
+        const tail = Math.round(effectiveFreqAt(STATE.vfPoints.length - 1));
+        log(`[✎] 锚点 #${idx} (${p.volt_mv}mV) → ${knee}MHz，右侧末端 ${tail}MHz（偏移 ${d > 0 ? '+' : ''}${d}MHz，缓冲区已更新，点“一键写入显卡硬件生效”下发）`);
       } else {
         STATE.undo.pop(); // a plain click is not an edit
       }
