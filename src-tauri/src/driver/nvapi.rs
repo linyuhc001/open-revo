@@ -482,10 +482,10 @@ pub fn set_gpu_vf_curve_deltas(deltas_mhz: &[i32]) -> Result<(), String> {
         return Err(format!("V/F 曲线锚点数超出控制表容量限制 ({} > {})", max_pos, CONTROL_TABLE_SIZE));
     }
 
-    // Safety guard: Clamp individual delta range within -500 MHz .. +300 MHz
+    // Safety guard: Clamp individual delta range within -500 MHz .. +1000 MHz
     for (i, &d) in deltas_mhz.iter().enumerate() {
-        if d < -500 || d > 300 {
-            return Err(format!("锚点 #{} 频率偏移超出安全边界 (-500 ~ +300 MHz): {} MHz", i, d));
+        if d < -500 || d > 1000 {
+            return Err(format!("锚点 #{} 频率偏移超出安全边界 (-500 ~ +1000 MHz): {} MHz", i, d));
         }
     }
 
@@ -569,7 +569,7 @@ pub fn set_gpu_undervolt_curve(target_volt_mv: i32, max_boost_mhz: i32) -> Resul
         let stock_freq = current_points[i].freq_mhz - current_points[i].delta_mhz;
         let eff_freq = stock_freq + new_deltas[i];
         if eff_freq < prev_freq - 25 {
-            new_deltas[i] = (prev_freq - stock_freq).clamp(-500, 300);
+            new_deltas[i] = (prev_freq - stock_freq).clamp(-500, 1000);
         }
         prev_freq = stock_freq + new_deltas[i];
     }

@@ -259,7 +259,7 @@
     const PLUGIN_ID = "gpu-curve-tuner";
     const LOCAL_KEY = "openrevo_plugin_gpu_curve_tuner_cfg";
     const V_MIN = 450, V_MAX = 1250;       // 电压轴
-    const DELTA_MIN = -500, DELTA_MAX = 300; // 单锚点偏移硬限制
+    const DELTA_MIN = -500, DELTA_MAX = 1000; // 单锚点偏移硬限制（与后端 nvapi.rs 一致）
     const HIT_PX = 14;                     // 命中判定半径（像素）
 
     // ============================================================
@@ -665,38 +665,56 @@
     }
 
     // ============================================================
-    //  预设 / 自定义锁压（闭环：相对当前读回值求差）
+    //  预设 / 自定义锁压（闭环：以「驱动当前实际 delta」为基准）
     // ============================================================
-    function calcLock(targetVolt, targetFreq, label) {
+    // 锁压闭环必须以驱动为准，而不是编辑缓冲区。编辑缓冲区 S.deltas 可能
+    // 因为手动拖拽而和驱动实际状态脱节；如果拿它当基准，shift 就算错，电压
+    // 锁不住。所以这里强制先读回硬件，再用「驱动 delta」反推当前频率做闭环。
+    async function calcLock(targetVolt, targetFreq, label) {
       S.targetVolt = targetVolt;
       S.targetFreq = targetFreq;
       S.mode = label;
       document.getElementById("modeText").textContent = label;
       if (S.anchors.length < 16) { log("[-] 缺少锚点数据"); return; }
 
-      // 找目标锚点
+      // 1. 先读回驱动当前曲线，作为闭环基准（保证 delta 语义正确）。
+      try {
+        const info = await rpc("get_gpu_tuning_info");
+        if (info && info.vf_points && info.vf_points.length) {
+          S.anchors = info.vf_points;
+          // 驱动实际 delta 才是闭环的「当前值」。
+          S.deltas = S.anchors.map(p => p.delta_mhz || 0);
+        }
+      } catch (_) { /* 读回失败则用现有 anchors 兜底 */ }
+
+      // 2. 找目标锚点
       let ti = 0, md = 1e9;
       for (let i = 0; i < S.anchors.length; i++) {
         const d = Math.abs(S.anchors[i].volt_mv - targetVolt);
         if (d < md) { md = d; ti = i; }
       }
 
-      ensureDeltas();
-      const cur = S.deltas.slice();
-      // 闭环：shift = 目标频率 - 当前该锚点的有效频率
-      const shift = targetFreq - eff(ti);
-      const nd = cur.slice();
+      // 3. 闭环：以驱动当前 delta 为基准，stock 从读回值反推。
+      //    curFreq[i] = anchors[i].freq_mhz（读回值已含 delta）
+      const cur = S.anchors.map(p => p.freq_mhz);
+      const shift = targetFreq - cur[ti];
+      const nd = new Array(S.anchors.length).fill(0);
       for (let i = 1; i < S.anchors.length; i++) {
-        const want = i <= ti ? eff(i) + shift : targetFreq;
-        nd[i] = Math.max(DELTA_MIN, Math.min(DELTA_MAX, Math.round(want - S.stock[i])));
+        const want = i <= ti ? cur[i] + shift : targetFreq;
+        // delta = want - stock = want - (cur[i] - cur_delta[i])
+        const stock_i = S.anchors[i].freq_mhz - (S.anchors[i].delta_mhz || 0);
+        nd[i] = Math.max(DELTA_MIN, Math.min(DELTA_MAX, Math.round(want - stock_i)));
       }
-      // 单调守卫：只抬不降
-      let prev = eff(0);
+
+      // 4. 单调守卫：只抬不降。
+      let prev = cur[0];
       for (let i = 1; i < S.anchors.length; i++) {
-        const e = S.stock[i] + nd[i];
-        if (e < prev - 25) nd[i] = Math.max(DELTA_MIN, Math.min(DELTA_MAX, Math.round(prev - S.stock[i])));
-        prev = S.stock[i] + nd[i];
+        const stock_i = S.anchors[i].freq_mhz - (S.anchors[i].delta_mhz || 0);
+        const e = stock_i + nd[i];
+        if (e < prev - 25) nd[i] = Math.max(DELTA_MIN, Math.min(DELTA_MAX, Math.round(prev - stock_i)));
+        prev = stock_i + nd[i];
       }
+
       S.deltas = nd;
       log("[✓] 已计算 [" + label + "]: " + targetVolt + "mV 以上锁频 " + targetFreq + "MHz");
       draw();
