@@ -258,11 +258,7 @@
     // ============================================================
     const PLUGIN_ID = "gpu-curve-tuner";
     const LOCAL_KEY = "openrevo_plugin_gpu_curve_tuner_cfg";
-    // 坐标轴与上游版本一致：固定视窗，不随曲线自动缩放。
-    // 450~1150mV 之外、200~2800MHz 之外的锚点不绘制（如 1160mV 以上与待机 180MHz 段），
-    // 这些点本来也不会去调。
-    const V_MIN = 450, V_MAX = 1150;       // 电压轴
-    const F_MIN = 200, F_MAX = 2800;       // 频率轴
+    const V_MIN = 700, V_MAX = 1250;       // 电压轴（700mV 以下是待机死区，不参与显示）
     const DELTA_MIN = -500, DELTA_MAX = 1000; // 单锚点偏移硬限制（与后端 nvapi.rs 一致）
     const HIT_PX = 14;                     // 命中判定半径（像素）
 
@@ -413,8 +409,19 @@
       const plotW = Math.max(10, w - padL - padR);
       const plotH = Math.max(10, h - padT - padB);
 
-      // 固定视窗（上游坐标）：曲线变化时画面不缩放、不漂移，拖动的手感才稳定。
-      const yMin = F_MIN, yMax = F_MAX;
+      // 只把「可视窗内」的锚点纳入 Y 轴：450~700mV 那一段是待机 180MHz 的死区，
+      // 把它算进来会让纵轴拉到 -200~3500，一像素 19MHz，拖一下就跨 1000MHz。
+      let fMin = Infinity, fMax = -Infinity;
+      for (let i = 0; i < S.stock.length; i++) {
+        const v = S.anchors[i].volt_mv;
+        if (v < V_MIN || v > V_MAX) continue;
+        fMin = Math.min(fMin, S.stock[i], eff(i));
+        fMax = Math.max(fMax, S.stock[i], eff(i));
+      }
+      if (!isFinite(fMin) || fMax - fMin < 100) { fMin = 1600; fMax = 3200; }
+      const m = Math.max(60, (fMax - fMin) * 0.12);
+      const yMin = Math.floor((fMin - m) / 50) * 50;
+      const yMax = Math.ceil((fMax + m) / 50) * 50;
 
       const toX = v => padL + (v - V_MIN) / (V_MAX - V_MIN) * plotW;
       const toY = f => h - padB - (f - yMin) / (yMax - yMin) * plotH;
@@ -444,23 +451,18 @@
       // 网格
       ctx.strokeStyle = "rgba(255,255,255,0.05)"; ctx.lineWidth = 1;
       ctx.font = "10px monospace"; ctx.fillStyle = "#64748b"; ctx.textAlign = "right";
-      // 刻度与上游一致：频率每 500MHz（500~2500），电压每 100mV（600~1100）
-      for (let f = 500; f <= 2500; f += 500) {
+      const fStep = (yMax - yMin) > 2400 ? 500 : 200;
+      for (let f = Math.ceil(yMin / fStep) * fStep; f <= yMax; f += fStep) {
         const y = toY(f);
         ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke();
         ctx.fillText(f + "M", padL - 6, y + 3);
       }
       ctx.textAlign = "center";
-      for (let v = 600; v <= 1100; v += 100) {
+      for (let v = 700; v <= 1200; v += 100) {
         const x = toX(v);
         ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, h - padB); ctx.stroke();
         ctx.fillText(v + "mV", x, h - 12);
       }
-
-      // 固定视窗下曲线可能画到框外（出厂尾部 3135MHz 高于 2800），一律裁到绘图区内，
-      // 免得压到坐标标签和提示文字上。
-      ctx.save();
-      ctx.beginPath(); ctx.rect(padL, padT, w - padL - padR, h - padT - padB); ctx.clip();
 
       // 出厂曲线（虚线）
       ctx.beginPath(); ctx.strokeStyle = "rgba(255,255,255,0.3)"; ctx.lineWidth = 1.5; ctx.setLineDash([4, 4]);
@@ -505,6 +507,8 @@
           st ? ctx.lineTo(x, y) : (ctx.moveTo(x, y), st = true);
         }
         ctx.stroke(); ctx.setLineDash([]);
+        ctx.fillStyle = "rgba(251,146,60,0.95)"; ctx.font = "10px monospace"; ctx.textAlign = "right";
+        ctx.fillText("橙色虚线 = 驱动实际生效", w - padR, padT + 10);
       }
 
       // 锚点手柄（锚点 0 不可写）
@@ -523,12 +527,6 @@
           ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke(); ctx.setLineDash([]);
         }
       }
-      ctx.restore();
-
-      if (lifted) {
-        ctx.fillStyle = "rgba(251,146,60,0.95)"; ctx.font = "10px monospace"; ctx.textAlign = "right";
-        ctx.fillText("橙色虚线 = 驱动实际生效", w - padR, padT + 10);
-      }
     }
 
     // ============================================================
@@ -542,10 +540,7 @@
       if (!g || S.anchors.length < 2) return -1;
       let best = -1, bd = Infinity;
       for (let i = 1; i < S.anchors.length; i++) {
-        // 窗口外的锚点不参与命中，否则会把鼠标吸附到看不见的点上
-        const av = S.anchors[i].volt_mv;
-        if (av < V_MIN || av > V_MAX) continue;
-        const dx = Math.abs(g.toX(av) - xPx);
+        const dx = Math.abs(g.toX(S.anchors[i].volt_mv) - xPx);
         if (dx < bd) { bd = dx; best = i; }
       }
       return bd <= HIT_PX ? best : -1;
@@ -663,8 +658,9 @@
       // 从按下时的快照重建，再按位移量修改选中点。
       S.deltas = drag.snapshot.slice();
       const dy = pos.y - drag.startY;           // 向下为正 → 频率降低
-      // 拖拽增益严格取坐标轴比例，保证曲线跟着鼠标 1:1 走，不再额外封顶。
-      const mhzPerPx = (S.geom.yMax - S.geom.yMin) / (S.geom.h - S.geom.padT - S.geom.padB);
+      // 画布只有 240px 高，纵轴跨度 2000MHz 时一像素就是 10MHz，直接用几何比例
+      // 拖起来太跳；上限 8MHz/px 保证一次下拉能停在想要的点上。
+      const mhzPerPx = Math.min((S.geom.yMax - S.geom.yMin) / (S.geom.h - S.geom.padT - S.geom.padB), 8);
       const dFreq = -dy * mhzPerPx;
       const startFreq = S.stock[drag.index] + drag.startDelta;
       const targetFreq = startFreq + dFreq;
