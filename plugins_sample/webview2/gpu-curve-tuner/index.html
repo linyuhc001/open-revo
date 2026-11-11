@@ -294,6 +294,40 @@
       color: var(--accent-cyan);
     }
 
+    /* Thin rule between the three presets and the save action: same pill
+       geometry, but it is not a preset and must not read like a fourth one. */
+    .preset-divider {
+      width: 1px;
+      align-self: center;
+      height: 20px;
+      background: var(--border-medium);
+      margin: 0 2px;
+    }
+
+    .preset-btn.save {
+      border-color: rgba(16, 185, 129, 0.4);
+      color: #34d399;
+    }
+    .preset-btn.save:hover {
+      background: rgba(16, 185, 129, 0.12);
+      border-color: var(--status-ok);
+      color: #6ee7b7;
+    }
+    .preset-btn.save.saved {
+      background: rgba(16, 185, 129, 0.15);
+      border-color: var(--status-ok);
+      color: #6ee7b7;
+    }
+    /* Unsaved hand edits: an amber dot, so a stray drag is not forgotten. */
+    .preset-btn.save.dirty::after {
+      content: '';
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #f59e0b;
+      box-shadow: 0 0 6px rgba(245, 158, 11, 0.8);
+    }
+
     /* Curve Visualization Canvas */
     .curve-canvas-wrap {
       background: #06090e;
@@ -553,6 +587,11 @@
         <button class="preset-btn" onclick="applyPreset(900, 2600, '极客能效 (900mV)')">
           🚀 极客能效 (900mV @ 2600MHz)
         </button>
+        <div class="preset-divider"></div>
+        <button class="preset-btn save" id="btnSaveCurve" onclick="saveManualCurve()"
+          title="把当前手动拖动出来的曲线保存到插件存储，下次打开面板自动恢复（只存方案，不写显卡）">
+          💾 保存手动曲线
+        </button>
       </div>
 
       <!-- Custom Input Row -->
@@ -685,7 +724,12 @@
           if (typeof stored.target_volt === 'number') STATE.targetVolt = stored.target_volt;
           if (typeof stored.target_freq === 'number') STATE.targetFreq = stored.target_freq;
           if (typeof stored.active_mode === 'string') STATE.activeMode = stored.active_mode;
-          if (Array.isArray(stored.planned_deltas)) STATE.plannedDeltas = stored.planned_deltas;
+          if (Array.isArray(stored.planned_deltas)) {
+            STATE.plannedDeltas = stored.planned_deltas;
+            // Restored from disk: the restored curve counts as saved, so the
+            // button does not open with a stale unsaved dot.
+            SAVED_CURVE_SIG = curveSignature(STATE.plannedDeltas);
+          }
 
           document.getElementById('inputTargetVolt').value = STATE.targetVolt;
           document.getElementById('inputTargetFreq').value = STATE.targetFreq;
@@ -718,18 +762,22 @@
         if (window.OpenRevo && window.OpenRevo.storage && typeof window.OpenRevo.storage.set === 'function') {
           await window.OpenRevo.storage.set(config);
           document.getElementById('statStorageHint').textContent = '已保存至 plugin_storage';
-          return;
-        }
-        if (window.parent && window.parent.__OPENREVO_BRIDGE__ && window.parent.__OPENREVO_BRIDGE__.storage) {
+        } else if (window.parent && window.parent.__OPENREVO_BRIDGE__ && window.parent.__OPENREVO_BRIDGE__.storage) {
           await window.parent.__OPENREVO_BRIDGE__.storage.set(config);
           document.getElementById('statStorageHint').textContent = '已保存至 plugin_storage';
-          return;
+        } else {
+          await rpc('set_plugin_storage', { pluginId: PLUGIN_ID, data: config });
+          document.getElementById('statStorageHint').textContent = '已保存至 plugin_storage';
         }
-        await rpc('set_plugin_storage', { pluginId: PLUGIN_ID, data: config });
-        document.getElementById('statStorageHint').textContent = '已保存至 plugin_storage';
       } catch (e) {
         console.warn('[Storage] Save failed:', e);
       }
+
+      // The buffer is now the persisted one (localStorage above always
+      // succeeded), so clear the save button's unsaved marker. Must run on
+      // every branch: the storage backends above used to return early.
+      SAVED_CURVE_SIG = curveSignature(config.planned_deltas);
+      refreshSaveIndicator();
     }
 
     // --- Hardware Data Loading ---
@@ -1032,6 +1080,10 @@
         ctx.fillStyle = 'rgba(16, 185, 129, 0.85)';
         ctx.fill();
       }
+
+      // Every edit path ends in a repaint, so this is the one place that keeps
+      // the save button's dirty marker honest.
+      refreshSaveIndicator();
     }
 
     // --- Manual anchor editing ---
@@ -1234,6 +1286,67 @@
       markManualCurve();
       drawCurve();
       log('[*] 曲线已全部归零（等同出厂），点“一键写入”下发');
+    }
+
+    // --- Persisting a hand-edited curve ---
+    // Dragging only touches an in-memory buffer, so without an explicit save the
+    // result disappears when the panel is closed. Apply writes storage as a side
+    // effect, but people routinely want to keep a curve without pushing it to
+    // the GPU. SAVED_CURVE_SIG is the signature of whatever was last persisted,
+    // which is what tells the button whether there are unsaved edits.
+    let SAVED_CURVE_SIG = '';
+
+    function curveSignature(deltas) {
+      if (!Array.isArray(deltas) || deltas.length === 0) return '';
+      let h = 2166136261;
+      for (let i = 0; i < deltas.length; i++) {
+        h ^= (deltas[i] | 0) & 0xffff;
+        h = Math.imul(h, 16777619);
+      }
+      return (h >>> 0).toString(16) + ':' + deltas.length;
+    }
+
+    function refreshSaveIndicator() {
+      const btn = document.getElementById('btnSaveCurve');
+      if (!btn) return;
+      const sig = curveSignature(STATE.plannedDeltas);
+      const dirty = !!sig && sig !== SAVED_CURVE_SIG;
+      btn.classList.toggle('dirty', dirty);
+      btn.classList.toggle('saved', !!sig && !dirty);
+    }
+
+    let saveFlashTimer = 0;
+    function flashSaveButton() {
+      const btn = document.getElementById('btnSaveCurve');
+      if (!btn) return;
+      if (!btn.dataset.label) btn.dataset.label = btn.textContent.trim();
+      btn.textContent = '✓ 已保存';
+      clearTimeout(saveFlashTimer);
+      saveFlashTimer = setTimeout(() => {
+        btn.textContent = btn.dataset.label || '💾 保存手动曲线';
+      }, 1400);
+    }
+
+    async function saveManualCurve() {
+      if (!STATE.vfPoints || STATE.vfPoints.length < 16) {
+        log('[-] 还没读到 V/F 锚点，暂时无法保存曲线');
+        return;
+      }
+      ensureDeltas();
+      // Note: the mode label is left alone. Dragging already switched it to
+      // “手动曲线”; saving a freshly picked preset must not relabel that preset.
+      await savePluginStorage();
+
+      const deltas = STATE.plannedDeltas;
+      let changed = 0, lo = 0, hi = 0;
+      for (let i = 0; i < deltas.length; i++) {
+        const d = deltas[i];
+        if (d !== 0) changed++;
+        if (d < lo) lo = d;
+        if (d > hi) hi = d;
+      }
+      log(`[💾] 手动曲线已保存：${deltas.length} 个锚点，${changed} 个已调整（${lo} ~ +${hi} MHz），下次打开面板自动恢复，点“一键写入”才下发硬件。`);
+      flashSaveButton();
     }
 
     // --- Hardware Actions ---
