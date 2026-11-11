@@ -230,7 +230,7 @@
       </div>
 
       <div class="toolbar">
-        <span class="hint"><b>拖动</b> 单点调整 · <b>Shift+拖动</b> 右侧整段同幅平移（下拉最低到左邻频率）· <b>双击</b> 单点归零</span>
+        <span class="hint"><b>拖动</b> 单点调整 · <b>Shift+拖动</b> 右侧整段同幅平移（压过左邻时按橙色虚线预览真实生效形状）· <b>双击</b> 单点归零</span>
         <span class="readout" id="readout">未选中锚点</span>
         <button class="btn btn-secondary" style="padding: 5px 10px; font-size: 11.5px;" onclick="undoEdit()">↶ 撤销</button>
         <button class="btn btn-secondary" style="padding: 5px 10px; font-size: 11.5px;" onclick="reloadCurve()">⟳ 读回硬件</button>
@@ -258,7 +258,7 @@
     // ============================================================
     const PLUGIN_ID = "gpu-curve-tuner";
     const LOCAL_KEY = "openrevo_plugin_gpu_curve_tuner_cfg";
-    const V_MIN = 450, V_MAX = 1250;       // 电压轴
+    const V_MIN = 700, V_MAX = 1250;       // 电压轴（700mV 以下是待机死区，不参与显示）
     const DELTA_MIN = -500, DELTA_MAX = 1000; // 单锚点偏移硬限制（与后端 nvapi.rs 一致）
     const HIT_PX = 14;                     // 命中判定半径（像素）
 
@@ -409,12 +409,16 @@
       const plotW = Math.max(10, w - padL - padR);
       const plotH = Math.max(10, h - padT - padB);
 
+      // 只把「可视窗内」的锚点纳入 Y 轴：450~700mV 那一段是待机 180MHz 的死区，
+      // 把它算进来会让纵轴拉到 -200~3500，一像素 19MHz，拖一下就跨 1000MHz。
       let fMin = Infinity, fMax = -Infinity;
       for (let i = 0; i < S.stock.length; i++) {
+        const v = S.anchors[i].volt_mv;
+        if (v < V_MIN || v > V_MAX) continue;
         fMin = Math.min(fMin, S.stock[i], eff(i));
         fMax = Math.max(fMax, S.stock[i], eff(i));
       }
-      if (!isFinite(fMin) || fMax - fMin < 100) { fMin = 800; fMax = 2800; }
+      if (!isFinite(fMin) || fMax - fMin < 100) { fMin = 1600; fMax = 3200; }
       const m = Math.max(60, (fMax - fMin) * 0.12);
       const yMin = Math.floor((fMin - m) / 50) * 50;
       const yMax = Math.ceil((fMax + m) / 50) * 50;
@@ -454,7 +458,7 @@
         ctx.fillText(f + "M", padL - 6, y + 3);
       }
       ctx.textAlign = "center";
-      for (let v = 500; v <= 1200; v += 100) {
+      for (let v = 700; v <= 1200; v += 100) {
         const x = toX(v);
         ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, h - padB); ctx.stroke();
         ctx.fillText(v + "mV", x, h - 12);
@@ -482,6 +486,30 @@
         st ? ctx.lineTo(x, y) : (ctx.moveTo(x, y), st = true);
       }
       ctx.stroke(); ctx.shadowBlur = 0;
+
+      // 驱动 running-max 预览：某点低于它左侧的最高点时，驱动写入后会把它抬回去。
+      // 橙色虚线 = 真正生效的形状，青色 = 编辑缓冲区，两者不一致时一眼就能看出。
+      let runMax = -Infinity, lifted = false;
+      const drv = new Array(S.stock.length);
+      for (let i = 0; i < S.stock.length; i++) {
+        const e = eff(i);
+        runMax = i === 0 ? e : Math.max(runMax, e);
+        drv[i] = runMax;
+        if (runMax > e + 1) lifted = true;
+      }
+      if (lifted) {
+        ctx.beginPath(); ctx.strokeStyle = "rgba(251,146,60,0.9)"; ctx.lineWidth = 2; ctx.setLineDash([7, 5]);
+        st = false;
+        for (let i = 0; i < S.stock.length; i++) {
+          const v = S.anchors[i].volt_mv;
+          if (v < V_MIN || v > V_MAX) continue;
+          const x = toX(v), y = toY(drv[i]);
+          st ? ctx.lineTo(x, y) : (ctx.moveTo(x, y), st = true);
+        }
+        ctx.stroke(); ctx.setLineDash([]);
+        ctx.fillStyle = "rgba(251,146,60,0.95)"; ctx.font = "10px monospace"; ctx.textAlign = "right";
+        ctx.fillText("橙色虚线 = 驱动实际生效", w - padR, padT + 10);
+      }
 
       // 锚点手柄（锚点 0 不可写）
       const hot = drag.active ? drag.index : S.hover;
@@ -524,7 +552,8 @@
       const p = S.anchors[idx];
       const d = S.deltas[idx] || 0;
       let txt = "锚点 #" + idx + " · " + p.volt_mv + " mV · " + Math.round(eff(idx)) + " MHz (" + (d > 0 ? "+" : "") + d + ")";
-      if (snapInfo) txt += " · 已到左邻 " + S.anchors[snapInfo.at].volt_mv + "mV 的 " + snapInfo.level + "MHz";
+      if (snapInfo) txt += " · 已压过左邻 " + S.anchors[snapInfo.at].volt_mv + "mV 的 " + snapInfo.level + "MHz（驱动会抬回成平台）";
+      if (drag.active && drag.mode === "follow" && d !== undefined && d <= DELTA_MIN + 1) txt += " · 已到 -500MHz 硬下限，整段停住";
       el.textContent = txt;
     }
 
@@ -554,30 +583,27 @@
 
     // ---- Shift：右侧整段同幅平移 ----
     // 上拉 / 下拉都是「选中点及其右侧，delta 同时加上拖动量」，形状完全不变。
-    // 下拉时只加一道限制：选中点最多压到左邻锚点的频率为止（再低驱动会把
-    // 这一段抬回去），整段平移量随之被截断，避免某几个点单独触底把曲线拉歪。
-    // 左侧一个点都不碰。
-    let snapInfo = null;   // { at: 左邻下标, level: 截断时的频率 } 仅用于读数提示
+    // 这里刻意不再用「左邻频率」截断：出厂曲线相邻两点只差几十 MHz，一截断拖动
+    // 就立刻停住，手感像整段下移失效。压过左邻的部分由驱动 running-max 抬回的
+    // 结果会用橙色虚线画出来（见 draw 末尾），所见即写入后的真实形状。
+    // 左侧一个点都不碰。唯一的硬约束是每个锚点自己的 -500/+1000。
+    let snapInfo = null;   // 保留变量：松手日志里用来描述「压过左邻」的台阶
 
     function setFollow(index, targetFreq) {
       const start = eff(index);
-      let step = Math.round(targetFreq - start);
+      const step = Math.round(targetFreq - start);
       snapInfo = null;
-
-      if (step < 0 && index > 0) {
-        const leftFreq = eff(index - 1);
-        if (start + step < leftFreq) {
-          step = Math.round(leftFreq - start);
-          snapInfo = { at: index - 1, level: Math.round(leftFreq) };
-        }
-      }
-      if (step === 0) return;
+      if (step === 0) return 0;
 
       // 同一 step 加到整段上：形状不变，每个点各自夹在 -500..+1000 内。
       for (let i = index; i < S.deltas.length; i++) {
         const d = Math.round((S.deltas[i] || 0) + step);
         S.deltas[i] = Math.max(DELTA_MIN, Math.min(DELTA_MAX, d));
       }
+      if (step < 0 && index > 0 && eff(index) < eff(index - 1)) {
+        snapInfo = { at: index - 1, level: Math.round(eff(index - 1)) };
+      }
+      return step;
     }
 
     // 统计右侧有多少锚点因为 -500MHz 单点下限而压不到目标（触底后曲线会重新上翘）。
@@ -632,7 +658,9 @@
       // 从按下时的快照重建，再按位移量修改选中点。
       S.deltas = drag.snapshot.slice();
       const dy = pos.y - drag.startY;           // 向下为正 → 频率降低
-      const mhzPerPx = (S.geom.yMax - S.geom.yMin) / (S.geom.h - S.geom.padT - S.geom.padB);
+      // 画布只有 240px 高，纵轴跨度 2000MHz 时一像素就是 10MHz，直接用几何比例
+      // 拖起来太跳；上限 8MHz/px 保证一次下拉能停在想要的点上。
+      const mhzPerPx = Math.min((S.geom.yMax - S.geom.yMin) / (S.geom.h - S.geom.padT - S.geom.padB), 8);
       const dFreq = -dy * mhzPerPx;
       const startFreq = S.stock[drag.index] + drag.startDelta;
       const targetFreq = startFreq + dFreq;
@@ -667,10 +695,10 @@
             log("[!] 该点比左侧 " + left + "MHz 低 " + (left - knee) + "MHz，驱动 running-max 会把它抬回；要连右侧一起压低请用 Shift+拖动");
           }
         } else if (drag.mode === "follow") {
-          // 整段同幅平移：pull 到左邻频率就截断，不会压出向下的台阶。
+          // 整段同幅平移不再按左邻截断；压过左邻时提示写入后的真实形状。
           if (snapInfo) {
             const a = S.anchors[snapInfo.at];
-            log("[⇥] 已停到左邻 " + a.volt_mv + "mV 的 " + snapInfo.level + "MHz（再低会被驱动抬回），整段保持原形状");
+            log("[⇥] 已压过左邻 " + a.volt_mv + "mV 的 " + snapInfo.level + "MHz：缓冲里是台阶，写入后驱动 running-max 会把这一段抬成 " + snapInfo.level + "MHz 平台（见橙色虚线）");
           }
           // -500MHz 单点下限：尾部触底的锚点会停住，其余继续跟随。
           const fl = countFloored(idx, Math.round(eff(idx)));
