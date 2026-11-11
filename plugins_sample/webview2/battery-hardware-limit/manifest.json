@@ -1,9 +1,9 @@
 {
   "id": "battery-hardware-limit",
   "name": "电池充电上限守护者",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "author": "OpenRevo Official & Community",
-  "description": "官方演示插件：基于微内核硬件网关的多协议底层限充调控中心，支持同方门控持续钉住法(Pin & Keep-Alive)与传统脉冲存储法，自适应0x04/0x05硬件门控探测，自由设定 1~100% 充电阈值。",
+  "description": "官方演示插件：基于微内核硬件网关的多协议底层限充调控中心。默认采用原生三寄存器模式 (EC 0x07A6 保护模式 + 0x07B9 上限 + 0x07D0 回落下限)，与固件一致、零心跳；另保留同方门控持续钉住法(Pin & Keep-Alive)与传统脉冲存储法以兼容老模具，自由设定 1~100% 充电阈值。",
   "type": "tab",
   "min_host_version": "0.9.4",
   "window": {
@@ -25,8 +25,23 @@
     ]
   },
   "config": {
-    "default_mode": "pin",
+    "default_mode": "native",
     "strategies": {
+      "native_registers": {
+        "name": "原生三寄存器模式 (Native Registers，现代 Uniwill 固件推荐)",
+        "protocol": "TongfangDirectEc",
+        "limit_up_reg": 1977,
+        "limit_down_reg": 2000,
+        "mode_reg": 1958,
+        "mode_station": 33,
+        "mode_balance": 17,
+        "mode_longlife": 1,
+        "touchpad_bitmask": 8,
+        "platform_id_reg": 1987,
+        "platform_id_restore": 7,
+        "down_offset": 5,
+        "keepalive_interval_ms": 0
+      },
       "tongfang_pin": {
         "name": "同方门控持续保持法 (Pin & Keep-Alive，现代机型推荐)",
         "protocol": "TongfangDirectEc",

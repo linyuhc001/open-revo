@@ -692,10 +692,10 @@
         <div class="header-title-box">
           <h1>
             电池硬件限充守护者
-            <span class="header-badge" id="badgeVersion">v2.2.0 Pin-Safe</span>
+            <span class="header-badge" id="badgeVersion">v2.3.0 Native</span>
           </h1>
           <div class="header-desc">
-            底层硬件级截断充电回路 · 自适应 0x04/0x05 门控 · 持续常驻心跳锁定 · 彻底杜绝电池鼓包与过充
+            底层硬件级截断充电回路 · 原生三寄存器 (0x07A6 + 0x07B9 + 0x07D0) · 无需心跳 · 彻底杜绝电池鼓包与过充
           </div>
         </div>
       </div>
@@ -727,18 +727,18 @@
         </div>
       </div>
 
-      <!-- Stat 2: Gate status -->
+      <!-- Stat 2: Battery protection mode -->
       <div class="stat-card">
         <div class="stat-label">
-          <span>硬件限充控制回路</span>
-          <span style="font-size: 9.5px; color: var(--text-dim);">EC 0x0742</span>
+          <span>电池保护模式</span>
+          <span style="font-size: 9.5px; color: var(--text-dim);">EC 0x07A6</span>
         </div>
-        <div class="stat-val" id="statGateVal">
-          <span id="statGateText">--</span>
+        <div class="stat-val" id="statModeVal">
+          <span id="statModeText">--</span>
         </div>
-        <div class="stat-hint" id="statGateHint">
-          <span class="indicator-dot" id="statGateDot"></span>
-          <span id="statGateDetail">bit2=未激活 (无限制)</span>
+        <div class="stat-hint" id="statModeHint">
+          <span class="indicator-dot" id="statModeDot"></span>
+          <span id="statModeDetail">读取中...</span>
         </div>
       </div>
 
@@ -755,12 +755,15 @@
         <div class="stat-hint" id="statLimitHint">
           <span id="statLimitDesc">未设置限制</span>
         </div>
+        <div class="stat-hint">
+          <span id="statDownDesc" style="color: var(--text-dim); font-size: 10px;">回落下限 0x07D0 = --</span>
+        </div>
       </div>
 
       <!-- Stat 4: Platform Identity -->
       <div class="stat-card">
         <div class="stat-label">
-          <span>主板平台门控码</span>
+          <span>平台身份码</span>
           <span style="font-size: 9.5px; color: var(--text-dim);">EC 0x07C3</span>
         </div>
         <div class="stat-val">
@@ -777,7 +780,7 @@
       <div class="panel-header">
         <div class="panel-title">
           <span>设定目标充电上限 (1% ~ 100% 自由可调)</span>
-          <span class="panel-badge" id="strategyModeBadge">持续门控锁定 (Pin & Keep-Alive)</span>
+          <span class="panel-badge" id="strategyModeBadge">原生三寄存器 (NATIVE)</span>
         </div>
         <span style="font-size: 11px; color: var(--text-dim);">
           到达设定阈值硬件自动切断充电，插着电源也不伤电池
@@ -840,14 +843,14 @@
       <!-- Action Row -->
       <div class="action-row">
         <div class="action-desc" id="actionDescText">
-          <b>运行机制</b>：采用<b>门控持续保持法 (Pin & Keep-Alive)</b>，智能自适应探测开门平台码 (0x04 / 0x05)，写入目标限值并由后台常驻守护。绝不在写入后盲目恢复原厂码（恢复原厂码将导致同方固件立即撤销限值并清零）。
+          <b>运行机制</b>：采用<b>原生三寄存器模式</b>，一次写入 <code>0x07A6</code> 保护模式 + <code>0x07B9</code> 上限 + <code>0x07D0</code> 回落下限，由 EC 固件自己守住阈值，<b>无后台心跳</b>，与 OpenRevo 主程序及开机自恢复逻辑完全一致。
         </div>
         <div class="action-buttons">
           <button id="btnCancel" class="btn btn-danger" onclick="triggerCancelLimit()">
             取消限充 (恢复充满)
           </button>
           <button id="btnApply" class="btn btn-primary" onclick="triggerApplyLimit()">
-            写入并锁定生效
+            写入并生效
           </button>
         </div>
       </div>
@@ -864,7 +867,8 @@
           <div class="lab-field">
             <label class="lab-label" title="限充生效工作模式">生效工作模式 (Mode)</label>
             <select id="paramMode" class="lab-select" onchange="updateLabConfig()">
-              <option value="pin" selected>持续锁定守护 (Pin & Keep-Alive)</option>
+              <option value="native" selected>原生三寄存器 (现代固件推荐)</option>
+              <option value="pin">持续锁定守护 (Pin & Keep-Alive)</option>
               <option value="pulse">脉冲存储法 (Pulse NVRAM 兼容)</option>
             </select>
           </div>
@@ -900,16 +904,26 @@
               onchange="updateLabConfig()" />
           </div>
           <div class="lab-field">
-            <label class="lab-label">限充寄存器 (Limit Reg)</label>
+            <label class="lab-label">限充寄存器 (Limit Up Reg)</label>
             <input id="paramLimitReg" class="lab-input" type="text" value="0x07B9 (1977)"
               onchange="updateLabConfig()" />
           </div>
           <div class="lab-field">
-            <label class="lab-label">门控寄存器 (Gate Reg)</label>
+            <label class="lab-label">回落下限寄存器 (Limit Down Reg)</label>
+            <input id="paramDownReg" class="lab-input" type="text" value="0x07D0 (2000)"
+              onchange="updateLabConfig()" />
+          </div>
+          <div class="lab-field">
+            <label class="lab-label">保护模式寄存器 (Mode Reg)</label>
+            <input id="paramModeReg" class="lab-input" type="text" value="0x07A6 (1958)"
+              onchange="updateLabConfig()" />
+          </div>
+          <div class="lab-field">
+            <label class="lab-label">门控寄存器 (仅 pin/pulse 模式使用)</label>
             <input id="paramGateReg" class="lab-input" type="text" value="0x07C3 (1987)" onchange="updateLabConfig()" />
           </div>
           <div class="lab-field">
-            <label class="lab-label">状态判定寄存器 (Status Reg)</label>
+            <label class="lab-label">状态寄存器 (仅 pin/pulse 模式使用)</label>
             <input id="paramStatusReg" class="lab-input" type="text" value="0x0742 (1858)"
               onchange="updateLabConfig()" />
           </div>
@@ -936,14 +950,16 @@
   <script>
     // --- 状态与配置存储 ---
     const STATE = {
-      mode: 'pin',            // 'pin' (持续保持守护) | 'pulse' (脉冲瞬时存储)
+      mode: 'native',         // 'native' (原生三寄存器) | 'pin' (持续保持守护) | 'pulse' (脉冲瞬时存储)
       protocol: 'TongfangDirectEc',
-      gateStrategy: 'auto',    // 'auto' | '4' | '5' | 'custom'
-      activeGateVal: 4,       // 当前生效的门控开门值
+      gateStrategy: 'auto',    // 'auto' | '4' | '5' | 'custom'  (仅 pin/pulse)
+      activeGateVal: 4,       // 当前生效的门控开门值 (仅 pin/pulse)
       pulseHoldMs: 2500,
       keepaliveIntervalMs: 4000,
-      limitReg: 1977,         // 0x07B9
-      gateReg: 1987,          // 0x07C3
+      limitReg: 1977,         // 0x07B9 充電上限
+      downReg: 2000,          // 0x07D0 回落下限
+      modeReg: 1958,          // 0x07A6 电池保护模式
+      gateReg: 1987,          // 0x07C3 平台身份码 (仅 pin/pulse 当门控用)
       statusReg: 1858,        // 0x0742
       statusBit: 2,           // bit2 (0x0742 bit2: 1 = control loop active)
       origPlat: 0x07,         // 原厂出厂平台码 (用于回退恢复充满)
@@ -953,6 +969,32 @@
       _hasLoadedStorage: false,
       _keepaliveTimer: null,
     };
+
+    // 原生模式：Uniwill/Mechrevo 固件的电池保护模式字节 (0x07A6)
+    const HEALTH_MODES = {
+      longlife: { code: 0x01, name: '长效模式', short: '长效' },
+      balance: { code: 0x11, name: '平衡模式', short: '平衡' },
+      station: { code: 0x21, name: '工作站模式', short: '工作站' },
+    };
+    const TOUCHPAD_BITMASK = 0x08;
+    const DOWN_OFFSET = 5;
+    const STORAGE_SCHEMA = 2;
+
+    // 与宿主 ec_bridge::apply_battery_limit_with_override 完全相同的档位推导，
+    // 避免两边各写一个值互相覆盖。
+    function healthModeForTarget(target) {
+      if (target >= 95) return 'longlife';
+      if (target <= 65) return 'station';
+      return 'balance';
+    }
+
+    function modeNameFromByte(byte) {
+      const code = byte & ~TOUCHPAD_BITMASK;
+      if (code === HEALTH_MODES.station.code) return 'station';
+      if (code === HEALTH_MODES.balance.code) return 'balance';
+      if (code === HEALTH_MODES.longlife.code) return 'longlife';
+      return null;
+    }
 
     const PLUGIN_STORAGE_KEY = 'openrevo_battery_limit_storage';
 
@@ -992,6 +1034,11 @@
       });
     }
 
+    // 旧版遗留别名：initBatteryProbe 里调用的是 callRpc，而脚本里只定义了 rpc。
+    // 缺了它会在 DOMContentLoaded 里直接抛 ReferenceError，把后面的存档加载与
+    // 状态刷新全部掐掉（表现为插件每次打开都是默认值、不记得上次设置）。
+    const callRpc = rpc;
+
     function parseRegValue(str, fallback) {
       if (!str) return fallback;
       const clean = str.trim();
@@ -1006,12 +1053,18 @@
       if (!cfg || typeof cfg !== 'object') return;
       STATE._hasLoadedStorage = true;
 
-      if (cfg.mode) {
+      // v2.2.0 及更早的存档默认是 pin 模式：它把平台身份码 0x07C3 当成门控反复改写，
+      // 在 0x07A6 + 0x07B9 + 0x07D0 原生通路可用的机型上只会和宿主互相覆盖。
+      // 老存档一次性迁移到原生模式，之后仍可在实验室里手动切回 pin / pulse。
+      const isLegacyConfig = !(Number(cfg.schema_version) >= STORAGE_SCHEMA);
+
+      if (isLegacyConfig) {
+        STATE.mode = 'native';
+      } else if (cfg.mode) {
         STATE.mode = cfg.mode;
-        const modeSelect = document.getElementById('paramMode');
-        if (modeSelect) modeSelect.value = cfg.mode;
-        updateStrategyBadge();
       }
+      const modeSelect = document.getElementById('paramMode');
+      if (modeSelect) modeSelect.value = STATE.mode;
 
       if (typeof cfg.target_limit === 'number' && cfg.target_limit >= 1 && cfg.target_limit <= 100) {
         STATE.currentTarget = cfg.target_limit;
@@ -1069,6 +1122,8 @@
       }
 
       if (cfg.limit_reg) STATE.limitReg = Number(cfg.limit_reg);
+      if (cfg.down_reg) STATE.downReg = Number(cfg.down_reg);
+      if (cfg.mode_reg) STATE.modeReg = Number(cfg.mode_reg);
       if (cfg.gate_reg) STATE.gateReg = Number(cfg.gate_reg);
       if (cfg.status_reg) STATE.statusReg = Number(cfg.status_reg);
       if (cfg.status_bit !== undefined) STATE.statusBit = Number(cfg.status_bit);
@@ -1077,9 +1132,25 @@
         STATE.isLimitActive = Boolean(cfg.is_limit_active);
       }
 
-      logConsole(`[*] 已从沙盒恢复机型配置: 模式=${STATE.mode}, 策略=${STATE.gateStrategy}, 开门码=0x0${STATE.activeGateVal}, 原厂码=0x${STATE.origPlat.toString(16).toUpperCase().padStart(2, '0')}, 目标=${STATE.currentTarget}%`);
+      [
+        ['paramLimitReg', STATE.limitReg, 4],
+        ['paramDownReg', STATE.downReg, 4],
+        ['paramModeReg', STATE.modeReg, 4],
+        ['paramGateReg', STATE.gateReg, 4],
+        ['paramStatusReg', STATE.statusReg, 3]
+      ].forEach(function (row) {
+        const el = document.getElementById(row[0]);
+        if (el) el.value = `0x${row[1].toString(16).toUpperCase().padStart(row[2], '0')} (${row[1]})`;
+      });
 
-      // 若之前处于活跃限充且为 pin 模式，启动守护定时器
+      logConsole(`[*] 已从沙盒恢复机型配置: 模式=${STATE.mode}, 目标=${STATE.currentTarget}%, 上限寄存器=0x${STATE.limitReg.toString(16).toUpperCase()}, 模式寄存器=0x${STATE.modeReg.toString(16).toUpperCase()}`);
+      updateStrategyBadge();
+      if (isLegacyConfig) {
+        logConsole('[*] 检测到 v2.2.0 及更早的存档，已自动迁移到【原生三寄存器】模式（旧版 pin 模式改写的是平台身份码，会与宿主冲突）。');
+        savePluginStorage();
+      }
+
+      // 若之前处于活跃限充且为 pin 模式，启动守护定时器 (原生模式无需心跳)
       if (STATE.isLimitActive && STATE.currentTarget < 100 && STATE.mode === 'pin') {
         startKeepAlive();
       }
@@ -1122,6 +1193,7 @@
 
     async function savePluginStorage() {
       const config = {
+        schema_version: STORAGE_SCHEMA,
         mode: STATE.mode,
         target_limit: STATE.currentTarget,
         protocol: STATE.protocol,
@@ -1131,6 +1203,8 @@
         keepalive_interval_ms: STATE.keepaliveIntervalMs,
         pulse_hold_ms: STATE.pulseHoldMs,
         limit_reg: STATE.limitReg,
+        down_reg: STATE.downReg,
+        mode_reg: STATE.modeReg,
         gate_reg: STATE.gateReg,
         status_reg: STATE.statusReg,
         status_bit: STATE.statusBit,
@@ -1189,6 +1263,7 @@
       STATE.currentTarget = val;
       document.getElementById('targetDisplay').textContent = val;
       updatePresetCapsules(val);
+      updateStrategyBadge();
     }
 
     function adjustStep(delta) {
@@ -1236,17 +1311,29 @@
     function updateStrategyBadge() {
       const badge = document.getElementById('strategyModeBadge');
       const desc = document.getElementById('actionDescText');
-      if (STATE.mode === 'pin') {
+      const applyBtn = document.getElementById('btnApply');
+      if (!badge || !desc) return;
+
+      if (STATE.mode === 'native') {
+        badge.textContent = '原生三寄存器 (NATIVE)';
+        const modeKey = healthModeForTarget(STATE.currentTarget);
+        const down = STATE.currentTarget > DOWN_OFFSET ? STATE.currentTarget - DOWN_OFFSET : STATE.currentTarget;
+        desc.innerHTML = `<b>运行机制</b>：一次写入 <code>0x07A6</code> 保护模式（${HEALTH_MODES[modeKey].name}）+ <code>0x07B9</code> 上限 ${STATE.currentTarget}% + <code>0x07D0</code> 回落下限 ${down}%，由 EC 固件自己守住阈值，<b>无后台心跳</b>，与 OpenRevo 主程序的开机自恢复逻辑完全一致。`;
+        if (applyBtn) applyBtn.textContent = '写入并生效';
+      } else if (STATE.mode === 'pin') {
         badge.textContent = '持续门控锁定 (Pin & Keep-Alive)';
-        desc.innerHTML = '<b>运行机制</b>：采用<b>门控持续保持法 (Pin & Keep-Alive)</b>，智能自适应探测开门平台码 (0x04 / 0x05)，写入目标限值并由后台常驻守护。绝不在写入后盲目恢复原厂码（恢复原厂码将导致同方固件立即撤销限值并清零）。';
+        desc.innerHTML = '<b>运行机制</b>：采用<b>门控持续保持法 (Pin & Keep-Alive)</b>，智能自适应探测开门平台码 (0x04 / 0x05)，写入目标限值并由后台常驻守护。仅用于不具备 0x07A6 原生通路的早期模组。';
+        if (applyBtn) applyBtn.textContent = '写入并锁定生效';
       } else {
         badge.textContent = '传统脉冲触发 (Pulse Trigger)';
         desc.innerHTML = '<b>运行机制</b>：采用<b>传统脉冲触发法</b>，写入目标限值后临时开门 2.5 秒，随后尝试恢复平台码。仅供部分老款支持固件自动转录至 NVRAM (0x087F) 的模具使用。';
+        if (applyBtn) applyBtn.textContent = '写入并锁定生效';
       }
     }
 
     function updateLabConfig() {
       STATE.mode = document.getElementById('paramMode').value;
+      if (STATE.mode !== 'pin') stopKeepAlive();
       STATE.protocol = document.getElementById('paramProtocol').value;
       const gVal = document.getElementById('paramGateStrategy').value;
       if (gVal === 'custom') {
@@ -1259,11 +1346,13 @@
       STATE.keepaliveIntervalMs = parseInt(document.getElementById('paramKeepaliveInterval').value, 10) || 4000;
       STATE.pulseHoldMs = parseInt(document.getElementById('paramPulseHold').value, 10) || 2500;
       STATE.limitReg = parseRegValue(document.getElementById('paramLimitReg').value, STATE.limitReg);
+      STATE.downReg = parseRegValue(document.getElementById('paramDownReg').value, STATE.downReg);
+      STATE.modeReg = parseRegValue(document.getElementById('paramModeReg').value, STATE.modeReg);
       STATE.gateReg = parseRegValue(document.getElementById('paramGateReg').value, STATE.gateReg);
       STATE.statusReg = parseRegValue(document.getElementById('paramStatusReg').value, STATE.statusReg);
 
       updateStrategyBadge();
-      logConsole(`配置更新: 模式=${STATE.mode}, 协议=${STATE.protocol}, 开门策略=${STATE.gateStrategy}, 守护间隔=${STATE.keepaliveIntervalMs}ms`);
+      logConsole(`配置更新: 模式=${STATE.mode}, 协议=${STATE.protocol}, 上限=0x${STATE.limitReg.toString(16).toUpperCase()}, 下限=0x${STATE.downReg.toString(16).toUpperCase()}, 模式字节=0x${STATE.modeReg.toString(16).toUpperCase()}`);
       savePluginStorage();
     }
 
@@ -1355,11 +1444,177 @@
       }
     }
 
+    // --- 原生三寄存器模式：一次写入 0x07A6 + 0x07B9 + 0x07D0，无心跳 ---
+    async function runNativeApply() {
+      setBusy(true);
+      const target = STATE.currentTarget;
+      const modeKey = healthModeForTarget(target);
+      const modeCode = HEALTH_MODES[modeKey].code;
+      const downLimit = target > DOWN_OFFSET ? target - DOWN_OFFSET : target;
+
+      logConsole(`=== 原生三寄存器模式: 目标 ${target}%，保护档位 ${HEALTH_MODES[modeKey].name} ===`);
+      stopKeepAlive();
+      STATE.isLimitActive = false;
+
+      try {
+        // 1. 先读保护模式字节。读不到就整体中止 —— 此时还没写任何寄存器，
+        //    不会留下"上限写了、模式没写"的半截状态。
+        showProgress(true, '1/4: 读取保护模式字节 (EC 0x07A6)...', 10);
+        let curMode;
+        try {
+          curMode = await ecRead(STATE.modeReg);
+        } catch (e) {
+          throw new Error(`读取保护模式寄存器 0x${STATE.modeReg.toString(16).toUpperCase()} 失败，已中止且未写入任何硬件: ${e.message}`);
+        }
+        // 必须保住 bit3（触控板开关），否则会顺手把触控板关掉
+        const tpBit = curMode & TOUCHPAD_BITMASK;
+        const finalByte = (modeCode & ~TOUCHPAD_BITMASK) | tpBit;
+        logConsole(`[1/4] 当前 0x07A6 = 0x${curMode.toString(16).toUpperCase().padStart(2, '0')}，触控板位=${tpBit ? '1' : '0'} → 将写入 0x${finalByte.toString(16).toUpperCase().padStart(2, '0')} (${HEALTH_MODES[modeKey].name})`);
+
+        // 2. 平台身份码体检：v2.2.0 的 pin 模式会把 0x07C3 写成 4/5，这里顺手还原
+        showProgress(true, '2/4: 校验平台身份码 (EC 0x07C3)...', 30);
+        try {
+          const curPlat = await ecRead(STATE.gateReg);
+          if (curPlat === 4 || curPlat === 5) {
+            await ecWrite(STATE.gateReg, 0x07);
+            logConsole(`[2/4] 平台身份码被旧版本改写成 0x0${curPlat}，已还原为 0x07（避免键盘映射异常）`);
+          } else {
+            logConsole(`[2/4] 平台身份码正常: 0x${curPlat.toString(16).toUpperCase().padStart(2, '0')}`);
+          }
+        } catch (e) {
+          logConsole(`[2/4] 平台身份码读取失败，跳过（不影响限充）: ${e.message}`);
+        }
+
+        // 3. 上限 + 回落下限
+        showProgress(true, `3/4: 写入充电上限 ${target}% / 回落下限 ${downLimit}%...`, 55);
+        await ecWrite(STATE.limitReg, target);
+        await ecWrite(STATE.downReg, downLimit);
+        logConsole(`[3/4] 0x07B9 = ${target}%，0x07D0 = ${downLimit}%（${DOWN_OFFSET}% 滞回）`);
+
+        // 4. 写入保护模式并回读校验
+        showProgress(true, '4/4: 写入保护模式并回读校验...', 82);
+        await ecWrite(STATE.modeReg, finalByte);
+
+        // 4. 回读校验
+        showProgress(true, '4/4: 回读校验...', 90);
+        await new Promise((r) => setTimeout(r, 300));
+        const [rbUp, rbDown, rbMode] = await Promise.all([
+          ecRead(STATE.limitReg).catch(() => null),
+          ecRead(STATE.downReg).catch(() => null),
+          ecRead(STATE.modeReg).catch(() => null),
+        ]);
+        const upVal = rbUp !== null ? (rbUp & 0x7f) : null;
+        const okUp = upVal === target;
+        const okDown = rbDown !== null && rbDown === downLimit;
+        const okMode = rbMode !== null && (rbMode & ~TOUCHPAD_BITMASK) === (modeCode & ~TOUCHPAD_BITMASK);
+
+        logConsole(`[4/4] 回读: 0x07B9=${upVal === null ? '?' : upVal}% (${okUp ? '✓' : '✗'})，0x07D0=${rbDown === null ? '?' : rbDown}% (${okDown ? '✓' : '✗'})，0x07A6=0x${rbMode === null ? '?' : rbMode.toString(16).toUpperCase().padStart(2, '0')} (${okMode ? '✓' : '✗'})`);
+
+        STATE.isLimitActive = okUp;
+        await refreshHardwareState();
+
+        // 同步给宿主：set_battery_limit 会把新值写进 OpenRevo 主配置，之后
+        // 开机、唤醒、插拔电源时宿主会自动重下发同一组值，插件被关掉也不会失效。
+        try {
+          await rpc('set_battery_limit', { limit: target });
+          logConsole(`[同步] 已写入宿主配置 battery_limit=${target}，开机/唤醒后自动恢复`);
+        } catch (e) {
+          logConsole(`[!] 同步宿主配置失败（当前硬件已生效，但重启后不会保留）: ${e.message}`);
+        }
+
+        if (okUp && okMode) {
+          showToast(`✅ 已生效：上限 ${target}%，${HEALTH_MODES[modeKey].short}模式，由 EC 固件自行守住`);
+          logConsole(`[+] 写入完成，无需心跳。EC 将在 ${downLimit}% 以下才开始补电，充到 ${target}% 停止。\n`);
+        } else if (okUp) {
+          showToast(`⚠️ 上限已写入 ${target}%，但保护模式字节未按预期落盘（回读 0x${rbMode === null ? '?' : rbMode.toString(16)}）`);
+          logConsole('[!] 保护模式回读不符：可能是固件自行重算了档位，上限仍然有效。\n');
+        } else {
+          showToast('⚠️ 写入后回读不一致，请点“立即刷新”查看真实硬件状态');
+          logConsole('[!] 回读值与目标不一致，可能被固件 clamp 或通道异常。\n');
+        }
+
+        savePluginStorage();
+      } catch (err) {
+        logConsole(`[FAIL] 原生模式写入失败: ${err.message}`);
+        alert(`设定限充失败: ${err.message}`);
+      } finally {
+        showProgress(false);
+        setBusy(false);
+      }
+    }
+
+    async function runNativeCancel() {
+      setBusy(true);
+      stopKeepAlive();
+      logConsole('=== 原生三寄存器模式：取消限充（恢复充满）===');
+
+      try {
+        showProgress(true, '1/3: 写入 100% 上限 / 95% 回落下限...', 25);
+        await ecWrite(STATE.limitReg, 100);
+        await ecWrite(STATE.downReg, 95);
+        logConsole('[1/3] 0x07B9 = 100%，0x07D0 = 95%');
+
+        showProgress(true, '2/3: 保护模式切回长效 (LongLife)...', 60);
+        let finalByte = HEALTH_MODES.longlife.code;
+        try {
+          const curMode = await ecRead(STATE.modeReg);
+          finalByte = (HEALTH_MODES.longlife.code & ~TOUCHPAD_BITMASK) | (curMode & TOUCHPAD_BITMASK);
+        } catch (e) {
+          logConsole(`[!] 读取保护模式寄存器失败，按无触控板位写入: ${e.message}`);
+        }
+        await ecWrite(STATE.modeReg, finalByte);
+        logConsole(`[2/3] 0x07A6 = 0x${finalByte.toString(16).toUpperCase().padStart(2, '0')} (长效模式)`);
+
+        showProgress(true, '3/3: 校验平台身份码并回读...', 90);
+        try {
+          const curPlat = await ecRead(STATE.gateReg);
+          if (curPlat === 4 || curPlat === 5) {
+            await ecWrite(STATE.gateReg, 0x07);
+            logConsole('[3/3] 平台身份码已还原为 0x07');
+          }
+        } catch (_) { }
+        await new Promise((r) => setTimeout(r, 300));
+
+        const rbUp = await ecRead(STATE.limitReg).catch(() => null);
+        logConsole(`[3/3] 回读 0x07B9 = ${rbUp === null ? '?' : (rbUp & 0x7f)}%`);
+
+        STATE.isLimitActive = false;
+        STATE.currentTarget = 100;
+        document.getElementById('targetSlider').value = 100;
+        document.getElementById('targetDisplay').textContent = 100;
+        updatePresetCapsules(100);
+        updateStrategyBadge();
+        await refreshHardwareState();
+
+        try {
+          await rpc('set_battery_limit', { limit: 100 });
+          logConsole('[同步] 宿主配置已恢复为 100%（不再限制）');
+        } catch (e) {
+          logConsole(`[!] 同步宿主配置失败: ${e.message}`);
+        }
+
+        showProgress(false);
+        showToast('✅ 已取消限充，EC 将正常充至 100%');
+        logConsole('=== 限充已解除，电池将充满至 100% ===\n');
+        savePluginStorage();
+      } catch (err) {
+        logConsole(`[FAIL] 取消过程异常: ${err.message}`);
+        alert(`取消限充失败: ${err.message}`);
+      } finally {
+        showProgress(false);
+        setBusy(false);
+      }
+    }
+
     // --- 核心业务：写入并生效 ---
     async function triggerApplyLimit() {
       if (STATE.isBusy) return;
       if (STATE.currentTarget >= 100) {
         await triggerCancelLimit();
+        return;
+      }
+      if (STATE.mode === 'native') {
+        await runNativeApply();
         return;
       }
 
@@ -1467,6 +1722,10 @@
     // --- 取消限充 (恢复充满 100%) ---
     async function triggerCancelLimit() {
       if (STATE.isBusy) return;
+      if (STATE.mode === 'native') {
+        await runNativeCancel();
+        return;
+      }
       setBusy(true);
       logConsole(`=== 开始执行取消限充 (恢复充满 100%) ===`);
       showProgress(true, '1/3: 停止守护心跳并清零目标上限...', 20);
@@ -1513,31 +1772,36 @@
     async function runSelfProbe() {
       logConsole('=== 开始执行底层硬件通道深度自检 ===');
       try {
-        const vPid = await ecRead(1856).catch(() => null);  // 0x0740 Project ID
-        const vRom = await ecRead(1904).catch(() => null);  // 0x0770 ROM ID[0]
-        const vPlat = await ecRead(1987).catch(() => null); // 0x07C3 Platform ID
-        const vLim = await ecRead(1977).catch(() => null);  // 0x07B9 Live Limit
-        const vGate = await ecRead(1858).catch(() => null); // 0x0742 Status Reg
+        const vPid = await ecRead(1856).catch(() => null);   // 0x0740 Project ID
+        const vMode = await ecRead(STATE.modeReg).catch(() => null);  // 0x07A6 Protection Mode
+        const vLim = await ecRead(STATE.limitReg).catch(() => null);  // 0x07B9 Limit Up
+        const vDown = await ecRead(STATE.downReg).catch(() => null);  // 0x07D0 Limit Down
+        const vPlat = await ecRead(STATE.gateReg).catch(() => null);  // 0x07C3 Platform ID
+        const vGate = await ecRead(STATE.statusReg).catch(() => null); // 0x0742 Status
 
-        const bit2 = vGate !== null ? ((vGate >> 2) & 1) : 0;
+        const modeKey = vMode !== null ? modeNameFromByte(vMode) : null;
         const limVal = vLim !== null ? (vLim & 0x7f) : 0;
         const isReached = vLim !== null ? ((vLim >> 7) & 1) : 0;
+        const platDirty = vPlat === 4 || vPlat === 5;
+
+        const hex2 = (v) => v === null ? '??' : v.toString(16).toUpperCase().padStart(2, '0');
 
         const report = `
 [+] 硬件寄存器状态快照:
-    - Project ID (0x0740) : 0x${(vPid || 0).toString(16).toUpperCase().padStart(2, '0')} (同方/Uniwill 模具)
-    - ROM ID[0]  (0x0770) : 0x${(vRom || 0).toString(16).toUpperCase().padStart(2, '0')}
-    - Platform   (0x07C3) : 0x${(vPlat || 0).toString(16).toUpperCase().padStart(2, '0')} ${vPlat === 4 ? '(已开门 0x04)' : vPlat === 5 ? '(已开门 0x05)' : '(原厂关闭)'}
-    - Live Limit (0x07B9) : ${limVal}% (已达上限标记bit7=${isReached})
-    - Gate Status(0x0742) : 0x${(vGate || 0).toString(16).toUpperCase().padStart(2, '0')} (bit2控制回路=${bit2 === 1 ? '已激活' : '未开启'})
+    - Project ID  (0x0740) : 0x${hex2(vPid)} (Uniwill / 同方模具)
+    - 保护模式    (0x07A6) : 0x${hex2(vMode)} ${modeKey ? '(' + HEALTH_MODES[modeKey].name + ')' : '(未设定/未知)'}
+    - 充电上限    (0x07B9) : ${limVal}% (已达上限 bit7=${isReached})
+    - 回落下限    (0x07D0) : ${vDown === null ? '??' : vDown}%
+    - 平台身份码  (0x07C3) : 0x${hex2(vPlat)} ${platDirty ? '⚠ 被门控法改写' : '(正常)'}
+    - 状态字      (0x0742) : 0x${hex2(vGate)}
         `;
         logConsole(report);
 
-        let diagMsg = `Project ID: 0x${(vPid||0).toString(16).toUpperCase()} | 门控bit2: ${bit2}`;
-        if (bit2 === 1) {
-          diagMsg += `\n✅ 当前限充回路正在工作中，电池将受限在 ${limVal}%。`;
+        let diagMsg = `Project ID 0x${hex2(vPid)} | 保护模式 ${modeKey ? HEALTH_MODES[modeKey].name : '未设定'} | 上限 ${limVal}% / 下限 ${vDown === null ? '?' : vDown}%`;
+        if (platDirty) {
+          diagMsg += `\n⚠ 平台身份码为 0x${hex2(vPlat)}，已被旧版门控法改写，点一次【写入并生效】会自动还原为 0x07。`;
         } else {
-          diagMsg += `\nℹ️ 当前回路未开启，点击【写入并锁定生效】将自动探测开门 (0x04 优先)。`;
+          diagMsg += `\n✅ 原生三寄存器通路正常，无需心跳即可保持限充。`;
         }
         alert(diagMsg);
         await refreshHardwareState();
@@ -1550,35 +1814,28 @@
     // --- 状态刷新 ---
     async function refreshHardwareState() {
       try {
-        const [vLim, vGate, vPlat] = await Promise.all([
+        const [vLim, vDown, vMode, vPlat] = await Promise.all([
           ecRead(STATE.limitReg).catch(() => null),
-          ecRead(STATE.statusReg).catch(() => null),
+          ecRead(STATE.downReg).catch(() => null),
+          ecRead(STATE.modeReg).catch(() => null),
           ecRead(STATE.gateReg).catch(() => null),
         ]);
 
-        if (vPlat !== null) {
-          document.getElementById('statPlatformVal').textContent = `0x${vPlat.toString(16).toUpperCase().padStart(2, '0')}`;
-          const pDesc = document.getElementById('statPlatformDesc');
-          if (vPlat === 4) {
-            pDesc.textContent = '● 0x04 门控锁定中 (工作站/轻薄/现代通用)';
-            pDesc.style.color = 'var(--status-ok)';
-          } else if (vPlat === 5) {
-            pDesc.textContent = '● 0x05 门控锁定中 (游戏本专属)';
-            pDesc.style.color = 'var(--status-ok)';
-          } else {
-            pDesc.textContent = `出厂待命 (0x${vPlat.toString(16).toUpperCase().padStart(2, '0')})`;
-            pDesc.style.color = 'var(--text-dim)';
-          }
+        // 卡片 2：电池保护模式 (EC 0x07A6)
+        if (vMode !== null) {
+          const modeKey = modeNameFromByte(vMode);
+          const tpOn = (vMode & TOUCHPAD_BITMASK) !== 0;
+          const valEl = document.getElementById('statModeVal');
+          valEl.textContent = modeKey ? HEALTH_MODES[modeKey].short : '未设定';
+          valEl.style.color = modeKey ? 'var(--text-primary)' : 'var(--text-dim)';
+          document.getElementById('statModeDot').className = `indicator-dot ${modeKey ? 'active' : ''}`;
+          document.getElementById('statModeDetail').textContent =
+            `0x${vMode.toString(16).toUpperCase().padStart(2, '0')} · 触控板位=${tpOn ? '1' : '0'}`;
         }
 
-        if (vGate !== null) {
-          const isGateActive = ((vGate >> STATE.statusBit) & 1) === 1;
-          const gateValEl = document.getElementById('statGateVal');
-          gateValEl.textContent = isGateActive ? '工作中' : '未激活';
-          gateValEl.style.color = isGateActive ? 'var(--status-ok)' : 'var(--text-dim)';
-          document.getElementById('statGateDot').className = `indicator-dot ${isGateActive ? 'active' : ''}`;
-          document.getElementById('statGateDetail').textContent = isGateActive ? 'bit2=1 固件控制环路工作中' : 'bit2=0 无硬件限制 (充至100%)';
-        }
+        // 卡片 3：硬件充电上限 (EC 0x07B9) + 回落下限 (EC 0x07D0)
+        document.getElementById('statDownDesc').textContent =
+          vDown === null ? '回落下限 0x07D0 = --' : `回落下限 0x07D0 = ${vDown}%`;
 
         if (vLim !== null) {
           const limitNum = vLim & 0x7f;
@@ -1586,7 +1843,9 @@
           if (limitNum > 0 && limitNum <= 100) {
             document.getElementById('statLimitVal').textContent = limitNum;
             document.getElementById('statLimitUnit').textContent = '%';
-            document.getElementById('statLimitDesc').textContent = isReached ? '已达上限，停止充电中' : '硬件受控中，接近目标将停充';
+            document.getElementById('statLimitDesc').textContent = limitNum >= 100
+              ? '无限制，将充至满电'
+              : (isReached ? '已达上限，停止充电中' : 'EC 正在按此上限控制充电');
             if (!STATE._hasLoadedStorage && limitNum < 100) {
               STATE.currentTarget = limitNum;
               document.getElementById('targetSlider').value = limitNum;
@@ -1597,6 +1856,19 @@
             document.getElementById('statLimitVal').textContent = '未限制';
             document.getElementById('statLimitUnit').textContent = '';
             document.getElementById('statLimitDesc').textContent = '电池将持续充至 100%';
+          }
+        }
+
+        // 卡片 4：平台身份码 (EC 0x07C3)，出厂应为 0x07；4/5 表示被门控法改写过
+        if (vPlat !== null) {
+          document.getElementById('statPlatformVal').textContent = `0x${vPlat.toString(16).toUpperCase().padStart(2, '0')}`;
+          const pDesc = document.getElementById('statPlatformDesc');
+          if (vPlat === 4 || vPlat === 5) {
+            pDesc.textContent = '⚠ 被门控法改写，键盘映射可能异常';
+            pDesc.style.color = 'var(--status-warn)';
+          } else {
+            pDesc.textContent = `正常 (出厂 0x07)`;
+            pDesc.style.color = 'var(--text-dim)';
           }
         }
       } catch (e) {
@@ -1693,17 +1965,28 @@
     }
 
     function exportManifestConfig() {
+      const strategyKey = STATE.mode === 'native'
+        ? 'native_registers'
+        : (STATE.mode === 'pin' ? 'tongfang_pin' : 'tongfang_pulse');
       const exportData = {
-        strategy: STATE.mode === 'pin' ? 'tongfang_pin' : 'tongfang_pulse',
+        strategy: strategyKey,
         parameters: {
           protocol: STATE.protocol,
           mode: STATE.mode,
+          target_limit: STATE.currentTarget,
+          limit_up_reg: STATE.limitReg,
+          limit_down_reg: STATE.downReg,
+          mode_reg: STATE.modeReg,
+          down_offset: DOWN_OFFSET,
+          mode_station: HEALTH_MODES.station.code,
+          mode_balance: HEALTH_MODES.balance.code,
+          mode_longlife: HEALTH_MODES.longlife.code,
+          touchpad_bitmask: TOUCHPAD_BITMASK,
+          platform_id_reg: STATE.gateReg,
           active_gate_val: STATE.activeGateVal,
           gate_strategy: STATE.gateStrategy,
-          keepalive_interval_ms: STATE.keepaliveIntervalMs,
+          keepalive_interval_ms: STATE.mode === 'native' ? 0 : STATE.keepaliveIntervalMs,
           pulse_hold_ms: STATE.pulseHoldMs,
-          limit_reg: STATE.limitReg,
-          gate_reg: STATE.gateReg,
           status_reg: STATE.statusReg,
           status_bit: STATE.statusBit,
           orig_plat: STATE.origPlat,
