@@ -20,6 +20,13 @@ on:
 permissions:
   contents: read
 
+# A fork often gets several quick pushes in a row; only the newest commit is
+# worth building, so let a new run cancel the one still in flight instead of
+# queueing two windows-latest jobs back to back.
+concurrency:
+  group: pbo-sidecar-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: windows-latest
