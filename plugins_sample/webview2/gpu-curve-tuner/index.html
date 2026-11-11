@@ -415,8 +415,20 @@
       font-size: 11px;
       color: var(--text-dim);
       margin-right: auto;
+      /* The toolbar carries five buttons now; the hint has to give up room
+         first, otherwise the buttons wrap onto a second row. */
+      flex: 1 1 0;
+      min-width: 0;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
     }
     .curve-toolbar .hint b { color: var(--text-secondary); font-weight: 600; }
+    .toolbar-btn {
+      flex: 0 0 auto;
+      padding: 5px 9px;
+      font-size: 11.5px;
+    }
     .curve-badge {
       font-size: 11px;
       font-family: "Consolas", monospace;
@@ -425,7 +437,11 @@
       background: rgba(6, 182, 212, 0.12);
       border: 1px solid rgba(6, 182, 212, 0.35);
       color: #22d3ee;
-      min-width: 210px;
+      min-width: 168px;
+      max-width: 230px;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
       text-align: center;
     }
 
@@ -692,13 +708,15 @@
 
       <!-- Manual anchor editing -->
       <div class="curve-toolbar">
-        <span class="hint">
-          <b>拖动锚点</b> 调频 · <b>Shift + 拖动</b> 平移右侧 · <b>双击</b> 归零 · 锁定上限时拖动红点带动整段平线
+        <span class="hint" title="拖动锚点=只改这一个点（右侧仅在会被压住时抬升）；Shift+拖动=平移该点及右侧；双击=以该点为拐点把右侧削平；Shift+双击=单点归零">
+          <b>拖动</b> 单点 · <b>Shift+拖</b> 平移右侧 · <b>双击</b> 以该点削平右侧
         </span>
         <span class="curve-badge" id="curveReadout">未选中锚点</span>
-        <button class="btn btn-secondary" style="padding: 5px 10px; font-size: 11.5px;" onclick="undoCurveEdit()">↶ 撤销</button>
-        <button class="btn btn-secondary" style="padding: 5px 10px; font-size: 11.5px;" onclick="reloadCurveFromHardware()">⟳ 读回硬件</button>
-        <button class="btn btn-secondary" style="padding: 5px 10px; font-size: 11.5px;" onclick="flattenCurveToZero()">0 全部归零</button>
+        <button class="btn btn-secondary toolbar-btn" onclick="undoCurveEdit()">↶ 撤销</button>
+        <button class="btn btn-secondary toolbar-btn" onclick="flattenFromAnchor()" title="把选中的锚点设为拐点，它上面（更高电压）的锚点全部削平到这个频率">⌁ 削平</button>
+        <button class="btn btn-secondary toolbar-btn" onclick="loadSavedCurve()" title="读取上次点“保存手动曲线”存下的曲线">📂 存档</button>
+        <button class="btn btn-secondary toolbar-btn" onclick="reloadCurveFromHardware()" title="从显卡读回当前实际生效的曲线到编辑缓冲区">⟳ 读回</button>
+        <button class="btn btn-secondary toolbar-btn" onclick="flattenCurveToZero()" title="把编辑缓冲区全部清零，等同出厂曲线（不会自动下发）">0 归零</button>
       </div>
     </div>
 
@@ -753,6 +771,9 @@
       activeMode: '出厂默认',
       hostPowerMode: null,
       hoverIndex: -1,     // anchor under the pointer (manual curve editing)
+      selectedIndex: -1,  // last anchor the user grabbed - survives the pointer
+                          // leaving the canvas, so toolbar actions still know
+                          // which anchor they apply to
       geom: null,         // last canvas geometry, shared by painter + hit test
       undo: []            // snapshots of plannedDeltas for the undo button
     };
@@ -977,7 +998,15 @@
       for (let i = 1; i < currentPoints.length; i++) {
         const stockFreq = stockFreqAt(i);
         if (i <= kneeIdx) {
-          newDeltas[i] = baseBoost;
+          // Lift the low segment only near the knee, tapering to nothing about
+          // 120 mV below it. A flat +150MHz across the whole segment is what
+          // made the knee impossible to drag down later: every anchor to its
+          // left was sitting at the same clock, so any downward move broke
+          // monotonicity and had to drag the entire chart with it.
+          const dist = kneeIdx - i;
+          const t = Math.max(0, 1 - dist / PRESET_RAMP_ANCHORS);
+          const ramp = t * t * (3 - 2 * t); // smoothstep
+          newDeltas[i] = Math.round((baseBoost * ramp) / 5) * 5;
         } else {
           const deltaToFlat = targetFreq - stockFreq;
           newDeltas[i] = Math.max(-500, Math.min(baseBoost, deltaToFlat));
@@ -1012,6 +1041,15 @@
     const CURVE_HIT_PX = 14;
     const CURVE_DELTA_MIN = -500;
     const CURVE_DELTA_MAX = 300;
+    // How far below the knee a preset's lift tapers out. ~24 anchors is about
+    // 120mV on a 127-anchor curve: enough to keep the undervolt useful, small
+    // enough that the knee stays draggable without touching the whole chart.
+    const PRESET_RAMP_ANCHORS = 24;
+    // A downward drag may shave the lift off at most this many anchors to its
+    // left, and never further. Eight anchors (~40mV) is enough to bring a knee
+    // down 300MHz, and keeps the edit reading as "the knee moved" instead of
+    // "a third of the chart moved".
+    const DRAG_SHAVE_ANCHORS = 8;
     const DRAG = { active: false, index: -1, startFreq: 0, snapshot: null, shift: false, moved: false, raf: 0, lastEv: null };
 
     function curveGeom() {
@@ -1035,11 +1073,13 @@
       }
 
       let fMin = Infinity, fMax = -Infinity;
-      for (const p of pts) {
-        const stock = p.freq_mhz - p.delta_mhz;
+      pts.forEach((p, i) => {
+        // Use the captured factory baseline, not "readback minus delta" - the
+        // readback already has the deltas applied.
+        const stock = stockFreqAt(i);
         fMin = Math.min(fMin, stock, p.freq_mhz);
         fMax = Math.max(fMax, stock, p.freq_mhz);
-      }
+      });
       if (!Number.isFinite(fMin) || fMax - fMin < 100) { fMin = 800; fMax = 2800; }
       const margin = Math.max(60, (fMax - fMin) * 0.12);
       const yMin = Math.floor((fMin - margin) / 50) * 50;
@@ -1389,7 +1429,7 @@
       const eff = Math.round(stockFreqAt(index) + d);
       const capIdx = STATE.capLocked ? capAnchorIndex() : -1;
       let tag = '';
-      if (capIdx === index) tag = ' · 电压上限';
+      if (capIdx === index) tag = ' · 上限';
       else if (capIdx > 0 && index > capIdx) tag = ' · 已削平';
       el.textContent = `锚点 #${index} · ${p.volt_mv} mV · ${eff} MHz (${d > 0 ? '+' : ''}${d})${tag}`;
     }
@@ -1418,38 +1458,38 @@
       if (el) el.textContent = '手动曲线';
     }
 
-    // Move a single anchor. Anything to its right that would end up below it is
-    // lifted along, which keeps the curve monotonic - the only shape the driver
-    // accepts without silently reordering or dropping points. With the ceiling
-    // locked the tail is then re-pinned to this anchor, so dragging the knee
-    // moves the whole flat segment instead of breaking the cap.
+    // Move one anchor. Two rules, both literal:
+    //
+    //   1. Nothing left of the grabbed anchor is touched. A drag edits one
+    //      place, not the curve. (The old code shaved the lift off every left
+    //      neighbour to get past the monotonic floor, which is why a single
+    //      drag read as "the whole chart moved".)
+    //   2. Points to the right are only lifted when they would otherwise end
+    //      up below the dragged one - the driver runs the curve through a
+    //      running maximum, so a point below its left neighbour comes back as
+    //      a staircase. Flattening a segment is a separate, explicit action
+    //      (double-click / 削平右侧), not a side effect of a 3-pixel drag.
+    //
+    // With the ceiling locked, a grab inside the flat run is redirected to the
+    // knee: one point there cannot move on its own (the ceiling re-pins it on
+    // the next frame), and the plateau is genuinely one object.
     function setAnchorFreq(index, targetFreq) {
       const deltas = ensureDeltas();
-
-      // With the ceiling locked the flat region is one object: grabbing any
-      // anchor inside it has to move the whole plateau, otherwise the monotonic
-      // floor of the point to its left blocks the drag. Drags above the ceiling
-      // are therefore redirected to the ceiling anchor - moving the ceiling
-      // itself is the 目标锁压 field's job, not a drag's.
-      if (STATE.capLocked) {
-        const capIdx = capAnchorIndex();
-        if (capIdx > 0 && index > capIdx) index = capIdx;
-      }
+      const capIdx = STATE.capLocked ? capAnchorIndex() : -1;
+      if (capIdx > 0 && index > capIdx) index = capIdx;
 
       const stock = stockFreqAt(index);
-      let floor = index > 1 ? stockFreqAt(index - 1) + deltas[index - 1] : 0;
+      let floor = index > 1 ? stockFreqAt(index - 1) + (deltas[index - 1] || 0) : 0;
 
-      // Dragging down can hit the anchor on the left, which a preset has lifted
-      // along with the rest of the low segment. Refusing the drag there makes
-      // the knee feel stuck, so shave that lift off the nearest anchors instead
-      // and let the whole undervolt come down with the drag.
+      // A knee that cannot go down is worse than useless. When the drag wants
+      // to go below its left neighbour, collect the lift a preset left there -
+      // but only over a bounded window so the change reads as "the knee came
+      // down", not "the whole curve moved".
       if (targetFreq < floor && index > 1) {
         let excess = floor - targetFreq;
-        for (let i = index - 1; i >= 1 && excess > 0; i--) {
+        const stop = Math.max(1, index - DRAG_SHAVE_ANCHORS);
+        for (let i = index - 1; i >= stop && excess > 0; i--) {
           const cur = deltas[i] || 0;
-          // Allowed to go below zero: dragging the knee under the factory clock
-          // there is a legitimate downclock, and the curve has to stay monotonic
-          // or the driver silently re-clamps it.
           const cut = Math.min(cur - CURVE_DELTA_MIN, excess);
           if (cut > 0) {
             deltas[i] = cur - cut;
@@ -1464,6 +1504,8 @@
       d = Math.max(CURVE_DELTA_MIN, Math.min(CURVE_DELTA_MAX, d));
       deltas[index] = d;
 
+      // Right side: lift only what the drag pushed through. Never pull down -
+      // that is what the ceiling and 削平右侧 are for.
       let prev = stock + d;
       for (let i = index + 1; i < STATE.vfPoints.length; i++) {
         const e = stockFreqAt(i) + deltas[i];
@@ -1481,6 +1523,48 @@
       if (over > 25) {
         log(`[!] 上限削平后仍有 ${over}MHz 溢出，请降低上限锚点频率`);
       }
+    }
+
+    // Make one anchor the knee: it becomes the voltage ceiling, and everything
+    // above it is pinned to its clock. This is the explicit "flatten from here"
+    // gesture - the result a drag used to produce by accident, and the only
+    // shape the driver treats as a hard limit. It acts on the anchor the user
+    // last grabbed, so it still works after the pointer walks to the button.
+    function flattenFromAnchor(index) {
+      const idx = (typeof index === 'number' && index >= 1)
+        ? index
+        : (STATE.selectedIndex >= 1 ? STATE.selectedIndex : STATE.hoverIndex);
+      if (!STATE.vfPoints || idx < 1 || idx >= STATE.vfPoints.length) {
+        log('[!] 请先在曲线上点一下要作为拐点的锚点，再点“削平右侧”');
+        return;
+      }
+      pushCurveUndo();
+      const deltas = ensureDeltas();
+      const capIdx = capAnchorIndex();
+      // The knee keeps its clock; the tail is rebuilt against it.
+      const target = stockFreqAt(idx) + (deltas[idx] || 0);
+      const want = Math.max(
+        idx > 1 ? stockFreqAt(idx - 1) + (deltas[idx - 1] || 0) : 0,
+        Math.round(target)
+      );
+      // If the anchor sits below the ceiling it is about to become the ceiling.
+      STATE.voltCap = STATE.vfPoints[idx].volt_mv;
+      STATE.capLocked = true;
+      syncCapUi();
+      // Keep the target fields in step, otherwise the panel claims 875mV while
+      // the ceiling label next to it says 1077mV.
+      STATE.targetVolt = STATE.vfPoints[idx].volt_mv;
+      document.getElementById('inputTargetVolt').value = STATE.targetVolt;
+      const d = Math.max(CURVE_DELTA_MIN, Math.min(CURVE_DELTA_MAX, Math.round((want - stockFreqAt(idx)) / 5) * 5));
+      deltas[idx] = d;
+      STATE.targetFreq = Math.round(stockFreqAt(idx) + d);
+      document.getElementById('inputTargetFreq').value = STATE.targetFreq;
+      const over = enforceVoltCap(deltas);
+      markManualCurve();
+      updateCurveReadout(idx);
+      drawCurve();
+      log(`[⌁] 已把 ${STATE.vfPoints[idx].volt_mv}mV 设为拐点，更高电压段削平至 ${Math.round(stockFreqAt(idx) + d)}MHz${capIdx > 0 && capIdx !== idx ? `（原拐点 #${capIdx}）` : ''}`);
+      if (over > 25) log(`[!] 削平后仍有 ${over}MHz 溢出（受 -500MHz 单点下限限制）`);
     }
 
     // Shift-drag: move the anchor and everything to its right by the same step,
@@ -1518,8 +1602,15 @@
 
       ensureDeltas();
       pushCurveUndo();
+      // Grabbing inside the flat tail edits the knee: the plateau is one object
+      // and a single point there would be re-pinned on the next frame.
+      const capIdx = STATE.capLocked ? capAnchorIndex() : -1;
+      const dragIdx = (capIdx > 0 && idx > capIdx) ? capIdx : idx;
       DRAG.active = true;
-      DRAG.index = idx;
+      DRAG.index = dragIdx;
+      // selectedIndex keeps the anchor the user actually aimed at, so 削平右侧
+      // can turn exactly that one into the new knee.
+      STATE.selectedIndex = idx;
       DRAG.shift = ev.shiftKey;
       DRAG.moved = false;
       DRAG.startFreq = g.yToFreq(pos.y);
@@ -1581,9 +1672,13 @@
       }
       DRAG.index = -1;
       DRAG.snapshot = null;
-      updateCurveReadout(STATE.hoverIndex);
+      updateCurveReadout(STATE.selectedIndex >= 0 ? STATE.selectedIndex : STATE.hoverIndex);
     }
 
+    // Double-click makes the anchor the knee and flattens everything above it.
+    // That is the "I moved this point, now bring the rest level" gesture - the
+    // one a plain drag deliberately no longer performs. Shift+double-click
+    // keeps the old behaviour (zero that single anchor).
     function onCurveDoubleClick(ev) {
       const g = STATE.geom || curveGeom();
       if (!g) return;
@@ -1591,14 +1686,18 @@
       const pos = curvePointerPos(ev);
       const idx = nearestAnchor(pos.x);
       if (idx < 0) return;
-      ensureDeltas();
-      pushCurveUndo();
-      STATE.plannedDeltas[idx] = 0;
-      enforceVoltCap(STATE.plannedDeltas);
-      markManualCurve();
-      updateCurveReadout(idx);
-      drawCurve();
-      log(`[⟲] 锚点 #${idx} 已归零`);
+      if (ev.shiftKey) {
+        ensureDeltas();
+        pushCurveUndo();
+        STATE.plannedDeltas[idx] = 0;
+        enforceVoltCap(STATE.plannedDeltas);
+        markManualCurve();
+        updateCurveReadout(idx);
+        drawCurve();
+        log(`[⟲] 锚点 #${idx} 已归零`);
+        return;
+      }
+      flattenFromAnchor(idx);
     }
 
     function undoCurveEdit() {
@@ -1697,6 +1796,72 @@
         : '，未锁定电压上限';
       log(`[💾] 手动曲线已保存：${deltas.length} 个锚点，${changed} 个已调整（${lo} ~ +${hi} MHz）${capNote}，下次打开面板自动恢复，点“一键写入”才下发硬件。`);
       flashSaveButton();
+    }
+
+    // Bring back the curve that was last saved. Opening the panel already
+    // restores it, but once the buffer has been dragged away there was no way
+    // back except forty undos or a reload - which is what "saved curves are
+    // write-only" felt like.
+    async function loadSavedCurve() {
+      if (!STATE.vfPoints || STATE.vfPoints.length < 16) {
+        log('[-] 还没读到 V/F 锚点，暂时无法读取曲线');
+        return;
+      }
+      let stored = null;
+      try {
+        if (window.OpenRevo && window.OpenRevo.storage && typeof window.OpenRevo.storage.get === 'function') {
+          stored = await window.OpenRevo.storage.get();
+        } else if (window.parent && window.parent.__OPENREVO_BRIDGE__ && window.parent.__OPENREVO_BRIDGE__.storage) {
+          stored = await window.parent.__OPENREVO_BRIDGE__.storage.get();
+        } else {
+          try {
+            stored = await rpc('get_plugin_storage', { pluginId: PLUGIN_ID });
+          } catch (_) {
+            const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
+            if (raw) stored = JSON.parse(raw);
+          }
+        }
+      } catch (err) {
+        log(`[-] 读取存档失败: ${err.message || err}`);
+        return;
+      }
+      if (!stored || typeof stored !== 'object' || !Object.keys(stored).length) {
+        log('[!] 还没有保存过曲线：先拖好曲线点“💾 保存手动曲线”');
+        return;
+      }
+
+      pushCurveUndo();
+      if (typeof stored.target_volt === 'number') STATE.targetVolt = stored.target_volt;
+      if (typeof stored.target_freq === 'number') STATE.targetFreq = stored.target_freq;
+      if (typeof stored.volt_cap === 'number') STATE.voltCap = stored.volt_cap;
+      else if (typeof stored.target_volt === 'number') STATE.voltCap = stored.target_volt;
+      if (typeof stored.cap_locked === 'boolean') STATE.capLocked = stored.cap_locked;
+      if (typeof stored.active_mode === 'string') STATE.activeMode = stored.active_mode;
+      syncCapUi();
+      document.getElementById('inputTargetVolt').value = STATE.targetVolt;
+      document.getElementById('inputTargetFreq').value = STATE.targetFreq;
+      document.getElementById('statModeText').textContent = STATE.activeMode;
+
+      const deltas = stored.planned_deltas;
+      const usable = Array.isArray(deltas) && deltas.length === STATE.vfPoints.length && stored.schema === 2;
+      if (usable) {
+        STATE.plannedDeltas = deltas.slice();
+        SAVED_CURVE_SIG = curveSignature(STATE.plannedDeltas);
+      } else {
+        // Old save (built on the wrong baseline) or a different anchor count:
+        // rebuild from its target instead of pushing numbers that would land
+        // somewhere else on the card.
+        STATE.plannedDeltas = null;
+        calculatePlannedCurve(STATE.targetVolt, STATE.targetFreq, STATE.activeMode);
+        SAVED_CURVE_SIG = '';
+      }
+
+      drawCurve();
+      refreshSaveIndicator();
+      const capIdx = STATE.capLocked ? capAnchorIndex() : -1;
+      log(usable
+        ? `[📂] 已读取保存的曲线：${STATE.activeMode}（${STATE.targetVolt}mV @ ${STATE.targetFreq}MHz）${capIdx > 0 ? `，上限 ${Math.round(STATE.voltCap)}mV 以上削平` : ''}`
+        : '[📂] 存档是旧版基线算的，已按目标电压/频率在当前出厂基线上重建，请确认形状后重新保存');
     }
 
     // --- Hardware Actions ---
@@ -1914,7 +2079,9 @@
           if (DRAG.active) return;
           if (STATE.hoverIndex !== -1) {
             STATE.hoverIndex = -1;
-            updateCurveReadout(-1);
+            // Keep the grabbed anchor on screen: the toolbar's 削平右侧 acts on
+            // it, and the pointer has to leave the canvas to reach the button.
+            updateCurveReadout(STATE.selectedIndex >= 0 ? STATE.selectedIndex : -1);
             drawCurve();
           }
         });
