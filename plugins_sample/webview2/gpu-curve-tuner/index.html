@@ -808,6 +808,16 @@
       calculatePlannedCurve(v, f, `自定义 (${v}mV @ ${f}MHz)`);
     }
 
+    // Land the target frequency at the target voltage and hold it above.
+    //
+    // The offsets are computed as a *difference* against what the card is
+    // running right now, not against an estimated factory curve. The driver
+    // reports the curve with the deltas already applied, so "target minus
+    // (readback minus delta)" is off by exactly however wrong that estimate is.
+    // That error is why the plateau landed 10-20MHz high while the 875mV anchor
+    // stayed 23MHz below it: the curve kept rising from 875 to 900, and the
+    // boost algorithm simply walked up to the higher voltage. A difference
+    // against a value the card reports about itself cancels the estimate out.
     function calculatePlannedCurve(targetVolt, targetFreq, label) {
       STATE.targetVolt = targetVolt;
       STATE.targetFreq = targetFreq;
@@ -830,34 +840,49 @@
         }
       }
 
-      const currentPoints = STATE.vfPoints;
-      const stockFreqAtTarget = stockFreqAt(targetIdx);
-      const baseBoost = Math.max(-300, Math.min(250, targetFreq - stockFreqAtTarget));
+      const pts = STATE.vfPoints;                    // live curve, deltas included
+      const cur = pts.map(p => p.delta_mhz || 0);     // offsets the card is on
+      // Below the knee the shape is kept and slid by this much; above it every
+      // anchor is pinned to targetFreq.
+      const shift = targetFreq - pts[targetIdx].freq_mhz;
 
-      const newDeltas = new Array(currentPoints.length).fill(0);
-      for (let i = 1; i < currentPoints.length; i++) {
-        const stockFreq = stockFreqAt(i);
-        if (i <= targetIdx) {
-          newDeltas[i] = baseBoost;
-        } else {
-          const deltaToFlat = targetFreq - stockFreq;
-          newDeltas[i] = Math.max(-500, Math.min(baseBoost, deltaToFlat));
-        }
+      // 1MHz steps: the table stores kHz, so rounding to 5 leaves the target
+      // 1-2MHz off and that is enough to make the plateau sit above the knee.
+      const quantize = v => Math.max(CURVE_DELTA_MIN, Math.min(CURVE_DELTA_MAX, Math.round(v)));
+      const newDeltas = cur.slice();
+      for (let i = 1; i < pts.length; i++) {
+        const want = i <= targetIdx ? pts[i].freq_mhz + shift : targetFreq;
+        newDeltas[i] = quantize(cur[i] + (want - pts[i].freq_mhz));
       }
 
-      // Monotonic sanity check
-      let prevFreq = stockFreqAt(0);
-      for (let i = 1; i < currentPoints.length; i++) {
-        const stockFreq = stockFreqAt(i);
-        const effFreq = stockFreq + newDeltas[i];
-        if (effFreq < prevFreq - 25) {
-          newDeltas[i] = Math.max(-500, Math.min(300, prevFreq - stockFreq));
+      // Predicted frequency of an anchor under the new table.
+      const eff = i => pts[i].freq_mhz + (newDeltas[i] - cur[i]);
+
+      // Monotonic guard: lift a point that would sit under its left neighbour.
+      // Never lower one - that would be undoing the flattening above.
+      let prev = pts[0].freq_mhz;
+      for (let i = 1; i < pts.length; i++) {
+        if (eff(i) < prev - 25) {
+          newDeltas[i] = quantize(newDeltas[i] + (prev - eff(i)));
         }
-        prevFreq = stockFreq + newDeltas[i];
+        prev = eff(i);
+      }
+
+      // -500 is the hard floor the driver accepts per anchor. Past this point the
+      // tail can no longer be pulled flat, so report it instead of pretending.
+      let floored = 0, flooredFrom = 0;
+      for (let i = targetIdx + 1; i < pts.length; i++) {
+        if (newDeltas[i] === CURVE_DELTA_MIN && eff(i) > targetFreq + 25) {
+          floored++;
+          if (!flooredFrom) flooredFrom = pts[i].volt_mv;
+        }
       }
 
       STATE.plannedDeltas = newDeltas;
-      log(`[✓] 已计算曲线方案 [${label}]: 低压段抬升 +${baseBoost}MHz, 超出 ${targetVolt}mV 后强制削平锁频至 ${targetFreq}MHz.`);
+      log(`[✓] 已计算曲线方案 [${label}]: ${pts[targetIdx].volt_mv}mV 以上锁频 ${targetFreq}MHz，低压段整体${shift >= 0 ? '上抬' : '下压'} ${Math.abs(shift)}MHz.`);
+      if (floored > 0) {
+        log(`[!] ${flooredFrom}mV 以上共 ${floored} 个锚点已到 -500MHz 下限，压不到 ${targetFreq}MHz。这就是驱动接受的单点下限，日常功耗墙下跑不到那里`);
+      }
       drawCurve();
     }
 
@@ -917,43 +942,17 @@
       return p.freq_mhz - p.delta_mhz;
     }
 
-    // Zero the boost table once, read the curve the card runs at zero offsets,
-    // then put the previous table back. Costs one brief dip to the factory
-    // curve, buys a stable baseline that makes repeated applies idempotent.
-    async function captureStockBaseline() {
+    // Reference curve for the chart only (the dotted "stock" line and the Y
+    // window). The editing math does not depend on it any more: offsets are a
+    // difference against the live readback, so a wrong estimate here cannot
+    // move the curve. Kept deliberately approximate - sampling it exactly means
+    // zeroing the boost table and waiting for the driver to publish, i.e. two
+    // writes on every panel open to make a dotted line look right.
+    function captureStockBaseline() {
       if (!STATE.vfPoints || STATE.vfPoints.length < 16) return false;
-      const len = STATE.vfPoints.length;
-      const applied = STATE.vfPoints.map(p => p.delta_mhz || 0);
-      const dirty = applied.some(d => d !== 0);
-
-      if (!dirty) {
-        STATE.stockPoints = STATE.vfPoints.map(p => p.freq_mhz);
-        log(`[⌁] 已取得出厂基线（${len} 个锚点，当前为出厂曲线）`);
-        return true;
-      }
-
-      try {
-        log('[⌁] 正在读取出厂基线：清零采样后立即恢复当前曲线...');
-        await rpc('set_gpu_vf_curve_deltas', { deltasMhz: new Array(len).fill(0) });
-        // The driver publishes the new curve asynchronously; reading straight
-        // away can hand back the previous one.
-        await new Promise(r => setTimeout(r, 120));
-        const info = await rpc('get_gpu_tuning_info');
-        const clean = (info && info.vf_points) || [];
-        if (clean.length !== len) throw new Error('采样返回的锚点数不一致');
-
-        STATE.stockPoints = clean.map(p => p.freq_mhz);
-        STATE.vfPoints = clean.map(p => ({ volt_mv: p.volt_mv, freq_mhz: p.freq_mhz, delta_mhz: 0 }));
-
-        await rpc('set_gpu_vf_curve_deltas', { deltasMhz: applied });
-        await refreshHardwareInfo();
-        log(`[⌁] 出厂基线已采样完成（${len} 个锚点，峰值 ${Math.max(...STATE.stockPoints)}MHz），原曲线已恢复`);
-        return true;
-      } catch (err) {
-        STATE.stockPoints = null;
-        log(`[!] 出厂基线采样失败: ${err.message || err}，退回“读回值减偏移”估算，曲线可能有偏差`);
-        return false;
-      }
+      STATE.stockPoints = STATE.vfPoints.map(p => p.freq_mhz - (p.delta_mhz || 0));
+      log(`[⌁] 已载入出厂参考曲线（${STATE.stockPoints.length} 个锚点，峰值 ${Math.max(...STATE.stockPoints)}MHz）`);
+      return true;
     }
 
     // The hardware delta table is the source of truth when the user has not
@@ -1406,7 +1405,7 @@
       // 2. Refresh physical hardware state, then capture the factory curve so
       // every offset is computed against a stable baseline.
       await refreshHardwareInfo();
-      await captureStockBaseline();
+      captureStockBaseline();
 
       // 3. A discarded / missing curve is rebuilt from the saved target, so the
       // panel never opens on a curve derived from a wrong baseline.
