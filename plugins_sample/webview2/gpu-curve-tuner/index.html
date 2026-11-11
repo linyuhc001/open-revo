@@ -259,7 +259,7 @@
     const PLUGIN_ID = "gpu-curve-tuner";
     const LOCAL_KEY = "openrevo_plugin_gpu_curve_tuner_cfg";
     const V_MIN = 450, V_MAX = 1250;       // 电压轴
-    const DELTA_MIN = -1000, DELTA_MAX = 1000; // 单锚点偏移软上限（驱动支持 ±1000；后端写入仍按 -500 校验，超出会拒绝）
+    const DELTA_MIN = -500, DELTA_MAX = 1000; // 单锚点偏移硬限制（与后端 nvapi.rs 一致）
     const HIT_PX = 14;                     // 命中判定半径（像素）
 
     // ============================================================
@@ -395,12 +395,10 @@
       const plotW = Math.max(10, w - padL - padR);
       const plotH = Math.max(10, h - padT - padB);
 
-      // Y 轴只跟随「编辑曲线」eff(i)，不纳入出厂 stock 曲线。
-      // 出厂曲线最高达 ~3155MHz，若纳入会把整张图压扁、拖动步长剧增、极易拖过头。
       let fMin = Infinity, fMax = -Infinity;
       for (let i = 0; i < S.stock.length; i++) {
-        fMin = Math.min(fMin, eff(i));
-        fMax = Math.max(fMax, eff(i));
+        fMin = Math.min(fMin, S.stock[i], eff(i));
+        fMax = Math.max(fMax, S.stock[i], eff(i));
       }
       if (!isFinite(fMin) || fMax - fMin < 100) { fMin = 800; fMax = 2800; }
       const m = Math.max(60, (fMax - fMin) * 0.12);
@@ -493,7 +491,7 @@
     //  拖拽：核心。单点 = 只动一个；Shift = 右侧整段跟随。
     //  用「绝对位移增量」累加，保证单点拖动绝不影响其他锚点。
     // ============================================================
-    const drag = { active: false, index: -1, shift: false, moved: false, startY: 0, startDelta: 0, snapshot: null, mode: "single", mhzPerPx: 1 };
+    const drag = { active: false, index: -1, shift: false, moved: false, startY: 0, startDelta: 0, snapshot: null, mode: "single" };
 
     function nearest(xPx) {
       const g = S.geom;
@@ -582,7 +580,6 @@
       drag.startY = pos.y;
       drag.startDelta = S.deltas[idx];
       drag.snapshot = S.deltas.slice();
-      drag.mhzPerPx = (S.geom.yMax - S.geom.yMin) / Math.max(1, S.geom.h - S.geom.padT - S.geom.padB);
       g.c.classList.add("dragging");
       try { g.c.setPointerCapture(ev.pointerId); } catch (_) {}
       readout(idx);
@@ -604,7 +601,8 @@
       // 从按下时的快照重建，再按位移量修改选中点。
       S.deltas = drag.snapshot.slice();
       const dy = pos.y - drag.startY;           // 向下为正 → 频率降低
-      const dFreq = -dy * drag.mhzPerPx;         // 用按下时锁定的步长，避免拖动中 Y 轴漂移
+      const mhzPerPx = (S.geom.yMax - S.geom.yMin) / (S.geom.h - S.geom.padT - S.geom.padB);
+      const dFreq = -dy * mhzPerPx;
       const startFreq = S.stock[drag.index] + drag.startDelta;
       const targetFreq = startFreq + dFreq;
 
@@ -646,15 +644,6 @@
           }
           if (leftHigher >= 0) {
             log("[!] 左侧 " + S.anchors[leftHigher].volt_mv + "mV 仍高于 " + knee + "MHz，写入后驱动会把压平段抬回该高度；如需整体压低请先压低左侧锚点");
-          }
-          // 后端写入仍按 -500 校验：检测右侧是否有锚点超出 -500 下限。
-          const BACKEND_MIN = -500;
-          let belowMin = 0, firstBelow = -1;
-          for (let i = idx; i < S.deltas.length; i++) {
-            if (S.deltas[i] < BACKEND_MIN) { if (firstBelow < 0) firstBelow = i; belowMin++; }
-          }
-          if (belowMin > 0) {
-            log("[!] 右侧 " + belowMin + " 个锚点（从 " + S.anchors[firstBelow].volt_mv + "mV 起）需要低于 -500MHz 才能压平，当前后端按 -500 校验、写入会被拒绝；要真正压平需放宽后端 nvapi.rs 下限并重编宿主");
           }
         }
       } else {
