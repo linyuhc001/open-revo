@@ -230,7 +230,7 @@
       </div>
 
       <div class="toolbar">
-        <span class="hint"><b>拖动</b> 单点调整 · <b>Shift+下拉</b> 右侧整段压平（压过左邻自动吸附到左邻频率）· <b>Shift+上移</b> 右侧齐抬 · <b>双击</b> 单点归零</span>
+        <span class="hint"><b>拖动</b> 单点调整 · <b>Shift+拖动</b> 右侧整段同幅平移（下拉最低到左邻频率）· <b>双击</b> 单点归零</span>
         <span class="readout" id="readout">未选中锚点</span>
         <button class="btn btn-secondary" style="padding: 5px 10px; font-size: 11.5px;" onclick="undoEdit()">↶ 撤销</button>
         <button class="btn btn-secondary" style="padding: 5px 10px; font-size: 11.5px;" onclick="reloadCurve()">⟳ 读回硬件</button>
@@ -352,11 +352,25 @@
         S.memOffset = info.mem_offset_mhz || 0;
         S.anchors = info.vf_points || [];
 
-        // 首次读回：固定出厂基线。此后 stock 不再变。
-        if (S.anchors.length && S.stock.length !== S.anchors.length) {
-          S.stock = S.anchors.map(p => p.freq_mhz - p.delta_mhz);
-          if (S.deltas.length !== S.anchors.length) {
-            S.deltas = S.anchors.map(p => p.delta_mhz || 0);
+        // 出厂基线 stock = 该锚点在「零偏移」时的频率。
+        // 关键：读回时如果所有偏移都是 0，说明这就是出厂态，直接拿 freq 当基线，
+        // 这一步同时会把被旧数据污染过的 stock 自愈回来（否则基线一旦算错就永远错，
+        // 图表里的出厂虚线、拖动基准、delta 换算全都会跟着偏）。
+        if (S.anchors.length) {
+          const allZero = S.anchors.every(p => !p.delta_mhz);
+          const lenChanged = S.stock.length !== S.anchors.length;
+          if (allZero) {
+            const fresh = S.anchors.map(p => p.freq_mhz);
+            if (lenChanged || fresh.some((f, i) => Math.abs(f - S.stock[i]) > 1)) {
+              log("[*] 硬件处于出厂态，已按读回值重建出厂基线");
+            }
+            S.stock = fresh;
+            S.deltas = S.anchors.map(() => 0);
+          } else if (lenChanged) {
+            S.stock = S.anchors.map(p => p.freq_mhz - p.delta_mhz);
+            if (S.deltas.length !== S.anchors.length) {
+              S.deltas = S.anchors.map(p => p.delta_mhz || 0);
+            }
           }
         }
 
@@ -510,7 +524,7 @@
       const p = S.anchors[idx];
       const d = S.deltas[idx] || 0;
       let txt = "锚点 #" + idx + " · " + p.volt_mv + " mV · " + Math.round(eff(idx)) + " MHz (" + (d > 0 ? "+" : "") + d + ")";
-      if (snapInfo) txt += " · 已吸附 " + S.anchors[snapInfo.at].volt_mv + "mV @" + snapInfo.level + "MHz";
+      if (snapInfo) txt += " · 已到左邻 " + S.anchors[snapInfo.at].volt_mv + "mV 的 " + snapInfo.level + "MHz";
       el.textContent = txt;
     }
 
@@ -538,37 +552,31 @@
       S.deltas[index] = deltaFor(index, targetFreq);
     }
 
-    // ---- Shift：右侧整段跟随 ----
-    // 下压：一旦压到低于左侧锚点（875mV）的频率，就把选中点及其右侧
-    //       整段吸附到那个频率上 —— 885 低于 875 后，885~末端全部与 875 齐平。
-    // 上移：右侧每个点加上相同的位移（保形状）。
-    // 左侧完全不动（用户明确要求）。
-    let snapInfo = null;   // { at: 左侧锚点下标, level: 吸附频率 } 仅用于读数提示
+    // ---- Shift：右侧整段同幅平移 ----
+    // 上拉 / 下拉都是「选中点及其右侧，delta 同时加上拖动量」，形状完全不变。
+    // 下拉时只加一道限制：选中点最多压到左邻锚点的频率为止（再低驱动会把
+    // 这一段抬回去），整段平移量随之被截断，避免某几个点单独触底把曲线拉歪。
+    // 左侧一个点都不碰。
+    let snapInfo = null;   // { at: 左邻下标, level: 截断时的频率 } 仅用于读数提示
 
     function setFollow(index, targetFreq) {
       const start = eff(index);
-      const step = targetFreq - start;
-      const down = step < 0;
+      let step = Math.round(targetFreq - start);
       snapInfo = null;
 
-      if (down) {
-        // 左侧锚点的频率就是吸附线。压过头时不再跟着鼠标继续降，
-        // 而是整段贴到这条线上，保证曲线不会在选中点处出现向下的台阶。
-        const leftFreq = index > 0 ? eff(index - 1) : null;
-        let level = targetFreq;
-        if (leftFreq !== null && targetFreq < leftFreq) {
-          level = leftFreq;
-          snapInfo = { at: index - 1, level: Math.round(level) };
+      if (step < 0 && index > 0) {
+        const leftFreq = eff(index - 1);
+        if (start + step < leftFreq) {
+          step = Math.round(leftFreq - start);
+          snapInfo = { at: index - 1, level: Math.round(leftFreq) };
         }
-        for (let i = index; i < S.deltas.length; i++) {
-          S.deltas[i] = deltaFor(i, level);
-        }
-      } else {
-        // 上移齐抬：右侧整体 +step。左侧同样不动。
-        for (let i = index; i < S.deltas.length; i++) {
-          const want = eff(i) + step;
-          S.deltas[i] = deltaFor(i, want);
-        }
+      }
+      if (step === 0) return;
+
+      // 同一 step 加到整段上：形状不变，每个点各自夹在 -500..+1000 内。
+      for (let i = index; i < S.deltas.length; i++) {
+        const d = Math.round((S.deltas[i] || 0) + step);
+        S.deltas[i] = Math.max(DELTA_MIN, Math.min(DELTA_MAX, d));
       }
     }
 
@@ -659,24 +667,23 @@
             log("[!] 该点比左侧 " + left + "MHz 低 " + (left - knee) + "MHz，驱动 running-max 会把它抬回；要连右侧一起压低请用 Shift+拖动");
           }
         } else if (drag.mode === "follow") {
-          // 吸附：压过左侧锚点后整段贴到那条频率线上。
+          // 整段同幅平移：pull 到左邻频率就截断，不会压出向下的台阶。
           if (snapInfo) {
             const a = S.anchors[snapInfo.at];
-            log("[⇥] " + p.volt_mv + "mV 已压到 " + a.volt_mv + "mV 以下，整段吸附到 " + a.volt_mv + "mV 的 " + snapInfo.level + "MHz（" + p.volt_mv + "~末端全部齐平）");
+            log("[⇥] 已停到左邻 " + a.volt_mv + "mV 的 " + snapInfo.level + "MHz（再低会被驱动抬回），整段保持原形状");
           }
-          // -500MHz 单点下限：高电压段出厂频率太高，触底后压不下去，曲线会重新上翘。
+          // -500MHz 单点下限：尾部触底的锚点会停住，其余继续跟随。
           const fl = countFloored(idx, Math.round(eff(idx)));
           if (fl.n > 0) {
-            log("[!] 从 " + S.anchors[fl.first].volt_mv + "mV 起有 " + fl.n + " 个锚点已到 -500MHz 单点下限，压不到 " + Math.round(eff(idx)) + "MHz（出厂该段频率约 " + Math.round(S.stock[fl.first]) + "MHz），这一段会重新上翘——这是驱动的单点下限，不是拖拽逻辑问题");
+            log("[!] 从 " + S.anchors[fl.first].volt_mv + "mV 起有 " + fl.n + " 个锚点已到 -500MHz 单点下限，只跟到 -500 就停（出厂该段约 " + Math.round(S.stock[fl.first]) + "MHz）");
           }
-          // Shift 下压拉平后，左侧保持不动；若左侧有更高的锚点，驱动的
-          // running-max 会在写入时把压平段抬回，这里提示用户。
+          // 左邻仍高于选中点时，驱动的 running-max 会把整段抬回该高度。
           let leftHigher = -1;
           for (let i = idx - 1; i >= 1; i--) {
             if (eff(i) > knee + 1) { leftHigher = i; break; }
           }
           if (leftHigher >= 0) {
-            log("[!] 左侧 " + S.anchors[leftHigher].volt_mv + "mV 仍高于 " + knee + "MHz，写入后驱动会把压平段抬回该高度；如需整体压低请先压低左侧锚点");
+            log("[!] 左侧 " + S.anchors[leftHigher].volt_mv + "mV 仍高于 " + knee + "MHz，写入后驱动会把这一段抬回该高度；如需整体压低请先压低左侧锚点");
           }
         }
       } else {
