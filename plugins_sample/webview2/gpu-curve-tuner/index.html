@@ -1659,9 +1659,33 @@
           ? `🎉 曲线已下发：电压上限 ${Math.round(STATE.voltCap)}mV，超出该电压的锚点已削平。`
           : '🎉 恭喜！免小飞机降压曲线已全量下发至显卡驱动生效！');
         await savePluginStorage();
-        refreshHardwareInfo();
+        await refreshHardwareInfo();
+        verifyVoltCapReadback();
       } catch (err) {
         log(`[-] 写入显卡调优失败: ${err.message || err}`);
+      }
+    }
+
+    // The driver may clamp or reorder what we send, and only the readback tells
+    // the truth about the curve that is now running. Comparing the live anchors
+    // above the ceiling is also the cheapest way to answer "why did it still
+    // reach 925mV" without guessing.
+    function verifyVoltCapReadback() {
+      if (!STATE.capLocked) return;
+      const capIdx = capAnchorIndex();
+      if (capIdx < 1 || !STATE.vfPoints || STATE.vfPoints.length <= capIdx) return;
+      // freq_mhz in the status curve is the effective clock, deltas already
+      // included - exactly what the boost algorithm sees.
+      const capFreq = STATE.vfPoints[capIdx].freq_mhz;
+      let worst = 0, worstMv = 0;
+      for (let i = capIdx + 1; i < STATE.vfPoints.length; i++) {
+        const over = STATE.vfPoints[i].freq_mhz - capFreq;
+        if (over > worst) { worst = over; worstMv = STATE.vfPoints[i].volt_mv; }
+      }
+      if (worst > 25) {
+        log(`[!] 读回校验未通过：${worstMv}mV 锚点仍比 ${Math.round(STATE.voltCap)}mV 高出 ${worst}MHz，驱动没有完全接受削平，电压仍可能爬升。可在曲线上直接下调上限锚点频率后重试。`);
+      } else {
+        log(`[✓] 读回校验通过：${Math.round(STATE.voltCap)}mV 以上的锚点已全部削平至 ${capFreq}MHz，电压被真正封顶。`);
       }
     }
 
