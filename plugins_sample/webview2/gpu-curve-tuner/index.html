@@ -438,7 +438,7 @@
       border: 1px solid rgba(6, 182, 212, 0.35);
       color: #22d3ee;
       min-width: 168px;
-      max-width: 230px;
+      max-width: 252px;
       overflow: hidden;
       white-space: nowrap;
       text-overflow: ellipsis;
@@ -1431,7 +1431,7 @@
       let tag = '';
       if (capIdx === index) tag = ' · 上限';
       else if (capIdx > 0 && index > capIdx) tag = ' · 已削平';
-      el.textContent = `锚点 #${index} · ${p.volt_mv} mV · ${eff} MHz (${d > 0 ? '+' : ''}${d})${tag}`;
+      el.textContent = `#${index} · ${p.volt_mv}mV · ${eff}MHz (${d > 0 ? '+' : ''}${d})${tag}`;
     }
 
     function nearestAnchor(px) {
