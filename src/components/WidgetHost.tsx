@@ -12,6 +12,7 @@ interface WidgetHostProps {
 }
 
 export const WidgetHost: React.FC<WidgetHostProps> = ({ pluginId }) => {
+  const [loading, setLoading] = useState(true);
   const [customHtml, setCustomHtml] = useState<string | null>(null);
   const [hasCustomPlugin, setHasCustomPlugin] = useState(false);
 
@@ -83,6 +84,7 @@ export const WidgetHost: React.FC<WidgetHostProps> = ({ pluginId }) => {
       // If plugin does not contain custom index.html/entry, fallback smoothly to built-in S2 core
       setHasCustomPlugin(false);
     } finally {
+      setLoading(false);
       try {
         await invoke('widget_ready', { pluginId });
       } catch (_) {}
@@ -255,6 +257,12 @@ export const WidgetHost: React.FC<WidgetHostProps> = ({ pluginId }) => {
   }
 }
 </script>
+<style id="openrevo-transparent-canvas">
+html, body {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+</style>
 `;
 
     // Inject into head, or prepend if no head
@@ -310,6 +318,10 @@ export const WidgetHost: React.FC<WidgetHostProps> = ({ pluginId }) => {
     } catch (_) {}
   };
 
+  if (loading) {
+    return <div style={{ width: '100vw', height: '100vh', background: 'transparent' }} />;
+  }
+
   // If user has custom HTML, render the custom iframe
   if (hasCustomPlugin && preparedHtml) {
     return (
@@ -328,11 +340,14 @@ export const WidgetHost: React.FC<WidgetHostProps> = ({ pluginId }) => {
           srcDoc={preparedHtml}
           title={`widget-${pluginId}`}
           sandbox="allow-scripts allow-forms allow-same-origin allow-modals"
+          // @ts-ignore
+          allowTransparency="true"
           style={{
             width: '100%',
             height: '100%',
             border: 'none',
             background: 'transparent',
+            backgroundColor: 'transparent',
             display: 'block',
           }}
           onLoad={() => {
