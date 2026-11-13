@@ -258,7 +258,8 @@
     // ============================================================
     const PLUGIN_ID = "gpu-curve-tuner";
     const LOCAL_KEY = "openrevo_plugin_gpu_curve_tuner_cfg";
-    const V_MIN = 700, V_MAX = 1250;       // 电压轴（700mV 以下是待机死区，不参与显示）
+    const V_MIN = 700, V_MAX = 1150;       // 电压轴（700mV 以下是待机死区；1150mV 以上不显示）
+    const F_MAX = 3000;                    // 频率轴顶端（高于此值的锚点不绘制）
     const DELTA_MIN = -500, DELTA_MAX = 1000; // 单锚点偏移硬限制（与后端 nvapi.rs 一致）
     const HIT_PX = 14;                     // 命中判定半径（像素）
 
@@ -420,8 +421,11 @@
       }
       if (!isFinite(fMin) || fMax - fMin < 100) { fMin = 1600; fMax = 3200; }
       const m = Math.max(60, (fMax - fMin) * 0.12);
-      const yMin = Math.floor((fMin - m) / 50) * 50;
-      const yMax = Math.ceil((fMax + m) / 50) * 50;
+      // 下沿仍按数据自适应，上沿固定在 F_MAX：曲线始终贴着底部往上铺，
+      // 不会因为某个高压锚点或出厂尾部把整幅图拉扁。
+      let yMin = Math.floor((fMin - m) / 50) * 50;
+      const yMax = F_MAX;
+      if (yMin > yMax - 400) yMin = yMax - 400;
 
       const toX = v => padL + (v - V_MIN) / (V_MAX - V_MIN) * plotW;
       const toY = f => h - padB - (f - yMin) / (yMax - yMin) * plotH;
@@ -458,11 +462,15 @@
         ctx.fillText(f + "M", padL - 6, y + 3);
       }
       ctx.textAlign = "center";
-      for (let v = 700; v <= 1200; v += 100) {
+      for (let v = Math.ceil(V_MIN / 100) * 100; v < V_MAX; v += 100) {
         const x = toX(v);
         ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, h - padB); ctx.stroke();
         ctx.fillText(v + "mV", x, h - 12);
       }
+
+      // 高于 F_MAX 的部分会画到绘图区之外，裁掉，别压到坐标标签
+      ctx.save();
+      ctx.beginPath(); ctx.rect(padL, padT, w - padL - padR, h - padT - padB); ctx.clip();
 
       // 出厂曲线（虚线）
       ctx.beginPath(); ctx.strokeStyle = "rgba(255,255,255,0.3)"; ctx.lineWidth = 1.5; ctx.setLineDash([4, 4]);
@@ -510,6 +518,8 @@
         ctx.fillStyle = "rgba(251,146,60,0.95)"; ctx.font = "10px monospace"; ctx.textAlign = "right";
         ctx.fillText("橙色虚线 = 驱动实际生效", w - padR, padT + 10);
       }
+
+      ctx.restore();
 
       // 锚点手柄（锚点 0 不可写）
       const hot = drag.active ? drag.index : S.hover;
