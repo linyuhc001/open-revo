@@ -133,7 +133,6 @@
     <div class="toolbar">
       <div class="clear-wrap" style="flex:1; min-width:180px"><input type="text" id="procSearch" placeholder="搜索进程名 / PID…" /></div>
       <button class="btn" id="procRefresh">↻ 刷新</button>
-      <button class="btn" id="procTreeBtn">🌲 树状</button>
       <label style="font-size:12px; color:var(--text-dim); display:flex; align-items:center; gap:4px;">
         <input type="checkbox" id="procAuto" checked /> 自动(3s)
       </label>
@@ -305,16 +304,10 @@ function fmtBytes(n) {
 }
 let procCache = [];
 let procSort = { key: 'cpu', dir: -1 };
-// 默认树状（任务管理器风格）；用户切回平铺后记住选择。
-// 注意不能用数字 0 当根节点键：Windows System Idle Process 的 PID 就是 0。
-let procTree = localStorage.getItem('proc-tree') !== '0';
-
-function syncTreeBtn() {
-  const b = $('procTreeBtn');
-  b.textContent = procTree ? '🌳 树状中' : '🌲 树状';
-  b.style.borderColor = procTree ? 'var(--accent)' : '';
-  b.style.color = procTree ? 'var(--accent)' : '';
-}
+// 任务管理器交互：默认平铺列表，有子进程的行前带 ▸ 展开箭头，点击展开子树。
+// procExpanded 保存已展开的 PID，刷新后保持展开状态。
+// 注意 pid 0 是 System Idle Process，子进程映射按真实 ppid 建，不用数字哨兵键。
+const procExpanded = new Set();
 
 async function refreshProc() {
   let d;
@@ -335,12 +328,9 @@ function renderProc() {
   };
 
   let list;
-  if (!procTree) {
-    list = [...rows].sort(cmp).map((p) => ({ p, depth: 0 }));
-  } else {
-    // 树状：保留命中项及其全部祖先链，再按父子关系缩进展示。
-    // 父进程不在当前集合中的进程作为根节点（避免 Windows 大量
-    // 已退出父进程的孤儿条目悬浮在顶部之外）。
+  {
+    // 平铺展示当前层级的根节点；点 ▸ 才展开该行子树。
+    // 搜索时保留命中项及其完整祖先链，且命中行所在分支自动展开。
     let keep = rows;
     if (kw) {
       const byPid = new Map(procCache.map((p) => [p.pid, p]));
@@ -394,23 +384,36 @@ function renderProc() {
     const visit = (p, depth) => {
       if (visited.has(p.pid)) return;
       visited.add(p.pid);
-      list.push({ p, depth });
-      const ch = kids.get(p.pid);
-      if (ch) [...ch].sort(cmpTree).forEach((c) => visit(c, depth + 1));
+      list.push({ p, depth, hasKids: (kids.get(p.pid) || []).length > 0 });
+      if (!procExpanded.has(p.pid) && !kw) return; // 未展开：不深入子树
+      [...kids.get(p.pid) || []].sort(cmpTree).forEach((c) => visit(c, depth + 1));
     };
     (kids.get(ROOT) || []).sort(rootCmp).forEach((r) => visit(r, 0));
+    if (kw) {
+      // 搜索时保留的祖先链整条显示（命中项的子树也一并展示）
+      list = [];
+      const visited2 = new Set();
+      const visitAll = (p, depth) => {
+        if (visited2.has(p.pid)) return;
+        visited2.add(p.pid);
+        list.push({ p, depth, hasKids: (kids.get(p.pid) || []).length > 0 });
+        [...kids.get(p.pid) || []].sort(cmpTree).forEach((c) => visitAll(c, depth + 1));
+      };
+      (kids.get(ROOT) || []).sort(rootCmp).forEach((r) => visitAll(r, 0));
+    }
   }
   $('procCount').textContent = `共 ${list.length}${kw ? '/' + procCache.length : ''} 项`;
 
   const tb = $('procBody');
   tb.innerHTML = '';
   const frag = document.createDocumentFragment();
-  list.forEach(({ p, depth }) => {
+  list.forEach(({ p, depth, hasKids }) => {
     const tr = document.createElement('tr');
     const mem = fmtBytes(p.mem);
-    const nameHtml = procTree && depth > 0
-      ? `<span style="padding-left:${depth * 18}px"><span style="color:var(--text-dim)">└ </span>${p.name}</span>`
-      : (procTree && p.app ? `<span style="font-weight:600">${p.name}</span>` : p.name);
+    const arrow = hasKids
+      ? `<span data-a="toggle" data-pid="${p.pid}" style="cursor:pointer; display:inline-block; width:14px; color:var(--text-dim); user-select:none">${procExpanded.has(p.pid) ? '▾' : '▸'}</span>`
+      : '<span style="display:inline-block; width:14px"></span>';
+    const nameHtml = `<span style="padding-left:${depth * 16}px">${arrow}${p.app ? `<span style="font-weight:600">${p.name}</span>` : p.name}</span>`;
     tr.innerHTML = `
       <td title="${p.name}">${nameHtml}</td>
       <td class="num">${p.pid}</td>
@@ -433,6 +436,12 @@ async function procAction(e) {
   if (!el) return;
   const pid = Number(el.dataset.pid);
   const act = el.dataset.a;
+  if (act === 'toggle') {
+    if (procExpanded.has(pid)) procExpanded.delete(pid);
+    else procExpanded.add(pid);
+    renderProc();
+    return;
+  }
   try {
     if (act === 'kill' || act === 'tree') {
       if (!confirm(`${act === 'tree' ? '结束整棵进程树' : '结束进程'} PID ${pid}？`)) return;
@@ -453,13 +462,6 @@ document.querySelectorAll('#page-proc th[data-sort]').forEach((th) => {
   });
 });
 $('procRefresh').addEventListener('click', refreshProc);
-$('procTreeBtn').addEventListener('click', () => {
-  procTree = !procTree;
-  localStorage.setItem('proc-tree', procTree ? '1' : '0');
-  syncTreeBtn();
-  renderProc();
-});
-syncTreeBtn();
 $('procSearch').addEventListener('input', renderProc);
 
 // ==========================================================================
