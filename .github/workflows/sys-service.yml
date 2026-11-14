@@ -1,0 +1,67 @@
+name: Build Sys Service
+
+# Compiles the sys-inspector companion service into a standalone .exe and
+# publishes it as an artifact. The sidecar crate lives inside the plugin
+# folder and has no dependency on src-tauri, so this workflow never builds
+# the host.
+
+on:
+  workflow_dispatch:
+  push:
+    # Only source inputs rebuild. The committed sys-service.exe also lives
+    # under sidecar/, and matching it here would make every artifact commit
+    # trigger another build.
+    paths:
+      - 'plugins_sample/webview2/sys-inspector/sidecar/src/**'
+      - 'plugins_sample/webview2/sys-inspector/sidecar/Cargo.toml'
+      - 'plugins_sample/webview2/sys-inspector/sidecar/Cargo.lock'
+      - '.github/workflows/sys-service.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sys-service-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: plugins_sample/webview2/sys-inspector/sidecar
+
+      - name: Build sidecar
+        working-directory: plugins_sample/webview2/sys-inspector/sidecar
+        run: cargo build --release
+
+      - name: Verify binary
+        working-directory: plugins_sample/webview2/sys-inspector/sidecar
+        shell: pwsh
+        run: |
+          $exe = "target/release/sys-service.exe"
+          if (-not (Test-Path $exe)) { throw "sys-service.exe missing" }
+          $size = (Get-Item $exe).Length
+          Write-Host "built $exe ($size bytes)"
+          # Guards against a silently empty/stub build before it reaches users.
+          if ($size -lt 200KB) { throw "binary too small: $size bytes" }
+          $bytes = [System.IO.File]::ReadAllBytes($exe)
+          $text = [System.Text.Encoding]::ASCII.GetString($bytes)
+          foreach ($needle in @("GetExtendedTcpTable", "RmStartSession", "sys_service.log")) {
+            if ($text.IndexOf($needle) -lt 0) { throw "missing embedded marker: $needle" }
+          }
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sys-service
+          path: plugins_sample/webview2/sys-inspector/sidecar/target/release/sys-service.exe
+          if-no-files-found: error

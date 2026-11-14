@@ -1,0 +1,648 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>系统资源检视台</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface-card: #1a212b;
+    --border-subtle: #2a313c;
+    --text-primary: #e6edf3;
+    --text-dim: #7d8590;
+    --accent: #58a6ff;
+    --status-ok: #3fb950;
+    --status-warn: #d29922;
+    --status-err: #f85149;
+    --radius-md: 10px;
+    --radius-sm: 6px;
+    --mono: ui-monospace, SFMono-Regular, Consolas, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text-primary);
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-size: 13px;
+    padding: 14px 16px;
+    overflow-y: auto;
+  }
+
+  /* ---- header ---- */
+  .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .header h1 { font-size: 16px; font-weight: 600; letter-spacing: 0.5px; }
+  .svc { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-dim); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--status-err); }
+  .dot.ok { background: var(--status-ok); box-shadow: 0 0 6px var(--status-ok); }
+
+  /* ---- nav ---- */
+  .nav { display: flex; gap: 4px; margin-bottom: 14px; border-bottom: 1px solid var(--border-subtle); padding-bottom: 0; }
+  .nav button {
+    background: none; border: none; color: var(--text-dim); font: inherit;
+    padding: 8px 16px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  }
+  .nav button.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .page { display: none; }
+  .page.active { display: block; }
+
+  /* ---- generic ---- */
+  .card {
+    background: var(--surface-card); border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md); padding: 12px 14px;
+  }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .label { font-size: 11px; color: var(--text-dim); margin-bottom: 6px; display: flex; justify-content: space-between; }
+  .big { font-size: 22px; font-weight: 700; font-family: var(--mono); }
+  .big small { font-size: 12px; color: var(--text-dim); font-weight: 400; }
+  .bar-track { height: 6px; background: #21262d; border-radius: 3px; margin-top: 8px; overflow: hidden; }
+  .bar-fill { height: 100%; background: var(--accent); border-radius: 3px; transition: width 0.4s; }
+  .btn {
+    background: var(--surface); border: 1px solid var(--border-subtle); color: var(--text-primary);
+    border-radius: var(--radius-sm); padding: 5px 10px; font: inherit; font-size: 12px; cursor: pointer;
+  }
+  .btn:hover { border-color: var(--accent); }
+  .btn.primary { background: #1f6feb33; border-color: #388bfd66; }
+  .btn.danger { color: var(--status-err); border-color: #f8514955; }
+  .btn.danger:hover { background: #f8514922; }
+  .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+  input[type="text"], select {
+    background: var(--surface); border: 1px solid var(--border-subtle); color: var(--text-primary);
+    border-radius: var(--radius-sm); padding: 6px 10px; font: inherit; font-size: 12px; outline: none;
+  }
+  input[type="text"]:focus { border-color: var(--accent); }
+  .toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+
+  /* ---- table ---- */
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th {
+    text-align: left; color: var(--text-dim); font-weight: 600; padding: 6px 8px;
+    border-bottom: 1px solid var(--border-subtle); position: sticky; top: 0; background: var(--bg);
+    cursor: pointer; user-select: none; white-space: nowrap;
+  }
+  td { padding: 5px 8px; border-bottom: 1px solid #21262d; white-space: nowrap; max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+  tr:hover td { background: #ffffff08; }
+  td.num { font-family: var(--mono); text-align: right; }
+  .tbl-wrap { max-height: 460px; overflow: auto; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--surface-card); }
+  .row-actions { display: flex; gap: 4px; }
+  .row-actions .btn { padding: 2px 8px; font-size: 11px; }
+
+  canvas { width: 100%; height: 220px; display: block; }
+  .legend { display: flex; gap: 16px; font-size: 11px; color: var(--text-dim); margin-top: 6px; }
+  .legend b { display: inline-block; width: 10px; height: 3px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+
+  .toast {
+    position: fixed; bottom: 20px; right: 20px; background: #161b22ee; border: 1px solid var(--accent);
+    color: var(--text-primary); padding: 10px 16px; border-radius: var(--radius-md); font-size: 12px;
+    opacity: 0; transform: translateY(8px); transition: all 0.25s; pointer-events: none; max-width: 420px;
+  }
+  .toast.show { opacity: 1; transform: none; }
+  .toast.err { border-color: var(--status-err); }
+  .empty { color: var(--text-dim); text-align: center; padding: 30px; font-size: 12px; }
+  .spin { display: inline-block; animation: r 0.8s linear infinite; }
+  @keyframes r { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+  <div class="header">
+    <h1>🖥️ 系统资源检视台</h1>
+    <div class="svc"><span class="dot" id="svcDot"></span><span id="svcText">服务检测中…</span></div>
+  </div>
+
+  <div class="nav" id="nav">
+    <button data-page="perf" class="active">📈 性能</button>
+    <button data-page="proc">⚙️ 进程</button>
+    <button data-page="conn">🔌 连接</button>
+    <button data-page="file">📁 文件占用</button>
+  </div>
+
+  <!-- ======================= 性能 ======================= -->
+  <div class="page active" id="page-perf">
+    <div class="grid3" style="margin-bottom:12px;">
+      <div class="card">
+        <div class="label"><span>CPU 总占用</span><span id="cpuFreq">— MHz</span></div>
+        <div class="big"><span id="cpuPct">—</span><small> %</small></div>
+        <div class="bar-track"><div class="bar-fill" id="cpuBar"></div></div>
+        <div class="label" style="margin-top:8px"><span>每核心</span></div>
+        <div id="coreBars" style="display:flex; flex-wrap:wrap; gap:4px;"></div>
+      </div>
+      <div class="card">
+        <div class="label"><span>内存</span><span id="memText">— / —</span></div>
+        <div class="big"><span id="memPct">—</span><small> %</small></div>
+        <div class="bar-track"><div class="bar-fill" id="memBar"></div></div>
+        <div class="label" style="margin-top:8px"><span id="swapText">交换分区 —</span></div>
+        <div class="bar-track"><div class="bar-fill" id="swapBar" style="background: var(--status-warn)"></div></div>
+      </div>
+      <div class="card">
+        <div class="label"><span>网络</span><span id="netIface">活动网卡</span></div>
+        <div class="big" style="color:#56d364"><span id="netDown">—</span><small> ↓</small></div>
+        <div class="big" style="color:#d29922"><span id="netUp">—</span><small> ↑</small></div>
+        <div class="label" style="margin-top:8px"><span>GPU 占用 <small style="color:var(--text-dim)">(宿主遥测)</small></span></div>
+        <div class="big"><span id="gpuPct">—</span><small> %</small></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="label"><span>60 秒趋势</span><span>采样 1.5s</span></div>
+      <canvas id="chart" width="800" height="220"></canvas>
+      <div class="legend">
+        <span><b style="background:var(--accent)"></b>CPU %</span>
+        <span><b style="background:#bc8cff"></b>内存 %</span>
+        <span><b style="background:#56d364"></b>网络下行 (对数)</span>
+      </div>
+    </div>
+    <div class="card" style="margin-top:12px">
+      <div class="label"><span>磁盘分区</span></div>
+      <div id="diskList"></div>
+    </div>
+  </div>
+
+  <!-- ======================= 进程 ======================= -->
+  <div class="page" id="page-proc">
+    <div class="toolbar">
+      <input type="text" id="procSearch" placeholder="搜索进程名 / PID…" style="flex:1; min-width:180px" />
+      <button class="btn" id="procRefresh">↻ 刷新</button>
+      <label style="font-size:12px; color:var(--text-dim); display:flex; align-items:center; gap:4px;">
+        <input type="checkbox" id="procAuto" checked /> 自动(3s)
+      </label>
+      <span style="font-size:11px; color:var(--text-dim)" id="procCount"></span>
+    </div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr>
+          <th data-sort="name">进程名</th><th data-sort="pid">PID</th><th data-sort="ppid">父PID</th>
+          <th data-sort="cpu" style="text-align:right">CPU%</th><th data-sort="mem" style="text-align:right">内存</th>
+          <th>路径</th><th>操作</th>
+        </tr></thead>
+        <tbody id="procBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ======================= 连接 ======================= -->
+  <div class="page" id="page-conn">
+    <div class="toolbar">
+      <select id="connProto"><option value="all">全部协议</option><option value="tcp">仅 TCP</option><option value="udp">仅 UDP</option></select>
+      <input type="text" id="connSearch" placeholder="搜索地址 / 端口 / 进程…" style="flex:1; min-width:180px" />
+      <button class="btn" id="connRefresh">↻ 刷新</button>
+      <label style="font-size:12px; color:var(--text-dim); display:flex; align-items:center; gap:4px;">
+        <input type="checkbox" id="connAuto" checked /> 自动(3s)
+      </label>
+    </div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr>
+          <th>协议</th><th>状态</th><th>本地地址</th><th>远端地址</th><th>PID</th><th>进程</th><th>操作</th>
+        </tr></thead>
+        <tbody id="connBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ======================= 文件占用 ======================= -->
+  <div class="page" id="page-file">
+    <div class="toolbar">
+      <input type="text" id="filePath" placeholder="拖入文件/文件夹，或粘贴完整路径，如 D:\download\setup.exe" style="flex:1; min-width:300px" />
+      <button class="btn primary" id="fileProbe">🔍 检测占用</button>
+    </div>
+    <div class="card" style="min-height:60px">
+      <div id="fileResult"><div class="empty">输入路径并点击「检测占用」，将列出所有锁定该文件的进程（Restart Manager 通道）</div></div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+'use strict';
+// ==========================================================================
+// 系统资源检视台 — data source: local sidecar sys-service.exe (:18956)
+// host bridge only used for GPU telemetry (get_hardware_status)
+// ==========================================================================
+const API = 'http://127.0.0.1:18956';
+const $ = (id) => document.getElementById(id);
+
+// ---------------- toast ----------------
+let toastTimer = null;
+function toast(msg, isErr) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.classList.toggle('err', !!isErr);
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 3000);
+}
+
+// ---------------- service health ----------------
+let serviceOk = false;
+async function checkHealth() {
+  try {
+    const r = await fetchTimeout(API + '/api/health', 3000);
+    const j = await r.json();
+    serviceOk = j.status === 'ok';
+    const el = j.elevated;
+    $('svcText').textContent = serviceOk
+      ? `sys-service 在线 ${el ? '(管理员)' : '(未提权!)'} · v${j.version || ''}`
+      : '服务异常';
+  } catch (_) {
+    serviceOk = false;
+    $('svcText').textContent = 'sidecar 未响应 — 面板重开或重启宿主';
+  }
+  $('svcDot').classList.toggle('ok', serviceOk);
+  return serviceOk;
+}
+function fetchTimeout(url, ms, opts) {
+  const c = new AbortController();
+  const t = setTimeout(() => c.abort(), ms);
+  return fetch(url, { ...opts, signal: c.signal }).finally(() => clearTimeout(t));
+}
+async function api(path, opts) {
+  if (!serviceOk && !(await checkHealth())) throw new Error('sys-service 未在线');
+  const r = await fetchTimeout(API + path, 15000, opts);
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+  return j;
+}
+
+// ---------------- GPU from host bridge ----------------
+let hostGpu = { usage: null, mem_used: null };
+async function pollGpu() {
+  try {
+    const br = window.parent && window.parent.__OPENREVO_BRIDGE__;
+    if (br && br.invoke) {
+      const s = await br.invoke('get_hardware_status', {});
+      if (s) hostGpu = { usage: s.gpu_usage, mem_used: s.gpu_vram_used_mb };
+    }
+  } catch (_) {}
+}
+
+// ---------------- navigation ----------------
+document.querySelectorAll('#nav button').forEach((b) => {
+  b.addEventListener('click', () => {
+    document.querySelectorAll('#nav button').forEach((x) => x.classList.remove('active'));
+    b.classList.add('active');
+    document.querySelectorAll('.page').forEach((p) => p.classList.remove('active'));
+    $('page-' + b.dataset.page).classList.add('active');
+  });
+});
+
+// ==========================================================================
+// PAGE 1: 性能
+// ==========================================================================
+const HIST = 40; // 60s at 1.5s
+const hist = { cpu: [], mem: [], net: [] };
+let lastNetRx = null, lastNetT = null;
+
+function fmtBytes(n) {
+  if (n == null || isNaN(n)) return '—';
+  const u = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0; let v = n;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return v.toFixed(v >= 100 ? 0 : 1) + u[i];
+}
+
+async function refreshPerf() {
+  let d;
+  try { d = await api('/api/system'); } catch (_) { return; }
+
+  const cpu = Math.round(d.cpu.global);
+  $('cpuPct').textContent = cpu;
+  $('cpuBar').style.width = cpu + '%';
+  $('cpuBar').style.background = cpu > 85 ? 'var(--status-err)' : cpu > 60 ? 'var(--status-warn)' : 'var(--accent)';
+  $('cpuFreq').textContent = (d.cpu.freq_mhz / 1000).toFixed(2) + ' GHz';
+
+  const cb = $('coreBars');
+  cb.innerHTML = '';
+  d.cpu.cores.forEach((c, i) => {
+    const w = document.createElement('div');
+    w.style.cssText = 'flex:1 1 30px; max-width:44px; text-align:center;';
+    const cc = Math.round(c);
+    w.innerHTML = `<div style="height:26px;display:flex;align-items:flex-end;background:#21262d;border-radius:3px;overflow:hidden;">
+      <div style="width:100%;height:${Math.min(100, cc)}%;background:${cc > 85 ? 'var(--status-err)' : 'var(--accent)'};transition:height .4s"></div></div>
+      <div style="font-size:9px;color:var(--text-dim);margin-top:2px">${i}:${cc}</div>`;
+    cb.appendChild(w);
+  });
+
+  const memPct = Math.round((d.memory.used / d.memory.total) * 100);
+  $('memPct').textContent = memPct;
+  $('memBar').style.width = memPct + '%';
+  $('memText').textContent = fmtBytes(d.memory.used) + ' / ' + fmtBytes(d.memory.total);
+  const swPct = d.memory.swap_total ? Math.round((d.memory.swap_used / d.memory.swap_total) * 100) : 0;
+  $('swapBar').style.width = swPct + '%';
+  $('swapText').textContent = d.memory.swap_total
+    ? `交换分区 ${fmtBytes(d.memory.swap_used)} / ${fmtBytes(d.memory.swap_total)} (${swPct}%)`
+    : '交换分区 未启用';
+
+  // Aggregate all NICs; delta window = time since last poll.
+  const rx = d.networks.reduce((a, n) => a + n.rx_total, 0);
+  const tx = d.networks.reduce((a, n) => a + n.tx_total, 0);
+  const now = Date.now();
+  if (lastNetRx !== null && lastNetT && now > lastNetT) {
+    const sec = (now - lastNetT) / 1000;
+    const down = (rx - lastNetRx) / sec;
+    const up = lastNetTx !== null ? (tx - lastNetTx) / sec : 0;
+    $('netDown').textContent = fmtBytes(Math.max(0, down)) + '/s';
+    $('netUp').textContent = fmtBytes(Math.max(0, up)) + '/s';
+    hist.net.push(Math.max(0, down));
+    if (hist.net.length > HIST) hist.net.shift();
+  }
+  lastNetRx = rx; lastNetTx = tx; lastNetT = now;
+
+  if (hostGpu.usage != null) $('gpuPct').textContent = hostGpu.usage;
+
+  hist.cpu.push(d.cpu.global);
+  hist.mem.push(memPct);
+  if (hist.cpu.length > HIST) hist.cpu.shift();
+  if (hist.mem.length > HIST) hist.mem.shift();
+
+  const dl = $('diskList');
+  dl.innerHTML = '';
+  d.disks.forEach((k) => {
+    const used = k.total - k.free;
+    const pct = k.total ? Math.round((used / k.total) * 100) : 0;
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex; align-items:center; gap:10px; margin-bottom:6px;';
+    row.innerHTML = `
+      <span style="width:120px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap" title="${k.mount}">${k.mount} ${k.label}</span>
+      <div class="bar-track" style="flex:1; margin-top:0"><div class="bar-fill" style="width:${pct}%; background:${pct > 90 ? 'var(--status-err)' : 'var(--status-ok)'}"></div></div>
+      <span style="width:150px; text-align:right; font-family:var(--mono); font-size:11px; color:var(--text-dim)">${fmtBytes(used)} / ${fmtBytes(k.total)} · ${pct}%</span>`;
+    dl.appendChild(row);
+  });
+
+  drawChart();
+}
+let lastNetTx = null;
+
+function drawChart() {
+  const cv = $('chart');
+  const ctx = cv.getContext('2d');
+  const W = cv.width = cv.clientWidth * devicePixelRatio;
+  const H = cv.height = 220 * devicePixelRatio;
+  ctx.scale(devicePixelRatio, devicePixelRatio);
+  const w = cv.clientWidth, h = 220;
+  ctx.clearRect(0, 0, W, H);
+  // grid 0/25/50/75/100
+  ctx.strokeStyle = '#2a313c66'; ctx.fillStyle = '#7d8590'; ctx.font = '10px ' + 'monospace';
+  for (let i = 0; i <= 4; i++) {
+    const y = (h - 20) * i / 4 + 10;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+    ctx.fillText(String(100 - i * 25), w - 30, y - 3);
+  }
+  const series = [
+    { data: hist.cpu, color: '#58a6ff', max: 100 },
+    { data: hist.mem, color: '#bc8cff', max: 100 },
+    { data: hist.net, color: '#56d364', log: true },
+  ];
+  series.forEach((s) => {
+    if (s.data.length < 2) return;
+    ctx.strokeStyle = s.color; ctx.lineWidth = 2 * devicePixelRatio; ctx.beginPath();
+    const n = s.data.length;
+    s.data.forEach((v, i) => {
+      let frac = s.log
+        ? Math.min(1, Math.log10(Math.max(1, v)) / 7)   // 1B..10MB/s scale
+        : Math.min(1, v / s.max);
+      const x = i * w / (HIST - 1);
+      const y = (h - 20) * (1 - frac) + 10;
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+  });
+}
+
+// ==========================================================================
+// PAGE 2: 进程
+// ==========================================================================
+let procCache = [];
+let procSort = { key: 'cpu', dir: -1 };
+
+async function refreshProc() {
+  let d;
+  try { d = await api('/api/processes'); } catch (_) { return; }
+  procCache = d.processes || [];
+  renderProc();
+}
+
+function renderProc() {
+  const kw = $('procSearch').value.trim().toLowerCase();
+  let rows = procCache;
+  if (kw) rows = rows.filter((p) =>
+    p.name.toLowerCase().includes(kw) || String(p.pid).includes(kw));
+  const { key, dir } = procSort;
+  rows = [...rows].sort((a, b) => {
+    const va = a[key] ?? '', vb = b[key] ?? '';
+    return (typeof va === 'number' ? va - vb : String(va).localeCompare(String(vb))) * dir;
+  });
+  $('procCount').textContent = `共 ${rows.length}${kw ? '/' + procCache.length : ''} 项`;
+
+  const tb = $('procBody');
+  tb.innerHTML = '';
+  const frag = document.createDocumentFragment();
+  rows.forEach((p) => {
+    const tr = document.createElement('tr');
+    const mem = fmtBytes(p.mem);
+    tr.innerHTML = `
+      <td title="${p.name}">${p.name}</td>
+      <td class="num">${p.pid}</td>
+      <td class="num">${p.ppid ?? '—'}</td>
+      <td class="num" style="color:${p.cpu > 50 ? 'var(--status-err)' : p.cpu > 15 ? 'var(--status-warn)' : 'inherit'}">${p.cpu.toFixed(1)}</td>
+      <td class="num">${mem}</td>
+      <td style="color:var(--text-dim); font-size:11px" title="${p.exe}">${p.exe}</td>
+      <td><div class="row-actions">
+        <button class="btn danger" data-a="kill" data-pid="${p.pid}">结束</button>
+        <button class="btn danger" data-a="tree" data-pid="${p.pid}">树</button>
+        <select data-a="prio" data-pid="${p.pid}" style="padding:2px 4px; font-size:11px">
+          <option value="">优先级</option>
+          <option value="realtime">实时</option><option value="high">高</option>
+          <option value="above">高于标准</option><option value="normal">标准</option>
+          <option value="below">低于标准</option><option value="idle">低</option>
+        </select>
+        <button class="btn" data-a="eco" data-pid="${p.pid}" title="切换 Windows 效率模式">🌱</button>
+      </div></td>`;
+    frag.appendChild(tr);
+  });
+  tb.appendChild(frag);
+}
+
+$('procBody').addEventListener('click', procAction);
+$('procBody').addEventListener('change', procAction);
+async function procAction(e) {
+  const el = e.target.closest('[data-a]');
+  if (!el) return;
+  const pid = Number(el.dataset.pid);
+  const act = el.dataset.a;
+  try {
+    if (act === 'kill' || act === 'tree') {
+      if (!confirm(`${act === 'tree' ? '结束整棵进程树' : '结束进程'} PID ${pid}？`)) return;
+      await api('/api/process/kill', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pid, tree: act === 'tree' }) });
+      toast(`已结束 PID ${pid}${act === 'tree' ? ' 及其子进程' : ''}`);
+      refreshProc();
+    } else if (act === 'prio' && el.value) {
+      await api('/api/process/priority', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pid, class: el.value }) });
+      toast(`PID ${pid} 优先级已设为 ${el.value}`);
+    } else if (act === 'eco') {
+      // Toggle: try enable, on success flip title; simple stateless toggle via confirm
+      const enable = !el.dataset.on;
+      await api('/api/process/eco', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pid, enable }) });
+      el.dataset.on = enable ? '1' : '';
+      el.style.opacity = enable ? '1' : '0.6';
+      toast(`PID ${pid} 效率模式已${enable ? '开启' : '关闭'}`);
+    }
+  } catch (err) {
+    toast('操作失败: ' + err.message, true);
+    if (act === 'prio') el.value = '';
+  }
+}
+document.querySelectorAll('#page-proc th[data-sort]').forEach((th) => {
+  th.addEventListener('click', () => {
+    const k = th.dataset.sort;
+    procSort = { key: k, dir: procSort.key === k ? -procSort.dir : -1 };
+    renderProc();
+  });
+});
+$('procRefresh').addEventListener('click', refreshProc);
+$('procSearch').addEventListener('input', renderProc);
+
+// ==========================================================================
+// PAGE 3: 连接
+// ==========================================================================
+let connCache = [];
+
+async function refreshConn() {
+  let d;
+  try { d = await api('/api/connections'); } catch (_) { return; }
+  connCache = [...(d.tcp || []), ...(d.udp || [])];
+  renderConn();
+}
+
+function renderConn() {
+  const proto = $('connProto').value;
+  const kw = $('connSearch').value.trim().toLowerCase();
+  let rows = connCache;
+  if (proto !== 'all') rows = rows.filter((r) => r.proto === proto);
+  if (kw) rows = rows.filter((r) =>
+    r.local.toLowerCase().includes(kw) || (r.remote || '').toLowerCase().includes(kw) ||
+    String(r.pid).includes(kw) || r.process.toLowerCase().includes(kw));
+
+  const tb = $('connBody');
+  tb.innerHTML = '';
+  if (!rows.length) { tb.innerHTML = '<tr><td colspan="7"><div class="empty">无匹配连接</div></td></tr>'; return; }
+  const frag = document.createDocumentFragment();
+  rows.forEach((r) => {
+    const tr = document.createElement('tr');
+    const established = r.state === 'ESTABLISHED';
+    tr.innerHTML = `
+      <td style="color:${r.proto === 'tcp' ? 'var(--accent)' : 'var(--status-warn)'}; font-weight:600">${r.proto.toUpperCase()}</td>
+      <td style="color:${established ? 'var(--status-ok)' : 'var(--text-dim)'}">${r.state || '—'}</td>
+      <td class="num" style="text-align:left">${r.local}</td>
+      <td class="num" style="text-align:left">${r.remote || '—'}</td>
+      <td class="num">${r.pid}</td>
+      <td title="${r.process}">${r.process}</td>
+      <td>${r.proto === 'tcp' && r.remote ? `<button class="btn danger" data-l="${r.local}" data-r="${r.remote}">断开</button>` : '—'}</td>`;
+    frag.appendChild(tr);
+  });
+  tb.appendChild(frag);
+}
+
+$('connBody').addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-l]');
+  if (!btn) return;
+  const [laddr, lport] = btn.dataset.l.split(':');
+  const [raddr, rport] = btn.dataset.r.split(':');
+  if (!confirm(`强制断开 ${btn.dataset.l} → ${btn.dataset.r}？`)) return;
+  try {
+    await api('/api/connections/close', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ local_addr: laddr, local_port: Number(lport), remote_addr: raddr, remote_port: Number(rport) }) });
+    toast('连接已断开');
+    refreshConn();
+  } catch (err) {
+    toast('断开失败: ' + err.message, true);
+  }
+});
+$('connRefresh').addEventListener('click', refreshConn);
+$('connSearch').addEventListener('input', renderConn);
+$('connProto').addEventListener('change', renderConn);
+
+// ==========================================================================
+// PAGE 4: 文件占用
+// ==========================================================================
+async function probeFile() {
+  const p = $('filePath').value.trim();
+  if (!p) { toast('请输入文件或文件夹路径', true); return; }
+  $('fileResult').innerHTML = '<div class="empty"><span class="spin">⏳</span> Restart Manager 分析中…</div>';
+  try {
+    const d = await api('/api/file/occupiers?path=' + encodeURIComponent(p));
+    if (!d.occupiers.length) {
+      $('fileResult').innerHTML = `<div class="empty">✅ 当前没有进程占用此路径</div>`;
+      return;
+    }
+    const rows = d.occupiers.map((o) => `
+      <tr>
+        <td class="num">${o.pid}</td>
+        <td title="${o.process}">${o.process || o.app}</td>
+        <td>${o.app}</td>
+        <td style="color:var(--text-dim)">${o.app_type}${o.service ? ' · ' + o.service : ''}</td>
+        <td><button class="btn danger" data-fpid="${o.pid}">结束进程</button></td>
+      </tr>`).join('');
+    $('fileResult').innerHTML = `
+      <div class="label"><span>「${p}」被 ${d.count} 个进程占用</span></div>
+      <table><thead><tr><th>PID</th><th>进程</th><th>应用名</th><th>类型</th><th>操作</th></tr></thead>
+      <tbody>${rows}</tbody></table>`;
+  } catch (err) {
+    $('fileResult').innerHTML = `<div class="empty" style="color:var(--status-err)">❌ ${err.message}</div>`;
+  }
+}
+$('fileProbe').addEventListener('click', probeFile);
+$('filePath').addEventListener('keydown', (e) => { if (e.key === 'Enter') probeFile(); });
+$('fileResult').addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-fpid]');
+  if (!btn) return;
+  const pid = Number(btn.dataset.fpid);
+  if (!confirm(`结束占用进程 PID ${pid}？`)) return;
+  try {
+    await api('/api/process/kill', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pid, tree: false }) });
+    toast(`已结束 PID ${pid}`);
+    probeFile();
+  } catch (err) {
+    toast('结束失败: ' + err.message, true);
+  }
+});
+// Drag & drop support
+document.addEventListener('dragover', (e) => e.preventDefault());
+document.addEventListener('drop', (e) => {
+  e.preventDefault();
+  const f = e.dataTransfer.files && e.dataTransfer.files[0];
+  if (f && f.path) { $('filePath').value = f.path; probeFile(); }
+});
+
+// ==========================================================================
+// main loop
+// ==========================================================================
+let tick = 0;
+async function mainLoop() {
+  if (!serviceOk && tick % 5 === 0) await checkHealth();
+  const active = document.querySelector('.page.active').id;
+  if (!serviceOk) { tick++; return; }
+  if (active === 'page-perf') await refreshPerf();
+  else if (active === 'page-proc' && $('procAuto').checked) await refreshProc();
+  else if (active === 'page-conn' && $('connAuto').checked) await refreshConn();
+  tick++;
+}
+
+(async function init() {
+  document.querySelectorAll('#page-proc th[data-sort]').forEach((th) => {
+    if (th.dataset.sort === 'cpu') th.textContent += ' ↓';
+  });
+  await checkHealth();
+  if (serviceOk) { refreshPerf(); refreshProc(); refreshConn(); }
+  pollGpu();
+  setInterval(mainLoop, 1500);
+  setInterval(pollGpu, 4000);
+  setInterval(checkHealth, 30000);
+})();
+</script>
+</body>
+</html>
