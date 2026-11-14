@@ -591,14 +591,28 @@ function fillSchedNames() {
   updateSchedTarget();
 }
 
-// 目标解析：杀的是所选进程的父进程（启动它的主进程），父进程
-// 不在快照里时退化为所选进程自身
+// 目标解析：沿父链向上找「应用级主进程」——最近一个有可见窗口的
+// 祖先（app 字段）。绝不越过 explorer（shell）或系统进程：从资源
+// 管理器直接启动的应用（如双击 exe），父进程是 explorer，此时目标
+// 就是所选进程自身；父进程不在快照里时同样退化为自身。
 function resolveSchedTarget() {
   const sel = $('schedName').value;
-  const picked = procCache.find((p) => p.name === sel);
-  if (!picked) return sel;
-  const parent = picked.ppid ? procCache.find((p) => p.pid === picked.ppid) : null;
-  return parent && parent.pid > 0 && parent.name ? parent.name : picked.name;
+  if (!sel) return sel;
+  let cur = procCache.find((p) => p.name === sel);
+  if (!cur) return sel;
+  let target = cur;
+  const guard = new Set();
+  while (cur && !guard.has(cur.pid)) {
+    guard.add(cur.pid);
+    const parent = cur.ppid ? procCache.find((p) => p.pid === cur.ppid) : null;
+    if (!parent || parent.pid === 0 || parent.pid === cur.pid) break;
+    if (isSystemProc(parent)) break;                 // 系统进程：不跟进去
+    if (parent.name.toLowerCase() === 'explorer.exe') break; // shell：不跟进去
+    if (parent.app) { target = parent; break; }      // 有窗口的主进程：就是它
+    target = parent;                                 // 无窗口的中间启动器：继续向上
+    cur = parent;
+  }
+  return target.name;
 }
 
 function updateSchedTarget() {
