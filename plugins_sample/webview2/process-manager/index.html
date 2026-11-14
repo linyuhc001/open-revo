@@ -644,7 +644,16 @@ $('schedAdd').addEventListener('click', async () => {
   if (!name) { toast('请先选择进程', true); return; }
   const mode = $('schedMode').value;
   const body = { name, mode, time: $('schedTime').value, tree: $('schedTree').checked };
-  if (mode === 'once') body.date = $('schedDate').value;
+  if (mode === 'once') {
+    body.date = $('schedDate').value;
+    // 一次性任务不允许设过去的时间：服务端「到点即触发」的语义下，
+    // 过期任务会立即执行
+    const when = new Date(`${body.date}T${body.time || '00:00'}`);
+    if (isNaN(when.getTime()) || when <= new Date()) {
+      toast('一次性任务的时间已经过去了，请选择未来的时间', true);
+      return;
+    }
+  }
   try {
     await api('/api/schedule', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body) });
