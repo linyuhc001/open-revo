@@ -83,7 +83,7 @@ impl AppState {
         self.sys.refresh_memory();
         self.sys.refresh_cpu_all();
         let _ = self.nets.refresh(true);
-        self.disks.refresh_list();
+        self.disks.refresh(false);
     }
 }
 
@@ -815,8 +815,8 @@ fn api_file_occupiers(path: &str) -> (u16, Value) {
                     json!({
                         "pid": i.Process.dwProcessId,
                         "app": wide_to_string(&i.strAppName),
-                        "service": wide_to_string(&i.strServiceShortDisplayName),
-                        "app_type": rm_app_type_name(i.AppType),
+                        "service": wide_to_string(&i.strServiceShortName),
+                        "app_type": rm_app_type_name(i.ApplicationType as i32),
                         "process": names.get(&i.Process.dwProcessId).cloned().unwrap_or_default(),
                     })
                 })
@@ -885,12 +885,12 @@ fn is_elevated() -> bool {
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
 #[cfg(windows)]
-use windows_sys::Win32::NetworkManagement_IpHelper::{
+use windows_sys::Win32::NetworkManagement::IpHelper::{
     GetExtendedTcpTable, GetExtendedUdpTable, SetTcpEntry, MIB_TCPROW,
 };
 #[cfg(windows)]
 use windows_sys::Win32::Security::{
-    GetTokenInformation, OpenProcessToken, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+    GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
 };
 #[cfg(windows)]
 use windows_sys::Win32::System::RestartManager::{
@@ -898,7 +898,7 @@ use windows_sys::Win32::System::RestartManager::{
 };
 #[cfg(windows)]
 use windows_sys::Win32::System::Threading::{
-    GetCurrentProcess, OpenProcess, ProcessPowerThrottling, SetPriorityClass,
+    GetCurrentProcess, OpenProcess, OpenProcessToken, ProcessPowerThrottling, SetPriorityClass,
     SetProcessInformation, TerminateProcess, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
     PROCESS_POWER_THROTTLING_STATE, PROCESS_SET_INFORMATION, PROCESS_TERMINATE,
 };
