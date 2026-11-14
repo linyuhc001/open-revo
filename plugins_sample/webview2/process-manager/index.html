@@ -72,6 +72,15 @@
     border-radius: var(--radius-sm); padding: 6px 10px; font: inherit; font-size: 12px; outline: none;
   }
   input[type="text"]:focus { border-color: var(--accent); }
+  .clear-wrap { position: relative; display: flex; }
+  .clear-wrap input { width: 100%; padding-right: 28px; }
+  .clear-btn {
+    position: absolute; right: 2px; top: 50%; transform: translateY(-50%);
+    background: none; border: none; color: var(--text-dim); cursor: pointer;
+    font-size: 15px; line-height: 1; padding: 3px 7px; display: none; font-family: inherit;
+  }
+  .clear-wrap.has-value .clear-btn { display: block; }
+  .clear-btn:hover { color: var(--status-err); }
   .toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
 
   /* ---- table ---- */
@@ -116,7 +125,7 @@
   <!-- ======================= 进程 ======================= -->
   <div class="page active" id="page-proc">
     <div class="toolbar">
-      <input type="text" id="procSearch" placeholder="搜索进程名 / PID…" style="flex:1; min-width:180px" />
+      <div class="clear-wrap" style="flex:1; min-width:180px"><input type="text" id="procSearch" placeholder="搜索进程名 / PID…" /></div>
       <button class="btn" id="procRefresh">↻ 刷新</button>
       <label style="font-size:12px; color:var(--text-dim); display:flex; align-items:center; gap:4px;">
         <input type="checkbox" id="procAuto" checked /> 自动(3s)
@@ -139,7 +148,7 @@
   <div class="page" id="page-conn">
     <div class="toolbar">
       <select id="connProto"><option value="all">全部协议</option><option value="tcp">仅 TCP</option><option value="udp">仅 UDP</option></select>
-      <input type="text" id="connSearch" placeholder="搜索地址 / 端口 / 进程…" style="flex:1; min-width:180px" />
+      <div class="clear-wrap" style="flex:1; min-width:180px"><input type="text" id="connSearch" placeholder="搜索地址 / 端口 / 进程…" /></div>
       <button class="btn" id="connRefresh">↻ 刷新</button>
       <label style="font-size:12px; color:var(--text-dim); display:flex; align-items:center; gap:4px;">
         <input type="checkbox" id="connAuto" checked /> 自动(3s)
@@ -158,7 +167,7 @@
   <!-- ======================= 文件占用 ======================= -->
   <div class="page" id="page-file">
     <div class="toolbar">
-      <input type="text" id="filePath" placeholder="粘贴完整路径，如 D:\download\setup.exe" style="flex:1; min-width:300px" />
+      <div class="clear-wrap" style="flex:1; min-width:300px"><input type="text" id="filePath" placeholder="粘贴完整路径，如 D:\download\setup.exe" /></div>
       <button class="btn primary" id="fileProbe">🔍 检测占用</button>
     </div>
     <div class="card" style="min-height:60px">
@@ -228,6 +237,28 @@ document.querySelectorAll('#nav button').forEach((b) => {
   });
 });
 
+
+// ---------------- clearable inputs (× at tail) ----------------
+document.querySelectorAll('.clear-wrap').forEach((w) => {
+  const input = w.querySelector('input');
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'clear-btn';
+  btn.textContent = '×';
+  btn.title = '清空';
+  btn.tabIndex = -1;
+  w.appendChild(btn);
+  const sync = () => w.classList.toggle('has-value', input.value.length > 0);
+  input.addEventListener('input', sync);
+  btn.addEventListener('mousedown', (e) => e.preventDefault()); // keep input focus
+  btn.addEventListener('click', () => {
+    input.value = '';
+    sync();
+    input.focus();
+    input.dispatchEvent(new Event('input', { bubbles: true })); // re-filter lists
+  });
+  sync();
+});
 
 // ==========================================================================
 // PAGE: 进程
