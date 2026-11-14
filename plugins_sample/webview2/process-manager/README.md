@@ -50,7 +50,7 @@ POST /api/config/port             {port} 重写 manifest service 端口并重启
 
 - Apply 前置条件：目标端口在 127.0.0.1 上可绑定（`/api/port/check` 用真实 bind 探测，被占用时返回占用进程名与 PID）
 - Apply 流程：服务改写所在插件目录的 `manifest.json`（`service.port` / `health_url` / `args` 同步更新）→ 拉起新端口实例 → 旧实例退出；新实例启动时对 bind 做最长 ~5s 重试以吸收交接间隙
-- 端口持久化在 manifest 中（宿主每次启动服务都会重读 manifest），宿主重启后依然生效；填回 18956 可恢复默认
+- 端口持久化在 manifest 中（宿主每次启动服务都会重读 manifest），宿主重启后依然生效
 - 前端缓存端口于 localStorage，并以 `/api/health` 返回的真实端口自愈
 
 ## 构建与部署
