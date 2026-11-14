@@ -231,7 +231,7 @@ fn handle_client(mut stream: TcpStream) {
     if method == "OPTIONS" {
         let preflight = "HTTP/1.1 204 No Content\r\n\
             Access-Control-Allow-Origin: *\r\n\
-            Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
+            Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\n\
             Access-Control-Allow-Headers: Content-Type\r\n\
             Access-Control-Max-Age: 86400\r\n\
             Connection: close\r\n\
