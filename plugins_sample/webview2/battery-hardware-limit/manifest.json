@@ -1,7 +1,7 @@
 {
   "id": "battery-hardware-limit",
   "name": "电池充电上限守护者",
-  "version": "2.4.0",
+  "version": "2.4.1",
   "author": "OpenRevo Official & Community",
   "description": "官方演示插件：基于微内核硬件网关的原生三寄存器限充调控中心 (EC 0x07A6 保护模式 + 0x07B9 上限 + 0x07D0 回落下限)，与固件一致、零心跳、不触碰平台身份码，自由设定 1~100% 充电阈值。",
   "type": "tab",

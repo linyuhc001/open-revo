@@ -210,7 +210,7 @@
     /* Hardware Telemetry Grid */
     .stat-grid {
       display: grid;
-      grid-template-columns: repeat(4, 1fr);
+      grid-template-columns: repeat(3, 1fr);
       gap: 12px;
     }
 
@@ -511,141 +511,6 @@
       transition: width 0.2s linear;
     }
 
-    /* Diagnostic Lab Card */
-    .lab-accordion {
-      border: 1px solid var(--border-subtle);
-      border-radius: var(--radius-lg);
-      background: var(--surface-card);
-      overflow: hidden;
-    }
-
-    .lab-summary {
-      padding: 12px 18px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      cursor: pointer;
-      font-size: 12px;
-      font-weight: 600;
-      color: var(--text-secondary);
-      background: var(--surface-overlay);
-      transition: background 0.15s ease;
-    }
-
-    .lab-summary:hover {
-      background: var(--surface-hover);
-      color: var(--text-primary);
-    }
-
-    .lab-accordion {
-      width: 100%;
-      max-width: 100%;
-      box-sizing: border-box;
-      border: 1px solid var(--border-subtle);
-      border-radius: var(--radius-lg);
-      background: var(--surface-card);
-      overflow: hidden;
-    }
-
-    .lab-body {
-      padding: 14px 16px;
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-      border-top: 1px solid var(--border-subtle);
-      width: 100%;
-      max-width: 100%;
-      box-sizing: border-box;
-      overflow-x: hidden;
-    }
-
-    .lab-form-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 10px 12px;
-      width: 100%;
-      max-width: 100%;
-      box-sizing: border-box;
-    }
-
-    .lab-field {
-      display: flex;
-      flex-direction: column;
-      gap: 5px;
-      min-width: 0;
-      width: 100%;
-      max-width: 100%;
-      box-sizing: border-box;
-    }
-
-    .lab-label {
-      font-size: 10.5px;
-      color: var(--text-dim);
-      font-weight: 500;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .lab-input,
-    .lab-select {
-      background: var(--surface-overlay);
-      border: 1px solid var(--border-subtle);
-      border-radius: var(--radius-sm);
-      padding: 6px 10px;
-      font-size: 11.5px;
-      color: var(--text-primary);
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-      outline: none;
-      min-width: 0;
-      width: 100%;
-      max-width: 100%;
-      box-sizing: border-box;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      overflow: hidden;
-      color-scheme: dark;
-    }
-
-    .lab-select option {
-      background-color: #0b0f17;
-      color: #f8fafc;
-    }
-
-    .lab-input:focus,
-    .lab-select:focus {
-      border-color: var(--border-accent);
-    }
-
-    .lab-footer-bar {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      flex-wrap: wrap;
-      gap: 8px;
-      width: 100%;
-      box-sizing: border-box;
-    }
-
-    .console-box {
-      background: #06090e;
-      border: 1px solid var(--border-subtle);
-      border-radius: var(--radius-sm);
-      padding: 10px 12px;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-      font-size: 11px;
-      color: #38bdf8;
-      max-height: 160px;
-      overflow-y: auto;
-      overflow-x: hidden;
-      white-space: pre-wrap;
-      word-break: break-all;
-      line-height: 1.45;
-      width: 100%;
-      max-width: 100%;
-      box-sizing: border-box;
-    }
-
     /* Toast Notification */
     .toast {
       position: fixed;
@@ -843,66 +708,19 @@
       </div>
     </div>
 
-    <!-- Diagnostic Lab & Custom Manifest Parameters -->
-    <div class="lab-accordion">
-      <div class="lab-summary" onclick="toggleLab()">
-        <span>🛠️ 极客硬件实验室与协议策略调优 (点击展开 / 折叠)</span>
-        <span id="labToggleIcon">▼</span>
-      </div>
-      <div id="labBody" class="lab-body" style="display: none;">
-        <div class="lab-form-grid">
-          <div class="lab-field">
-            <label class="lab-label" title="限充生效工作模式">生效工作模式 (Mode)</label>
-            <select id="paramMode" class="lab-select" onchange="updateLabConfig()">
-              <option value="native" selected>原生三寄存器 (现代固件推荐)</option>
-            </select>
-          </div>
-          <div class="lab-field">
-            <label class="lab-label" title="通信总线协议">总线协议 (Protocol)</label>
-            <select id="paramProtocol" class="lab-select" onchange="updateLabConfig()">
-              <option value="TongfangDirectEc">TongfangDirectEc (原厂直连)</option>
-              <option value="GenericAcpiWmi">GenericAcpiWmi (ACPI 邮箱)</option>
-              <option value="BldWmiMailbox">BldWmiMailbox (宝龙达双阈值)</option>
-            </select>
-          </div>
-          <div class="lab-field">
-            <label class="lab-label">限充寄存器 (Limit Up Reg)</label>
-            <input id="paramLimitReg" class="lab-input" type="text" value="0x07B9 (1977)"
-              onchange="updateLabConfig()" />
-          </div>
-          <div class="lab-field">
-            <label class="lab-label">回落下限寄存器 (Limit Down Reg)</label>
-            <input id="paramDownReg" class="lab-input" type="text" value="0x07D0 (2000)"
-              onchange="updateLabConfig()" />
-          </div>
-          <div class="lab-field">
-            <label class="lab-label">保护模式寄存器 (Mode Reg)</label>
-            <input id="paramModeReg" class="lab-input" type="text" value="0x07A6 (1958)"
-              onchange="updateLabConfig()" />
-          </div>
-        </div>
-
-        <div class="lab-footer-bar">
-          <span style="font-size: 11px; color: var(--text-dim);">底层执行控制台输出与通讯帧诊断：</span>
-          <button class="btn btn-sm" onclick="exportManifestConfig()">
-            📋 导出当前机型配置为 manifest.json 片段
-          </button>
-        </div>
-
-        <div id="consoleLog" class="console-box">[*] 硬件网关就绪，等待交互操作...</div>
-      </div>
-    </div>
   </div>
 
-  <div id="toast" class="toast">设置已成功生效！</div>
+    <div id="toast" class="toast">设置已成功生效！</div>
 
   <script>
     // --- 状态与配置存储 ---
+    // 原生三寄存器固定地址（写死，不再提供界面修改）
+    const REG_LIMIT_UP = 1977;      // 0x07B9 充电上限
+    const REG_LIMIT_DOWN = 2000;    // 0x07D0 回落下限
+    const REG_PROTECT_MODE = 1958;  // 0x07A6 电池保护模式
+    const EC_PROTOCOL = 'TongfangDirectEc';
+
     const STATE = {
-      protocol: 'TongfangDirectEc',
-      limitReg: 1977,         // 0x07B9 充電上限
-      downReg: 2000,          // 0x07D0 回落下限
-      modeReg: 1958,          // 0x07A6 电池保护模式
       currentTarget: 80,
       isLimitActive: false,
       isBusy: false,
@@ -978,16 +796,6 @@
     // 状态刷新全部掐掉（表现为插件每次打开都是默认值、不记得上次设置）。
     const callRpc = rpc;
 
-    function parseRegValue(str, fallback) {
-      if (!str) return fallback;
-      const clean = str.trim();
-      const hexMatch = clean.match(/^0x([0-9a-fA-F]+)/);
-      if (hexMatch) return parseInt(hexMatch[1], 16);
-      const decMatch = clean.match(/^(\d+)/);
-      if (decMatch) return parseInt(decMatch[1], 10);
-      return fallback;
-    }
-
     function applyStoredConfig(cfg) {
       if (!cfg || typeof cfg !== 'object') return;
       STATE._hasLoadedStorage = true;
@@ -1001,30 +809,11 @@
         updatePresetCapsules(cfg.target_limit);
       }
 
-      if (cfg.protocol) {
-        STATE.protocol = cfg.protocol;
-        const protoSelect = document.getElementById('paramProtocol');
-        if (protoSelect) protoSelect.value = cfg.protocol;
-      }
-
-      if (cfg.limit_reg) STATE.limitReg = Number(cfg.limit_reg);
-      if (cfg.down_reg) STATE.downReg = Number(cfg.down_reg);
-      if (cfg.mode_reg) STATE.modeReg = Number(cfg.mode_reg);
-
       if (cfg.is_limit_active !== undefined) {
         STATE.isLimitActive = Boolean(cfg.is_limit_active);
       }
 
-      [
-        ['paramLimitReg', STATE.limitReg, 4],
-        ['paramDownReg', STATE.downReg, 4],
-        ['paramModeReg', STATE.modeReg, 4],
-      ].forEach(function (row) {
-        const el = document.getElementById(row[0]);
-        if (el) el.value = `0x${row[1].toString(16).toUpperCase().padStart(row[2], '0')} (${row[1]})`;
-      });
-
-      logConsole(`[*] 已从沙盒恢复机型配置: 目标=${STATE.currentTarget}%, 上限寄存器=0x${STATE.limitReg.toString(16).toUpperCase()}, 模式寄存器=0x${STATE.modeReg.toString(16).toUpperCase()}`);
+      logConsole(`[*] 已从沙盒恢复配置: 目标=${STATE.currentTarget}%`);
       updateStrategyBadge();
     }
 
@@ -1067,10 +856,6 @@
       const config = {
         schema_version: STORAGE_SCHEMA,
         target_limit: STATE.currentTarget,
-        protocol: STATE.protocol,
-        limit_reg: STATE.limitReg,
-        down_reg: STATE.downReg,
-        mode_reg: STATE.modeReg,
         is_limit_active: STATE.isLimitActive,
         updated_at: new Date().toISOString()
       };
@@ -1133,20 +918,18 @@
     }
 
     async function ecRead(address) {
-      const protocolObj = typeof STATE.protocol === 'string' ? { type: STATE.protocol } : STATE.protocol;
+      const protocolObj = { type: EC_PROTOCOL };
       return await rpc('raw_ec_read', { request: { protocol: protocolObj, address } });
     }
 
     async function ecWrite(address, value) {
-      const protocolObj = typeof STATE.protocol === 'string' ? { type: STATE.protocol } : STATE.protocol;
+      const protocolObj = { type: EC_PROTOCOL };
       return await rpc('raw_ec_write', { request: { protocol: protocolObj, address, value } });
     }
 
     function logConsole(msg) {
-      const box = document.getElementById('consoleLog');
       const time = new Date().toTimeString().split(' ')[0];
-      box.textContent += `\n[${time}] ${msg}`;
-      box.scrollTop = box.scrollHeight;
+      console.log(`[${time}] ${msg}`);
     }
 
     function showToast(msg) {
@@ -1186,14 +969,6 @@
       });
     }
 
-    function toggleLab() {
-      const body = document.getElementById('labBody');
-      const icon = document.getElementById('labToggleIcon');
-      const isHidden = body.style.display === 'none';
-      body.style.display = isHidden ? 'flex' : 'none';
-      icon.textContent = isHidden ? '▲' : '▼';
-    }
-
     function updateStrategyBadge() {
       const badge = document.getElementById('strategyModeBadge');
       const desc = document.getElementById('actionDescText');
@@ -1205,16 +980,6 @@
       const down = STATE.currentTarget > DOWN_OFFSET ? STATE.currentTarget - DOWN_OFFSET : STATE.currentTarget;
       desc.innerHTML = `<b>运行机制</b>：一次写入 <code>0x07A6</code> 保护模式（${HEALTH_MODES[modeKey].name}）+ <code>0x07B9</code> 上限 ${STATE.currentTarget}% + <code>0x07D0</code> 回落下限 ${down}%，由 EC 固件自己守住阈值，<b>无后台心跳</b>，与 OpenRevo 主程序的开机自恢复逻辑完全一致。`;
       if (applyBtn) applyBtn.textContent = '写入并生效';
-    }
-
-    function updateLabConfig() {
-      STATE.protocol = document.getElementById('paramProtocol').value;
-      STATE.limitReg = parseRegValue(document.getElementById('paramLimitReg').value, STATE.limitReg);
-      STATE.downReg = parseRegValue(document.getElementById('paramDownReg').value, STATE.downReg);
-      STATE.modeReg = parseRegValue(document.getElementById('paramModeReg').value, STATE.modeReg);
-
-      logConsole(`配置更新: 协议=${STATE.protocol}, 上限=0x${STATE.limitReg.toString(16).toUpperCase()}, 下限=0x${STATE.downReg.toString(16).toUpperCase()}, 模式字节=0x${STATE.modeReg.toString(16).toUpperCase()}`);
-      savePluginStorage();
     }
 
     // --- 原生三寄存器模式：一次写入 0x07A6 + 0x07B9 + 0x07D0，无心跳 ---
@@ -1234,9 +999,9 @@
         showProgress(true, '1/3: 读取保护模式字节 (EC 0x07A6)...', 15);
         let curMode;
         try {
-          curMode = await ecRead(STATE.modeReg);
+          curMode = await ecRead(REG_PROTECT_MODE);
         } catch (e) {
-          throw new Error(`读取保护模式寄存器 0x${STATE.modeReg.toString(16).toUpperCase()} 失败，已中止且未写入任何硬件: ${e.message}`);
+          throw new Error(`读取保护模式寄存器 0x${REG_PROTECT_MODE.toString(16).toUpperCase()} 失败，已中止且未写入任何硬件: ${e.message}`);
         }
         // 必须保住 bit3（触控板开关），否则会顺手把触控板关掉
         const tpBit = curMode & TOUCHPAD_BITMASK;
@@ -1245,21 +1010,21 @@
 
         // 2. 上限 + 回落下限
         showProgress(true, `2/3: 写入充电上限 ${target}% / 回落下限 ${downLimit}%...`, 50);
-        await ecWrite(STATE.limitReg, target);
-        await ecWrite(STATE.downReg, downLimit);
+        await ecWrite(REG_LIMIT_UP, target);
+        await ecWrite(REG_LIMIT_DOWN, downLimit);
         logConsole(`[2/3] 0x07B9 = ${target}%，0x07D0 = ${downLimit}%（${DOWN_OFFSET}% 滞回）`);
 
         // 3. 写入保护模式并回读校验
         showProgress(true, '3/3: 写入保护模式并回读校验...', 82);
-        await ecWrite(STATE.modeReg, finalByte);
+        await ecWrite(REG_PROTECT_MODE, finalByte);
 
         // 回读校验
         showProgress(true, '3/3: 回读校验...', 90);
         await new Promise((r) => setTimeout(r, 300));
         const [rbUp, rbDown, rbMode] = await Promise.all([
-          ecRead(STATE.limitReg).catch(() => null),
-          ecRead(STATE.downReg).catch(() => null),
-          ecRead(STATE.modeReg).catch(() => null),
+          ecRead(REG_LIMIT_UP).catch(() => null),
+          ecRead(REG_LIMIT_DOWN).catch(() => null),
+          ecRead(REG_PROTECT_MODE).catch(() => null),
         ]);
         const upVal = rbUp !== null ? (rbUp & 0x7f) : null;
         const okUp = upVal === target;
@@ -1307,23 +1072,23 @@
 
       try {
         showProgress(true, '1/2: 写入 100% 上限 / 95% 回落下限...', 30);
-        await ecWrite(STATE.limitReg, 100);
-        await ecWrite(STATE.downReg, 95);
+        await ecWrite(REG_LIMIT_UP, 100);
+        await ecWrite(REG_LIMIT_DOWN, 95);
         logConsole('[1/2] 0x07B9 = 100%，0x07D0 = 95%');
 
         showProgress(true, '2/2: 保护模式切回长效 (LongLife) 并回读...', 70);
         let finalByte = HEALTH_MODES.longlife.code;
         try {
-          const curMode = await ecRead(STATE.modeReg);
+          const curMode = await ecRead(REG_PROTECT_MODE);
           finalByte = (HEALTH_MODES.longlife.code & ~TOUCHPAD_BITMASK) | (curMode & TOUCHPAD_BITMASK);
         } catch (e) {
           logConsole(`[!] 读取保护模式寄存器失败，按无触控板位写入: ${e.message}`);
         }
-        await ecWrite(STATE.modeReg, finalByte);
+        await ecWrite(REG_PROTECT_MODE, finalByte);
         logConsole(`[2/2] 0x07A6 = 0x${finalByte.toString(16).toUpperCase().padStart(2, '0')} (长效模式)`);
         await new Promise((r) => setTimeout(r, 300));
 
-        const rbUp = await ecRead(STATE.limitReg).catch(() => null);
+        const rbUp = await ecRead(REG_LIMIT_UP).catch(() => null);
         logConsole(`[2/2] 回读 0x07B9 = ${rbUp === null ? '?' : (rbUp & 0x7f)}%`);
 
         STATE.isLimitActive = false;
@@ -1375,9 +1140,9 @@
       logConsole('=== 开始执行底层硬件通道深度自检 ===');
       try {
         const vPid = await ecRead(1856).catch(() => null);   // 0x0740 Project ID
-        const vMode = await ecRead(STATE.modeReg).catch(() => null);  // 0x07A6 Protection Mode
-        const vLim = await ecRead(STATE.limitReg).catch(() => null);  // 0x07B9 Limit Up
-        const vDown = await ecRead(STATE.downReg).catch(() => null);  // 0x07D0 Limit Down
+        const vMode = await ecRead(REG_PROTECT_MODE).catch(() => null);  // 0x07A6 Protection Mode
+        const vLim = await ecRead(REG_LIMIT_UP).catch(() => null);  // 0x07B9 Limit Up
+        const vDown = await ecRead(REG_LIMIT_DOWN).catch(() => null);  // 0x07D0 Limit Down
 
         const modeKey = vMode !== null ? modeNameFromByte(vMode) : null;
         const limVal = vLim !== null ? (vLim & 0x7f) : 0;
@@ -1407,9 +1172,9 @@
     async function refreshHardwareState() {
       try {
         const [vLim, vDown, vMode] = await Promise.all([
-          ecRead(STATE.limitReg).catch(() => null),
-          ecRead(STATE.downReg).catch(() => null),
-          ecRead(STATE.modeReg).catch(() => null),
+          ecRead(REG_LIMIT_UP).catch(() => null),
+          ecRead(REG_LIMIT_DOWN).catch(() => null),
+          ecRead(REG_PROTECT_MODE).catch(() => null),
         ]);
 
         // 卡片 2：电池保护模式 (EC 0x07A6)
@@ -1540,30 +1305,6 @@
       document.getElementById('btnApply').disabled = busy;
       document.getElementById('btnCancel').disabled = busy;
       document.getElementById('targetSlider').disabled = busy;
-    }
-
-    function exportManifestConfig() {
-      const exportData = {
-        strategy: 'native_registers',
-        parameters: {
-          protocol: STATE.protocol,
-          target_limit: STATE.currentTarget,
-          limit_up_reg: STATE.limitReg,
-          limit_down_reg: STATE.downReg,
-          mode_reg: STATE.modeReg,
-          down_offset: DOWN_OFFSET,
-          mode_station: HEALTH_MODES.station.code,
-          mode_balance: HEALTH_MODES.balance.code,
-          mode_longlife: HEALTH_MODES.longlife.code,
-          touchpad_bitmask: TOUCHPAD_BITMASK,
-        },
-      };
-      const text = JSON.stringify(exportData, null, 2);
-      navigator.clipboard.writeText(text).then(() => {
-        showToast('📋 已复制当前机型调优参数到剪贴板！');
-      }).catch(() => {
-        prompt('请复制以下配置 JSON：', text);
-      });
     }
 
     // --- 初始化监听 ---
