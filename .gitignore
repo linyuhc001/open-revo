@@ -61,3 +61,4 @@ AGENTS.md
 agents.md
 docs/**/*踩坑*.md
 docs/slint移植踩坑报告.md
+plugins_sample/webview2/*/sidecar/target/
