@@ -1,6 +1,6 @@
 [package]
 name = "process-service"
-version = "1.4.0"
+version = "1.5.0"
 edition = "2021"
 description = "OpenRevo process-manager companion service (processes / connections / file occupancy)"
 
@@ -25,6 +25,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_NetworkManagement_IpHelper",
     "Win32_Networking_WinSock",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_System_SystemInformation",
 ] }
 
 [profile.release]

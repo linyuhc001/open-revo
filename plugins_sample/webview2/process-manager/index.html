@@ -125,6 +125,7 @@
     <button data-page="proc" class="active">⚙️ 进程</button>
     <button data-page="conn">🔌 连接</button>
     <button data-page="file">📁 文件占用</button>
+    <button data-page="sched">⏰ 定时</button>
     <button data-page="port">🛠 端口</button>
   </div>
 
@@ -181,6 +182,35 @@
     </div>
     <div class="card" style="min-height:60px">
       <div id="fileResult"><div class="empty">输入路径并点击「检测占用」，将列出所有锁定该文件的进程（Restart Manager 通道）</div></div>
+    </div>
+  </div>
+
+  <!-- ======================= 定时 ======================= -->
+  <div class="page" id="page-sched">
+    <div class="card" style="margin-bottom:12px">
+      <div class="label" style="margin-bottom:10px"><span>新建定时关闭</span></div>
+      <div class="toolbar" style="margin-bottom:6px">
+        <div class="clear-wrap" style="flex:1; min-width:190px"><input type="text" id="schedName" placeholder="进程名，如 chrome.exe（可省略 .exe）" /></div>
+        <select id="schedMode">
+          <option value="daily">每天</option>
+          <option value="once">一次性</option>
+        </select>
+        <input type="time" id="schedTime" value="23:30" />
+        <input type="date" id="schedDate" style="display:none" />
+        <label style="font-size:12px; color:var(--text-dim); display:flex; align-items:center; gap:4px;">
+          <input type="checkbox" id="schedTree" checked /> 连子进程
+        </label>
+        <button class="btn primary" id="schedAdd">＋ 添加</button>
+      </div>
+      <div style="font-size:11px; color:var(--text-dim); line-height:1.7">
+        按进程名匹配（大小写不限），到点后所有同名进程都会被关闭。任务保存在服务侧，重启面板或宿主后仍然有效。
+      </div>
+    </div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>进程名</th><th>类型</th><th>时间</th><th>下次执行</th><th>状态</th><th style="width:80px">操作</th></tr></thead>
+        <tbody id="schedBody"></tbody>
+      </table>
     </div>
   </div>
 
@@ -269,6 +299,7 @@ document.querySelectorAll('#nav button').forEach((b) => {
     b.classList.add('active');
     document.querySelectorAll('.page').forEach((p) => p.classList.remove('active'));
     $('page-' + b.dataset.page).classList.add('active');
+    if (b.dataset.page === 'sched') refreshSched();
   });
 });
 
@@ -487,6 +518,103 @@ procHideSysEl.addEventListener('change', () => {
   renderProc();
 });
 $('procSearch').addEventListener('input', renderProc);
+
+// ==========================================================================
+// PAGE: 定时
+// ==========================================================================
+let schedCache = [];
+
+async function refreshSched() {
+  let d;
+  try { d = await api('/api/schedule'); } catch (_) { return; }
+  schedCache = d.tasks || [];
+  renderSched();
+}
+
+const fmtSchedDT = (d) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+
+function nextRunText(t) {
+  const [h, m] = (t.time || '').split(':').map(Number);
+  if (isNaN(h) || isNaN(m)) return '—';
+  const now = new Date();
+  if (t.mode === 'daily') {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m);
+    if (d <= now) d.setDate(d.getDate() + 1);
+    return fmtSchedDT(d);
+  }
+  // once：任务时间本身
+  return t.date ? `${t.date} ${t.time}` : '—';
+}
+
+function renderSched() {
+  const tb = $('schedBody');
+  tb.innerHTML = '';
+  const frag = document.createDocumentFragment();
+  if (!schedCache.length) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td colspan="6" style="text-align:center; color:var(--text-dim); padding:18px 0">暂无定时任务，在上方添加一个试试</td>';
+    frag.appendChild(tr);
+  }
+  schedCache.forEach((t) => {
+    const tr = document.createElement('tr');
+    const modeText = t.mode === 'once' ? '一次性' : '每天';
+    const timeText = t.mode === 'once' ? `${t.date} ${t.time}` : t.time;
+    const status = t.last_run
+      ? `上次 ${t.last_run} 执行：关闭 ${t.last_killed ?? 0} 个${t.last_failed ? `，失败 ${t.last_failed}` : ''}`
+      : (t.mode === 'once' ? '等待到点执行' : '待首次执行');
+    tr.innerHTML = `
+      <td title="${t.name}">${t.name}</td>
+      <td>${modeText}</td>
+      <td>${timeText}</td>
+      <td style="color:var(--text-dim)">${nextRunText(t)}</td>
+      <td style="color:var(--text-dim); font-size:11px">${status}</td>
+      <td><div class="row-actions">
+        <button class="btn danger" data-a="sched-del" data-id="${t.id}">删除</button>
+      </div></td>`;
+    frag.appendChild(tr);
+  });
+  tb.appendChild(frag);
+}
+
+$('schedMode').addEventListener('change', () => {
+  const once = $('schedMode').value === 'once';
+  $('schedDate').style.display = once ? '' : 'none';
+  const today = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  $('schedDate').value = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`;
+});
+
+$('schedAdd').addEventListener('click', async () => {
+  const name = $('schedName').value.trim();
+  if (!name) { toast('请填写进程名', true); return; }
+  const mode = $('schedMode').value;
+  const body = { name, mode, time: $('schedTime').value, tree: $('schedTree').checked };
+  if (mode === 'once') body.date = $('schedDate').value;
+  try {
+    await api('/api/schedule', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body) });
+    toast('定时任务已添加');
+    $('schedName').value = '';
+    refreshSched();
+  } catch (err) {
+    toast('添加失败: ' + err.message, true);
+  }
+});
+
+$('schedBody').addEventListener('click', async (e) => {
+  const el = e.target.closest('[data-a="sched-del"]');
+  if (!el) return;
+  const id = Number(el.dataset.id);
+  if (!confirm('删除这条定时任务？')) return;
+  try {
+    await api('/api/schedule?id=' + id, { method: 'DELETE' });
+    toast('已删除');
+    refreshSched();
+  } catch (err) {
+    toast('删除失败: ' + err.message, true);
+  }
+});
 
 // ==========================================================================
 // PAGE: 连接

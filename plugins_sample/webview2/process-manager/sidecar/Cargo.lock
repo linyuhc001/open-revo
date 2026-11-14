@@ -76,6 +76,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "process-service"
+version = "1.5.0"
+dependencies = [
+ "serde_json",
+ "sysinfo",
+ "windows-sys",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -166,15 +175,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
-]
-
-[[package]]
-name = "process-service"
-version = "1.4.0"
-dependencies = [
- "serde_json",
- "sysinfo",
- "windows-sys",
 ]
 
 [[package]]

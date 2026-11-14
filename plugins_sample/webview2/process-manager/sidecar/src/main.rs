@@ -147,6 +147,10 @@ fn main() {
     // Pre-warm the process snapshot so the first /api/processes call has deltas.
     let _ = state();
 
+    // Scheduled-kill ticker: independent of page activity so tasks fire
+    // even while the plugin panel is closed.
+    spawn_scheduler();
+
     // Background ticker — activity-driven so the service stays idle while no
     // plugin page is open. The page polls every 1.5s; while requests keep
     // arriving the snapshot is refreshed on a fixed 1s cadence (stable CPU%
@@ -390,6 +394,12 @@ fn route(method: &str, path: &str, query: &HashMap<String, String>, body: &[u8])
         ),
         ("GET", "/api/processes") => api_processes(),
         ("POST", "/api/process/kill") => with_json_body(body, api_process_kill),
+        ("GET", "/api/schedule") => api_schedule_list(),
+        ("POST", "/api/schedule") => with_json_body(body, api_schedule_add),
+        ("DELETE", "/api/schedule") => match query.get("id").and_then(|s| s.parse::<u64>().ok()) {
+            Some(id) => api_schedule_delete(id),
+            None => (400, json!({ "error": "missing id" })),
+        },
         ("GET", "/api/connections") => api_connections(),
         ("POST", "/api/connections/close") => with_json_body(body, api_connection_close),
         ("GET", "/api/file/occupiers") => match query.get("path") {
@@ -686,7 +696,17 @@ fn api_process_kill(v: &Value) -> (u16, Value) {
         };
     }
 
-    // Tree kill: snapshot, walk descendants, terminate leaves-first.
+    let (killed, failed) = kill_tree(pid);
+    if failed.is_empty() {
+        (200, json!({ "ok": true, "killed": killed }))
+    } else {
+        (500, json!({ "killed": killed, "failed": failed }))
+    }
+}
+
+/// Tree kill: snapshot, walk descendants, terminate leaves-first.
+/// Returns (killed pids, failures excluding an already-exited root).
+fn kill_tree(pid: u32) -> (Vec<u32>, Vec<Value>) {
     let mut sys = System::new();
     sys.refresh_processes(ProcessesToUpdate::All, true);
     let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
@@ -725,11 +745,215 @@ fn api_process_kill(v: &Value) -> (u16, Value) {
             }
         }
     }
-    if failed.is_empty() {
-        (200, json!({ "ok": true, "killed": killed }))
-    } else {
-        (500, json!({ "killed": killed, "failed": failed }))
+    (killed, failed)
+}
+
+// ------------------------------------------------------- scheduled kills ----
+// Tasks persist in schedule.json next to the executable; the scheduler thread
+// checks every 15s even while the service is dormant, so kills fire without
+// any plugin page open.
+
+static SCHEDULE: std::sync::OnceLock<std::sync::Mutex<Vec<Value>>> = std::sync::OnceLock::new();
+
+fn schedule_path() -> std::path::PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|p| p.join("schedule.json")))
+        .unwrap_or_else(|| std::path::PathBuf::from("schedule.json"))
+}
+
+fn schedule() -> &'static std::sync::Mutex<Vec<Value>> {
+    SCHEDULE.get_or_init(|| {
+        let tasks = std::fs::read_to_string(schedule_path())
+            .ok()
+            .and_then(|s| serde_json::from_str::<Vec<Value>>(&s).ok())
+            .unwrap_or_default();
+        std::sync::Mutex::new(tasks)
+    })
+}
+
+fn save_schedule(tasks: &[Value]) {
+    let s = serde_json::to_string_pretty(tasks).unwrap_or_else(|_| "[]".into());
+    let _ = std::fs::write(schedule_path(), s);
+}
+
+#[cfg(windows)]
+fn local_now() -> (String, String) {
+    use windows_sys::Win32::System::SystemInformation::{GetLocalTime, SYSTEMTIME};
+    let mut st = SYSTEMTIME::default();
+    unsafe { GetLocalTime(&mut st) };
+    (
+        format!("{:04}-{:02}-{:02}", st.wYear, st.wMonth, st.wDay),
+        format!("{:02}:{:02}", st.wHour, st.wMinute),
+    )
+}
+
+#[cfg(not(windows))]
+fn local_now() -> (String, String) {
+    (String::new(), String::new())
+}
+
+/// Normalize a process name for matching: lowercase, drop ".exe".
+fn proc_key(s: &str) -> String {
+    s.trim().to_ascii_lowercase().trim_end_matches(".exe").to_string()
+}
+
+/// Kill every process whose name matches `name` (case-insensitive, ".exe"
+/// optional). Returns (killed, failed) across all matched process trees.
+/// Never matches pid 0 (System Idle Process) or the service itself.
+fn kill_by_name(name: &str, tree: bool) -> (Vec<u32>, Vec<Value>) {
+    let target = proc_key(name);
+    if target.is_empty() {
+        return (vec![], vec![]);
     }
+    let me = std::process::id();
+    let mut sys = System::new();
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+    let mut pids: Vec<u32> = sys
+        .processes()
+        .iter()
+        .filter(|(pid, p)| {
+            pid.as_u32() != 0
+                && pid.as_u32() != me
+                && proc_key(&p.name().to_string_lossy()) == target
+        })
+        .map(|(pid, _)| pid.as_u32())
+        .collect();
+    pids.sort_unstable();
+    pids.dedup();
+    let mut killed = Vec::new();
+    let mut failed = Vec::new();
+    for pid in pids {
+        let (k, f) = if tree {
+            kill_tree(pid)
+        } else {
+            match kill_pid(pid) {
+                Ok(()) => (vec![pid], vec![]),
+                Err(e) => (vec![], vec![json!({ "pid": pid, "error": e })]),
+            }
+        };
+        killed.extend(k);
+        failed.extend(f);
+    }
+    (killed, failed)
+}
+
+fn api_schedule_list() -> (u16, Value) {
+    let tasks = match schedule().lock() {
+        Ok(g) => g.clone(),
+        Err(e) => return (500, json!({ "error": e.to_string() })),
+    };
+    (200, json!({ "count": tasks.len(), "tasks": tasks }))
+}
+
+fn api_schedule_add(v: &Value) -> (u16, Value) {
+    let name = v.get("name").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+    if name.is_empty() {
+        return (400, json!({ "error": "missing name" }));
+    }
+    let mode = v.get("mode").and_then(|x| x.as_str()).unwrap_or("daily").trim().to_string();
+    if mode != "daily" && mode != "once" {
+        return (400, json!({ "error": "mode must be daily or once" }));
+    }
+    let time = v.get("time").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+    let hhmm_ok = time.len() == 5
+        && time.as_bytes()[2] == b':'
+        && time[..2].parse::<u8>().map(|h| h < 24).unwrap_or(false)
+        && time[3..].parse::<u8>().map(|m| m < 60).unwrap_or(false);
+    if !hhmm_ok {
+        return (400, json!({ "error": "time must be HH:MM" }));
+    }
+    let date = v.get("date").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+    if mode == "once" && date.len() != 10 {
+        return (400, json!({ "error": "once tasks need date YYYY-MM-DD" }));
+    }
+    let tree = v.get("tree").and_then(|x| x.as_bool()).unwrap_or(true);
+
+    let mut tasks = match schedule().lock() {
+        Ok(g) => g,
+        Err(e) => return (500, json!({ "error": e.to_string() })),
+    };
+    let mut id = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(1);
+    while tasks.iter().any(|t| t.get("id").and_then(|x| x.as_u64()) == Some(id)) {
+        id += 1;
+    }
+    let task = json!({ "id": id, "name": name, "mode": mode, "time": time, "date": date, "tree": tree });
+    tasks.push(task);
+    save_schedule(&tasks);
+    (200, json!({ "ok": true, "count": tasks.len() }))
+}
+
+fn api_schedule_delete(id: u64) -> (u16, Value) {
+    let mut tasks = match schedule().lock() {
+        Ok(g) => g,
+        Err(e) => return (500, json!({ "error": e.to_string() })),
+    };
+    let before = tasks.len();
+    tasks.retain(|t| t.get("id").and_then(|x| x.as_u64()) != Some(id));
+    save_schedule(&tasks);
+    (200, json!({ "ok": true, "removed": before - tasks.len() }))
+}
+
+/// Background scheduler: every 15s, fire any due task. Runs even while the
+/// service is dormant so kills happen with no plugin page open.
+fn spawn_scheduler() {
+    std::thread::spawn(|| loop {
+        std::thread::sleep(Duration::from_secs(15));
+        let (today, hhmm) = local_now();
+        if hhmm.is_empty() {
+            continue;
+        }
+        let mut tasks = match schedule().lock() {
+            Ok(g) => g,
+            Err(_) => continue,
+        };
+        let mut changed = false;
+        tasks.retain(|t| {
+            let mode = t.get("mode").and_then(|x| x.as_str()).unwrap_or("");
+            let time = t.get("time").and_then(|x| x.as_str()).unwrap_or("");
+            if time.len() != 5 {
+                return true;
+            }
+            let due = match mode {
+                // Daily fires once per calendar day (guarded by last_run).
+                "daily" => {
+                    time == hhmm.as_str()
+                        && t.get("last_run").and_then(|x| x.as_str()) != Some(today.as_str())
+                }
+                // One-shot fires when the moment has passed, then is removed.
+                "once" => {
+                    let date = t.get("date").and_then(|x| x.as_str()).unwrap_or("");
+                    !date.is_empty()
+                        && (date.as_str() < today.as_str()
+                            || (date == today.as_str() && time <= hhmm.as_str()))
+                }
+                _ => false,
+            };
+            if !due {
+                return true;
+            }
+            let name = t.get("name").and_then(|x| x.as_str()).unwrap_or("");
+            let tree = t.get("tree").and_then(|x| x.as_bool()).unwrap_or(true);
+            let (killed, failed) = kill_by_name(name, tree);
+            if mode == "once" {
+                changed = true;
+                return false; // fired: drop the one-shot task
+            }
+            if let Some(obj) = t.as_object_mut() {
+                obj.insert("last_run".into(), json!(today));
+                obj.insert("last_killed".into(), json!(killed.len()));
+                obj.insert("last_failed".into(), json!(failed.len()));
+            }
+            changed = true;
+            true
+        });
+        if changed {
+            save_schedule(&tasks);
+        }
+    });
 }
 
 // --------------------------------------------------------- /api/connections --
