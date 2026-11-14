@@ -5,8 +5,6 @@
 //   GET  /api/system                  CPU per-core / memory / disks / network counters
 //   GET  /api/processes               process list (cpu%, memory, path, ppid)
 //   POST /api/process/kill            {pid, tree}     end process (optionally whole tree)
-//   POST /api/process/priority        {pid, class}    idle|below|normal|above|high|realtime
-//   POST /api/process/eco             {pid, enable}   Windows efficiency mode (power throttling)
 //   GET  /api/connections             TCP/UDP endpoint table with owning PID
 //   POST /api/connections/close       {local_addr, local_port, remote_addr?, remote_port?} force TCP close
 //   GET  /api/file/occupiers?path=    Restart Manager: which processes lock this file
@@ -62,6 +60,12 @@ struct AppState {
     nets: Networks,
     disks: Disks,
     started: Instant,
+    // PDH disk-throughput counters (\PhysicalDisk(_Total)); 0 = unavailable.
+    pdh_query: isize,
+    pdh_read: isize,
+    pdh_write: isize,
+    disk_read_bps: f64,
+    disk_write_bps: f64,
 }
 
 impl AppState {
@@ -70,11 +74,17 @@ impl AppState {
         sys.refresh_processes(ProcessesToUpdate::All, true);
         sys.refresh_memory();
         sys.refresh_cpu_all();
+        let (pdh_query, pdh_read, pdh_write) = pdh_init();
         AppState {
             sys,
             nets: Networks::new_with_refreshed_list(),
             disks: Disks::new_with_refreshed_list(),
             started: Instant::now(),
+            pdh_query,
+            pdh_read,
+            pdh_write,
+            disk_read_bps: 0.0,
+            disk_write_bps: 0.0,
         }
     }
 
@@ -85,6 +95,62 @@ impl AppState {
         let _ = self.nets.refresh(true);
         self.disks.refresh(false);
     }
+
+    // Rate counters: each collect finalizes the interval since the previous
+    // collect, so call this from a fixed-cadence ticker and read right after.
+    #[cfg(windows)]
+    fn collect_disk_io(&mut self) {
+        if self.pdh_query == 0 {
+            return;
+        }
+        unsafe {
+            if PdhCollectQueryData(self.pdh_query) != 0 {
+                return;
+            }
+            let mut ctype: u32 = 0;
+            let mut val = PDH_FMT_COUNTERVALUE {
+                CStatus: 0,
+                Anonymous: PDH_FMT_COUNTERVALUE_0 { doubleValue: 0.0 },
+            };
+            if PdhGetFormattedCounterValue(self.pdh_read, PDH_FMT_DOUBLE, &mut ctype, &mut val) == 0 {
+                self.disk_read_bps = val.Anonymous.doubleValue;
+            }
+            if PdhGetFormattedCounterValue(self.pdh_write, PDH_FMT_DOUBLE, &mut ctype, &mut val) == 0 {
+                self.disk_write_bps = val.Anonymous.doubleValue;
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    fn collect_disk_io(&mut self) {}
+}
+
+#[cfg(windows)]
+fn pdh_init() -> (isize, isize, isize) {
+    use std::os::windows::ffi::OsStrExt;
+    let to_wide = |s: &str| -> Vec<u16> {
+        std::ffi::OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+    };
+    unsafe {
+        let mut q: isize = 0;
+        if PdhOpenQueryW(std::ptr::null(), 0, &mut q) != 0 {
+            return (0, 0, 0);
+        }
+        let mut r: isize = 0;
+        let mut w: isize = 0;
+        let read_ok = PdhAddEnglishCounterW(q, to_wide("\\PhysicalDisk(_Total)\\Disk Read Bytes/sec").as_ptr(), 0, &mut r) == 0;
+        let write_ok = PdhAddEnglishCounterW(q, to_wide("\\PhysicalDisk(_Total)\\Disk Write Bytes/sec").as_ptr(), 0, &mut w) == 0;
+        if !read_ok || !write_ok || PdhCollectQueryData(q) != 0 {
+            let _ = PdhCloseQuery(q);
+            return (0, 0, 0);
+        }
+        (q, r, w)
+    }
+}
+
+#[cfg(not(windows))]
+fn pdh_init() -> (isize, isize, isize) {
+    (0, 0, 0)
 }
 
 static STATE: std::sync::OnceLock<Mutex<AppState>> = std::sync::OnceLock::new();
@@ -119,6 +185,17 @@ fn main() {
 
     // Pre-warm the telemetry snapshot so the first /api/system call has deltas.
     let _ = state();
+
+    // Background ticker: refresh the snapshot on a fixed 1s cadence so that
+    // (a) process CPU% windows are stable regardless of request timing and
+    // (b) the first request after opening a tab already has fresh deltas.
+    std::thread::spawn(|| loop {
+        std::thread::sleep(Duration::from_secs(1));
+        if let Ok(mut st) = state().lock() {
+            st.refresh_all();
+            st.collect_disk_io();
+        }
+    });
 
     let addr = ("127.0.0.1", port);
     let listener = match TcpListener::bind(addr) {
@@ -157,6 +234,23 @@ fn handle_client(mut stream: TcpStream) {
     };
 
     let (method, target) = (req.0, req.1);
+
+    // CORS preflight: the browser sends OPTIONS before any POST with a
+    // non-safelisted Content-Type (application/json). Without this the
+    // preflight fails and the page sees "Failed to fetch" on every POST.
+    if method == "OPTIONS" {
+        let preflight = "HTTP/1.1 204 No Content\r\n\
+            Access-Control-Allow-Origin: *\r\n\
+            Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
+            Access-Control-Allow-Headers: Content-Type\r\n\
+            Access-Control-Max-Age: 86400\r\n\
+            Connection: close\r\n\
+            Content-Length: 0\r\n\r\n";
+        let _ = stream.write_all(preflight.as_bytes());
+        let _ = stream.flush();
+        return;
+    }
+
     let (path, query) = split_target(&target);
     let started = Instant::now();
     let (status, value) = route(method.as_str(), path.as_str(), &query, &req.2);
@@ -305,8 +399,6 @@ fn route(method: &str, path: &str, query: &HashMap<String, String>, body: &[u8])
         ("GET", "/api/system") => api_system(),
         ("GET", "/api/processes") => api_processes(),
         ("POST", "/api/process/kill") => with_json_body(body, api_process_kill),
-        ("POST", "/api/process/priority") => with_json_body(body, api_process_priority),
-        ("POST", "/api/process/eco") => with_json_body(body, api_process_eco),
         ("GET", "/api/connections") => api_connections(),
         ("POST", "/api/connections/close") => with_json_body(body, api_connection_close),
         ("GET", "/api/file/occupiers") => match query.get("path") {
@@ -331,11 +423,12 @@ fn with_json_body(body: &[u8], f: fn(&Value) -> (u16, Value)) -> (u16, Value) {
 // ------------------------------------------------------------- /api/system --
 
 fn api_system() -> (u16, Value) {
-    let mut st = match state().lock() {
+    let st = match state().lock() {
         Ok(g) => g,
         Err(_) => return (500, json!({"error": "state poisoned"})),
     };
-    st.refresh_all();
+    // Snapshot is refreshed by the background ticker; do NOT refresh here or
+    // request timing would skew the CPU delta windows.
 
     let cores: Vec<f32> = st.sys.cpus().iter().map(|c| c.cpu_usage()).collect();
     let freq = st.sys.cpus().first().map(|c| c.frequency()).unwrap_or(0);
@@ -383,6 +476,10 @@ fn api_system() -> (u16, Value) {
             "uptime_s": st.started.elapsed().as_secs(),
             "cpu": { "global": global, "freq_mhz": freq, "cores": cores },
             "memory": { "total": mem_total, "used": mem_used, "swap_total": swap_total, "swap_used": swap_used },
+            "disk_io": {
+                "read_bps": st.disk_read_bps,
+                "write_bps": st.disk_write_bps,
+            },
             "disks": disks,
             "networks": net,
         }),
@@ -392,11 +489,12 @@ fn api_system() -> (u16, Value) {
 // ----------------------------------------------------------- /api/processes --
 
 fn api_processes() -> (u16, Value) {
-    let mut st = match state().lock() {
+    let st = match state().lock() {
         Ok(g) => g,
         Err(_) => return (500, json!({"error": "state poisoned"})),
     };
-    st.sys.refresh_processes(ProcessesToUpdate::All, true);
+    // CPU% is normalized by the ticker's fixed 1s windows; serving the cached
+    // snapshot keeps values identical across consecutive polls.
 
     let mut list: Vec<Value> = Vec::with_capacity(st.sys.processes().len());
     for (pid, p) in st.sys.processes() {
@@ -488,73 +586,6 @@ fn api_process_kill(v: &Value) -> (u16, Value) {
     } else {
         (500, json!({ "killed": killed, "failed": failed }))
     }
-}
-
-const PRIORITY_CLASSES: &[(&str, u32)] = &[
-    ("idle", 0x00000040),           // IDLE_PRIORITY_CLASS
-    ("below", 0x00004000),          // BELOW_NORMAL_PRIORITY_CLASS
-    ("normal", 0x00000020),         // NORMAL_PRIORITY_CLASS
-    ("above", 0x00008000),          // ABOVE_NORMAL_PRIORITY_CLASS
-    ("high", 0x00000080),           // HIGH_PRIORITY_CLASS
-    ("realtime", 0x00000100),       // REALTIME_PRIORITY_CLASS
-];
-
-fn api_process_priority(v: &Value) -> (u16, Value) {
-    let pid = match v.get("pid").and_then(|x| x.as_u64()) {
-        Some(p) if p > 0 => p as u32,
-        _ => return (400, json!({"error": "missing pid"})),
-    };
-    let class = match v.get("class").and_then(|x| x.as_str()) {
-        Some(c) => match PRIORITY_CLASSES.iter().find(|(k, _)| *k == c) {
-            Some((_, code)) => *code,
-            None => return (400, json!({"error": "class must be one of idle|below|normal|above|high|realtime"})),
-        },
-        None => return (400, json!({"error": "missing class"})),
-    };
-    unsafe {
-        let h = OpenProcess(PROCESS_SET_INFORMATION, 0, pid);
-        if h.is_null() {
-            return (500, json!({"error": format!("OpenProcess({}) failed (err {})", pid, GetLastError())}));
-        }
-        let ok = SetPriorityClass(h, class);
-        CloseHandle(h);
-        if ok == 0 {
-            return (500, json!({"error": format!("SetPriorityClass({}) failed (err {})", pid, GetLastError())}));
-        }
-    }
-    (200, json!({"ok": true}))
-}
-
-fn api_process_eco(v: &Value) -> (u16, Value) {
-    let pid = match v.get("pid").and_then(|x| x.as_u64()) {
-        Some(p) if p > 0 => p as u32,
-        _ => return (400, json!({"error": "missing pid"})),
-    };
-    let enable = v.get("enable").and_then(|x| x.as_bool()).unwrap_or(true);
-    unsafe {
-        let h = OpenProcess(PROCESS_SET_INFORMATION, 0, pid);
-        if h.is_null() {
-            return (500, json!({"error": format!("OpenProcess({}) failed (err {})", pid, GetLastError())}));
-        }
-        // Efficiency mode = Windows power throttling (EcoQoS hint).
-        let mut state = PROCESS_POWER_THROTTLING_STATE {
-            Version: 1, // PROCESS_POWER_THROTTLING_CURRENT_VERSION
-            ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
-            StateMask: if enable { PROCESS_POWER_THROTTLING_EXECUTION_SPEED } else { 0 },
-        };
-        let ok = SetProcessInformation(
-            h,
-            ProcessPowerThrottling,
-            &state as *const _ as *const core::ffi::c_void,
-            std::mem::size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
-        );
-        CloseHandle(h);
-        if ok == 0 {
-            return (500, json!({"error": format!("SetProcessInformation({}) failed (err {})", pid, GetLastError())}));
-        }
-        let _ = &mut state;
-    }
-    (200, json!({"ok": true, "enabled": enable}))
 }
 
 // --------------------------------------------------------- /api/connections --
@@ -895,12 +926,15 @@ use windows_sys::Win32::Security::{
     GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
 };
 #[cfg(windows)]
+use windows_sys::Win32::System::Performance::{
+    PdhAddEnglishCounterW, PdhCloseQuery, PdhCollectQueryData, PdhGetFormattedCounterValue,
+    PdhOpenQueryW, PDH_FMT_COUNTERVALUE, PDH_FMT_COUNTERVALUE_0, PDH_FMT_DOUBLE,
+};
+#[cfg(windows)]
 use windows_sys::Win32::System::RestartManager::{
     RmEndSession, RmGetList, RmRegisterResources, RmStartSession, RM_PROCESS_INFO,
 };
 #[cfg(windows)]
 use windows_sys::Win32::System::Threading::{
-    GetCurrentProcess, OpenProcess, OpenProcessToken, ProcessPowerThrottling, SetPriorityClass,
-    SetProcessInformation, TerminateProcess, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
-    PROCESS_POWER_THROTTLING_STATE, PROCESS_SET_INFORMATION, PROCESS_TERMINATE,
+    GetCurrentProcess, OpenProcess, OpenProcessToken, TerminateProcess, PROCESS_TERMINATE,
 };

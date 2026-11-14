@@ -3,7 +3,7 @@
   "name": "系统资源检视台",
   "version": "1.0.0",
   "author": "2群老胡",
-  "description": "进程 / 性能 / 连接与端口 / 文件占用 四合一系统检视插件，基于本地伴随服务 sys-service（Restart Manager + NtQuery 通道），守护进程管理员上下文直连，支持结束进程树、效率模式与强制断连。",
+  "description": "进程 / 性能 / 连接与端口 / 文件占用 四合一系统检视插件，基于本地伴随服务 sys-service（Restart Manager 通道），守护进程管理员上下文直连，支持结束进程树与强制断连。",
   "plugin_type": "tab",
   "entry": "index.html",
   "min_host_version": "0.9.4",

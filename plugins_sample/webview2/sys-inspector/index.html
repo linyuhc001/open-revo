@@ -125,8 +125,6 @@
         <div class="label"><span>CPU 总占用</span><span id="cpuFreq">— MHz</span></div>
         <div class="big"><span id="cpuPct">—</span><small> %</small></div>
         <div class="bar-track"><div class="bar-fill" id="cpuBar"></div></div>
-        <div class="label" style="margin-top:8px"><span>每核心</span></div>
-        <div id="coreBars" style="display:flex; flex-wrap:wrap; gap:4px;"></div>
       </div>
       <div class="card">
         <div class="label"><span>内存</span><span id="memText">— / —</span></div>
@@ -150,10 +148,11 @@
         <span><b style="background:var(--accent)"></b>CPU %</span>
         <span><b style="background:#bc8cff"></b>内存 %</span>
         <span><b style="background:#56d364"></b>网络下行 (对数)</span>
+        <span><b style="background:#f0883e"></b>磁盘读写 (对数)</span>
       </div>
     </div>
     <div class="card" style="margin-top:12px">
-      <div class="label"><span>磁盘分区</span></div>
+      <div class="label"><span>磁盘</span><span><span id="diskRead" style="color:#56d364">—</span> ↓ · <span id="diskWrite" style="color:#d29922">—</span> ↑</span></div>
       <div id="diskList"></div>
     </div>
   </div>
@@ -203,7 +202,7 @@
   <!-- ======================= 文件占用 ======================= -->
   <div class="page" id="page-file">
     <div class="toolbar">
-      <input type="text" id="filePath" placeholder="拖入文件/文件夹，或粘贴完整路径，如 D:\download\setup.exe" style="flex:1; min-width:300px" />
+      <input type="text" id="filePath" placeholder="粘贴完整路径，如 D:\download\setup.exe" style="flex:1; min-width:300px" />
       <button class="btn primary" id="fileProbe">🔍 检测占用</button>
     </div>
     <div class="card" style="min-height:60px">
@@ -290,7 +289,7 @@ document.querySelectorAll('#nav button').forEach((b) => {
 // PAGE 1: 性能
 // ==========================================================================
 const HIST = 40; // 60s at 1.5s
-const hist = { cpu: [], mem: [], net: [] };
+const hist = { cpu: [], mem: [], net: [], disk: [] };
 let lastNetRx = null, lastNetT = null;
 
 function fmtBytes(n) {
@@ -310,18 +309,6 @@ async function refreshPerf() {
   $('cpuBar').style.width = cpu + '%';
   $('cpuBar').style.background = cpu > 85 ? 'var(--status-err)' : cpu > 60 ? 'var(--status-warn)' : 'var(--accent)';
   $('cpuFreq').textContent = (d.cpu.freq_mhz / 1000).toFixed(2) + ' GHz';
-
-  const cb = $('coreBars');
-  cb.innerHTML = '';
-  d.cpu.cores.forEach((c, i) => {
-    const w = document.createElement('div');
-    w.style.cssText = 'flex:1 1 30px; max-width:44px; text-align:center;';
-    const cc = Math.round(c);
-    w.innerHTML = `<div style="height:26px;display:flex;align-items:flex-end;background:#21262d;border-radius:3px;overflow:hidden;">
-      <div style="width:100%;height:${Math.min(100, cc)}%;background:${cc > 85 ? 'var(--status-err)' : 'var(--accent)'};transition:height .4s"></div></div>
-      <div style="font-size:9px;color:var(--text-dim);margin-top:2px">${i}:${cc}</div>`;
-    cb.appendChild(w);
-  });
 
   const memPct = Math.round((d.memory.used / d.memory.total) * 100);
   $('memPct').textContent = memPct;
@@ -347,6 +334,14 @@ async function refreshPerf() {
     if (hist.net.length > HIST) hist.net.shift();
   }
   lastNetRx = rx; lastNetTx = tx; lastNetT = now;
+
+  // Disk throughput from PDH (sidecar ticker computes B/s every 1s).
+  const dRead = d.disk_io ? d.disk_io.read_bps : 0;
+  const dWrite = d.disk_io ? d.disk_io.write_bps : 0;
+  $('diskRead').textContent = fmtBytes(Math.max(0, dRead)) + '/s';
+  $('diskWrite').textContent = fmtBytes(Math.max(0, dWrite)) + '/s';
+  hist.disk.push(Math.max(0, dRead) + Math.max(0, dWrite));
+  if (hist.disk.length > HIST) hist.disk.shift();
 
   if (hostGpu.usage != null) $('gpuPct').textContent = hostGpu.usage;
 
@@ -392,6 +387,7 @@ function drawChart() {
     { data: hist.cpu, color: '#58a6ff', max: 100 },
     { data: hist.mem, color: '#bc8cff', max: 100 },
     { data: hist.net, color: '#56d364', log: true },
+    { data: hist.disk, color: '#f0883e', log: true },
   ];
   series.forEach((s) => {
     if (s.data.length < 2) return;
@@ -450,13 +446,6 @@ function renderProc() {
       <td><div class="row-actions">
         <button class="btn danger" data-a="kill" data-pid="${p.pid}">结束</button>
         <button class="btn danger" data-a="tree" data-pid="${p.pid}">树</button>
-        <select data-a="prio" data-pid="${p.pid}" style="padding:2px 4px; font-size:11px">
-          <option value="">优先级</option>
-          <option value="realtime">实时</option><option value="high">高</option>
-          <option value="above">高于标准</option><option value="normal">标准</option>
-          <option value="below">低于标准</option><option value="idle">低</option>
-        </select>
-        <button class="btn" data-a="eco" data-pid="${p.pid}" title="切换 Windows 效率模式">🌱</button>
       </div></td>`;
     frag.appendChild(tr);
   });
@@ -464,7 +453,6 @@ function renderProc() {
 }
 
 $('procBody').addEventListener('click', procAction);
-$('procBody').addEventListener('change', procAction);
 async function procAction(e) {
   const el = e.target.closest('[data-a]');
   if (!el) return;
@@ -477,22 +465,9 @@ async function procAction(e) {
         body: JSON.stringify({ pid, tree: act === 'tree' }) });
       toast(`已结束 PID ${pid}${act === 'tree' ? ' 及其子进程' : ''}`);
       refreshProc();
-    } else if (act === 'prio' && el.value) {
-      await api('/api/process/priority', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pid, class: el.value }) });
-      toast(`PID ${pid} 优先级已设为 ${el.value}`);
-    } else if (act === 'eco') {
-      // Toggle: try enable, on success flip title; simple stateless toggle via confirm
-      const enable = !el.dataset.on;
-      await api('/api/process/eco', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pid, enable }) });
-      el.dataset.on = enable ? '1' : '';
-      el.style.opacity = enable ? '1' : '0.6';
-      toast(`PID ${pid} 效率模式已${enable ? '开启' : '关闭'}`);
     }
   } catch (err) {
     toast('操作失败: ' + err.message, true);
-    if (act === 'prio') el.value = '';
   }
 }
 document.querySelectorAll('#page-proc th[data-sort]').forEach((th) => {
@@ -610,13 +585,9 @@ $('fileResult').addEventListener('click', async (e) => {
     toast('结束失败: ' + err.message, true);
   }
 });
-// Drag & drop support
-document.addEventListener('dragover', (e) => e.preventDefault());
-document.addEventListener('drop', (e) => {
-  e.preventDefault();
-  const f = e.dataTransfer.files && e.dataTransfer.files[0];
-  if (f && f.path) { $('filePath').value = f.path; probeFile(); }
-});
+// Drag & drop removed: WebView2 never exposes full file paths to page JS,
+// and capturing them would require host-side changes. Users type/paste paths.
+
 
 // ==========================================================================
 // main loop

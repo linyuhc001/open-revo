@@ -15,10 +15,10 @@
 
 | 页签 | 能力 | 数据通道 |
 |---|---|---|
-| 性能 | CPU 总占用 + 每核心热图 + 频率、内存/交换、磁盘分区用量、网速实时曲线、GPU 占用（宿主遥测桥） | `GET /api/system` + `get_hardware_status` |
-| 进程 | 全进程表（CPU%/内存/路径/父 PID）、搜索、点列排序、结束进程 / 结束进程树、设置优先级（6 档）、Windows 效率模式开关 | `GET /api/processes`、`POST /api/process/*` |
+| 性能 | CPU 总占用 + 频率、内存/交换、磁盘分区用量、磁盘读写速率、网速实时曲线、GPU 占用（宿主遥测桥） | `GET /api/system` + `get_hardware_status` |
+| 进程 | 全进程表（CPU%/内存/路径/父 PID）、搜索、点列排序、结束进程 / 结束进程树 | `GET /api/processes`、`POST /api/process/kill` |
 | 连接 | TCP/UDP 全量端点表（含 PID 与进程名）、状态着色、按端口/进程搜索、TCP 强制断连（DELETE_TCB） | `GET /api/connections`、`POST /api/connections/close` |
-| 文件占用 | 拖入/粘贴文件或文件夹路径，Restart Manager 列出所有占用进程，可直接结束 | `GET /api/file/occupiers` |
+| 文件占用 | 粘贴文件或文件夹路径，Restart Manager 列出所有占用进程，可直接结束 | `GET /api/file/occupiers` |
 
 ## 目录结构
 
@@ -57,7 +57,7 @@ GET  /api/file/occupiers?path=    Restart Manager 占用列表
 ## 权限说明
 
 - 服务以管理员运行（继承宿主计划任务权限）：结束任意进程树、断开任意 TCP 连接、查系统文件占用均不受 UIPI 限制
-- 效率模式使用 Win32 `SetProcessInformation(ProcessPowerThrottling)`，即 Windows 11 的 EcoQoS
+- 磁盘读写速率通过 PDH 性能计数器（`\PhysicalDisk(_Total)`）采样，sidecar 内部 1s 固定节拍刷新
 - 文件占用走 Restart Manager（资源管理器「文件正在使用」同源通道），不注入、不驱动
 
 ## 许可
