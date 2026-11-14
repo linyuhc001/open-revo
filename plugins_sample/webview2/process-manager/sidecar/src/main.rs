@@ -781,7 +781,7 @@ fn save_schedule(tasks: &[Value]) {
 fn local_now() -> (String, String) {
     use windows_sys::Win32::Foundation::SYSTEMTIME;
     use windows_sys::Win32::System::SystemInformation::GetLocalTime;
-    let mut st = SYSTEMTIME::default();
+    let mut st: SYSTEMTIME = std::mem::zeroed();
     unsafe { GetLocalTime(&mut st) };
     (
         format!("{:04}-{:02}-{:02}", st.wYear, st.wMonth, st.wDay),
