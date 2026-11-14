@@ -190,7 +190,7 @@
     <div class="card" style="margin-bottom:12px">
       <div class="label" style="margin-bottom:10px"><span>新建定时关闭</span></div>
       <div class="toolbar" style="margin-bottom:6px">
-        <div class="clear-wrap" style="flex:1; min-width:190px"><input type="text" id="schedName" placeholder="进程名，如 chrome.exe（可省略 .exe）" /></div>
+        <select id="schedName" style="flex:1; min-width:190px; max-width:320px"><option value="">加载进程列表…</option></select>
         <select id="schedMode">
           <option value="daily">每天</option>
           <option value="once">一次性</option>
@@ -203,7 +203,7 @@
         <button class="btn primary" id="schedAdd">＋ 添加</button>
       </div>
       <div style="font-size:11px; color:var(--text-dim); line-height:1.7">
-        按进程名匹配（大小写不限），到点后所有同名进程都会被关闭。任务保存在服务侧，重启面板或宿主后仍然有效。
+        从下拉框选择进程，提交时自动定位其<span style="color:var(--text-primary)">父进程</span>作为关闭目标（大小写不限）；到点后所有同名进程都会被关闭。任务保存在服务侧，重启面板或宿主后仍然有效。<span id="schedTarget"></span>
       </div>
     </div>
     <div class="tbl-wrap">
@@ -299,7 +299,7 @@ document.querySelectorAll('#nav button').forEach((b) => {
     b.classList.add('active');
     document.querySelectorAll('.page').forEach((p) => p.classList.remove('active'));
     $('page-' + b.dataset.page).classList.add('active');
-    if (b.dataset.page === 'sched') refreshSched();
+    if (b.dataset.page === 'sched') { refreshSched(); ensureSchedNames(); }
   });
 });
 
@@ -577,6 +577,46 @@ function renderSched() {
   tb.appendChild(frag);
 }
 
+// 下拉框：从当前进程快照取候选（按名去重、排除系统/空闲进程）
+function fillSchedNames() {
+  const sel = $('schedName');
+  const names = [...new Set(procCache
+    .filter((p) => p.pid > 0 && !isSystemProc(p) && p.name)
+    .map((p) => p.name))]
+    .sort((a, b) => a.localeCompare(b));
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">— 选择进程 —</option>' +
+    names.map((n) => `<option value="${n}">${n}</option>`).join('');
+  if (names.includes(cur)) sel.value = cur;
+  updateSchedTarget();
+}
+
+// 目标解析：杀的是所选进程的父进程（启动它的主进程），父进程
+// 不在快照里时退化为所选进程自身
+function resolveSchedTarget() {
+  const sel = $('schedName').value;
+  const picked = procCache.find((p) => p.name === sel);
+  if (!picked) return sel;
+  const parent = picked.ppid ? procCache.find((p) => p.pid === picked.ppid) : null;
+  return parent && parent.pid > 0 && parent.name ? parent.name : picked.name;
+}
+
+function updateSchedTarget() {
+  const sel = $('schedName').value;
+  const el = $('schedTarget');
+  if (!sel) { el.textContent = ''; return; }
+  const t = resolveSchedTarget();
+  el.textContent = t && t !== sel ? `｜当前选中 ${sel}，将关闭父进程 ${t}` : '';
+}
+
+async function ensureSchedNames() {
+  if (!procCache.length) await refreshProc();
+  fillSchedNames();
+  updateSchedTarget();
+}
+
+$('schedName').addEventListener('change', updateSchedTarget);
+
 $('schedMode').addEventListener('change', () => {
   const once = $('schedMode').value === 'once';
   $('schedDate').style.display = once ? '' : 'none';
@@ -586,16 +626,15 @@ $('schedMode').addEventListener('change', () => {
 });
 
 $('schedAdd').addEventListener('click', async () => {
-  const name = $('schedName').value.trim();
-  if (!name) { toast('请填写进程名', true); return; }
+  const name = resolveSchedTarget();
+  if (!name) { toast('请先选择进程', true); return; }
   const mode = $('schedMode').value;
   const body = { name, mode, time: $('schedTime').value, tree: $('schedTree').checked };
   if (mode === 'once') body.date = $('schedDate').value;
   try {
     await api('/api/schedule', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body) });
-    toast('定时任务已添加');
-    $('schedName').value = '';
+    toast(`定时任务已添加（关闭目标: ${name}）`);
     refreshSched();
   } catch (err) {
     toast('添加失败: ' + err.message, true);
