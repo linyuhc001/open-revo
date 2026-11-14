@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>系统资源检视台</title>
+<title>进程管理</title>
 <style>
   :root {
     --bg: #0d1117;
@@ -53,7 +53,6 @@
     border-radius: var(--radius-md); padding: 12px 14px;
   }
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-  .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
   .label { font-size: 11px; color: var(--text-dim); margin-bottom: 6px; display: flex; justify-content: space-between; }
   .big { font-size: 22px; font-weight: 700; font-family: var(--mono); }
   .big small { font-size: 12px; color: var(--text-dim); font-weight: 400; }
@@ -89,9 +88,6 @@
   .row-actions { display: flex; gap: 4px; }
   .row-actions .btn { padding: 2px 8px; font-size: 11px; }
 
-  canvas { width: 100%; height: 220px; display: block; }
-  .legend { display: flex; gap: 16px; font-size: 11px; color: var(--text-dim); margin-top: 6px; }
-  .legend b { display: inline-block; width: 10px; height: 3px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
 
   .toast {
     position: fixed; bottom: 20px; right: 20px; background: #161b22ee; border: 1px solid var(--accent);
@@ -107,58 +103,18 @@
 </head>
 <body>
   <div class="header">
-    <h1>🖥️ 系统资源检视台</h1>
+    <h1>⚙️ 进程管理</h1>
     <div class="svc"><span class="dot" id="svcDot"></span><span id="svcText">服务检测中…</span></div>
   </div>
 
   <div class="nav" id="nav">
-    <button data-page="perf" class="active">📈 性能</button>
-    <button data-page="proc">⚙️ 进程</button>
+    <button data-page="proc" class="active">⚙️ 进程</button>
     <button data-page="conn">🔌 连接</button>
     <button data-page="file">📁 文件占用</button>
   </div>
 
-  <!-- ======================= 性能 ======================= -->
-  <div class="page active" id="page-perf">
-    <div class="grid3" style="margin-bottom:12px;">
-      <div class="card">
-        <div class="label"><span>CPU 总占用</span><span id="cpuFreq">— MHz</span></div>
-        <div class="big"><span id="cpuPct">—</span><small> %</small></div>
-        <div class="bar-track"><div class="bar-fill" id="cpuBar"></div></div>
-      </div>
-      <div class="card">
-        <div class="label"><span>内存</span><span id="memText">— / —</span></div>
-        <div class="big"><span id="memPct">—</span><small> %</small></div>
-        <div class="bar-track"><div class="bar-fill" id="memBar"></div></div>
-        <div class="label" style="margin-top:8px"><span id="swapText">交换分区 —</span></div>
-        <div class="bar-track"><div class="bar-fill" id="swapBar" style="background: var(--status-warn)"></div></div>
-      </div>
-      <div class="card">
-        <div class="label"><span>网络</span><span id="netIface">活动网卡</span></div>
-        <div class="big" style="color:#56d364"><span id="netDown">—</span><small> ↓</small></div>
-        <div class="big" style="color:#d29922"><span id="netUp">—</span><small> ↑</small></div>
-        <div class="label" style="margin-top:8px"><span>GPU 占用 <small style="color:var(--text-dim)">(宿主遥测)</small></span></div>
-        <div class="big"><span id="gpuPct">—</span><small> %</small></div>
-      </div>
-    </div>
-    <div class="card">
-      <div class="label"><span>60 秒趋势</span><span>采样 1.5s</span></div>
-      <canvas id="chart" width="800" height="220"></canvas>
-      <div class="legend">
-        <span><b style="background:var(--accent)"></b>CPU %</span>
-        <span><b style="background:#bc8cff"></b>内存 %</span>
-        <span><b style="background:#56d364"></b>网络下行 (对数)</span>
-        <span><b style="background:#f0883e"></b>磁盘读写 (对数)</span>
-      </div>
-    </div>
-    <div class="card" style="margin-top:12px">
-      <div class="label"><span>磁盘</span><span><span id="diskRead" style="color:#56d364">—</span> ↓ · <span id="diskWrite" style="color:#d29922">—</span> ↑</span></div>
-      <div id="diskList"></div>
-    </div>
-  </div>
-
   <!-- ======================= 进程 ======================= -->
-  <div class="page" id="page-proc">
+  <div class="page active" id="page-proc">
     <div class="toolbar">
       <input type="text" id="procSearch" placeholder="搜索进程名 / PID…" style="flex:1; min-width:180px" />
       <button class="btn" id="procRefresh">↻ 刷新</button>
@@ -215,8 +171,7 @@
 <script>
 'use strict';
 // ==========================================================================
-// 系统资源检视台 — data source: local sidecar sys-service.exe (:18956)
-// host bridge only used for GPU telemetry (get_hardware_status)
+// 进程管理 (process-manager) — data source: local sidecar sys-service.exe (:18956)
 // ==========================================================================
 const API = 'http://127.0.0.1:18956';
 const $ = (id) => document.getElementById(id);
@@ -263,18 +218,6 @@ async function api(path, opts) {
   return j;
 }
 
-// ---------------- GPU from host bridge ----------------
-let hostGpu = { usage: null, mem_used: null };
-async function pollGpu() {
-  try {
-    const br = window.parent && window.parent.__OPENREVO_BRIDGE__;
-    if (br && br.invoke) {
-      const s = await br.invoke('get_hardware_status', {});
-      if (s) hostGpu = { usage: s.gpu_usage, mem_used: s.gpu_vram_used_mb };
-    }
-  } catch (_) {}
-}
-
 // ---------------- navigation ----------------
 document.querySelectorAll('#nav button').forEach((b) => {
   b.addEventListener('click', () => {
@@ -285,13 +228,10 @@ document.querySelectorAll('#nav button').forEach((b) => {
   });
 });
 
-// ==========================================================================
-// PAGE 1: 性能
-// ==========================================================================
-const HIST = 40; // 60s at 1.5s
-const hist = { cpu: [], mem: [], net: [], disk: [] };
-let lastNetRx = null, lastNetT = null;
 
+// ==========================================================================
+// PAGE: 进程
+// ==========================================================================
 function fmtBytes(n) {
   if (n == null || isNaN(n)) return '—';
   const u = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -299,115 +239,6 @@ function fmtBytes(n) {
   while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
   return v.toFixed(v >= 100 ? 0 : 1) + u[i];
 }
-
-async function refreshPerf() {
-  let d;
-  try { d = await api('/api/system'); } catch (_) { return; }
-
-  const cpu = Math.round(d.cpu.global);
-  $('cpuPct').textContent = cpu;
-  $('cpuBar').style.width = cpu + '%';
-  $('cpuBar').style.background = cpu > 85 ? 'var(--status-err)' : cpu > 60 ? 'var(--status-warn)' : 'var(--accent)';
-  $('cpuFreq').textContent = (d.cpu.freq_mhz / 1000).toFixed(2) + ' GHz';
-
-  const memPct = Math.round((d.memory.used / d.memory.total) * 100);
-  $('memPct').textContent = memPct;
-  $('memBar').style.width = memPct + '%';
-  $('memText').textContent = fmtBytes(d.memory.used) + ' / ' + fmtBytes(d.memory.total);
-  const swPct = d.memory.swap_total ? Math.round((d.memory.swap_used / d.memory.swap_total) * 100) : 0;
-  $('swapBar').style.width = swPct + '%';
-  $('swapText').textContent = d.memory.swap_total
-    ? `交换分区 ${fmtBytes(d.memory.swap_used)} / ${fmtBytes(d.memory.swap_total)} (${swPct}%)`
-    : '交换分区 未启用';
-
-  // Aggregate all NICs; delta window = time since last poll.
-  const rx = d.networks.reduce((a, n) => a + n.rx_total, 0);
-  const tx = d.networks.reduce((a, n) => a + n.tx_total, 0);
-  const now = Date.now();
-  if (lastNetRx !== null && lastNetT && now > lastNetT) {
-    const sec = (now - lastNetT) / 1000;
-    const down = (rx - lastNetRx) / sec;
-    const up = lastNetTx !== null ? (tx - lastNetTx) / sec : 0;
-    $('netDown').textContent = fmtBytes(Math.max(0, down)) + '/s';
-    $('netUp').textContent = fmtBytes(Math.max(0, up)) + '/s';
-    hist.net.push(Math.max(0, down));
-    if (hist.net.length > HIST) hist.net.shift();
-  }
-  lastNetRx = rx; lastNetTx = tx; lastNetT = now;
-
-  // Disk throughput from PDH (sidecar ticker computes B/s every 1s).
-  const dRead = d.disk_io ? d.disk_io.read_bps : 0;
-  const dWrite = d.disk_io ? d.disk_io.write_bps : 0;
-  $('diskRead').textContent = fmtBytes(Math.max(0, dRead)) + '/s';
-  $('diskWrite').textContent = fmtBytes(Math.max(0, dWrite)) + '/s';
-  hist.disk.push(Math.max(0, dRead) + Math.max(0, dWrite));
-  if (hist.disk.length > HIST) hist.disk.shift();
-
-  if (hostGpu.usage != null) $('gpuPct').textContent = hostGpu.usage;
-
-  hist.cpu.push(d.cpu.global);
-  hist.mem.push(memPct);
-  if (hist.cpu.length > HIST) hist.cpu.shift();
-  if (hist.mem.length > HIST) hist.mem.shift();
-
-  const dl = $('diskList');
-  dl.innerHTML = '';
-  d.disks.forEach((k) => {
-    const used = k.total - k.free;
-    const pct = k.total ? Math.round((used / k.total) * 100) : 0;
-    const row = document.createElement('div');
-    row.style.cssText = 'display:flex; align-items:center; gap:10px; margin-bottom:6px;';
-    row.innerHTML = `
-      <span style="width:120px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap" title="${k.mount}">${k.mount} ${k.label}</span>
-      <div class="bar-track" style="flex:1; margin-top:0"><div class="bar-fill" style="width:${pct}%; background:${pct > 90 ? 'var(--status-err)' : 'var(--status-ok)'}"></div></div>
-      <span style="width:150px; text-align:right; font-family:var(--mono); font-size:11px; color:var(--text-dim)">${fmtBytes(used)} / ${fmtBytes(k.total)} · ${pct}%</span>`;
-    dl.appendChild(row);
-  });
-
-  drawChart();
-}
-let lastNetTx = null;
-
-function drawChart() {
-  const cv = $('chart');
-  const ctx = cv.getContext('2d');
-  const W = cv.width = cv.clientWidth * devicePixelRatio;
-  const H = cv.height = 220 * devicePixelRatio;
-  ctx.scale(devicePixelRatio, devicePixelRatio);
-  const w = cv.clientWidth, h = 220;
-  ctx.clearRect(0, 0, W, H);
-  // grid 0/25/50/75/100
-  ctx.strokeStyle = '#2a313c66'; ctx.fillStyle = '#7d8590'; ctx.font = '10px ' + 'monospace';
-  for (let i = 0; i <= 4; i++) {
-    const y = (h - 20) * i / 4 + 10;
-    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
-    ctx.fillText(String(100 - i * 25), w - 30, y - 3);
-  }
-  const series = [
-    { data: hist.cpu, color: '#58a6ff', max: 100 },
-    { data: hist.mem, color: '#bc8cff', max: 100 },
-    { data: hist.net, color: '#56d364', log: true },
-    { data: hist.disk, color: '#f0883e', log: true },
-  ];
-  series.forEach((s) => {
-    if (s.data.length < 2) return;
-    ctx.strokeStyle = s.color; ctx.lineWidth = 2 * devicePixelRatio; ctx.beginPath();
-    const n = s.data.length;
-    s.data.forEach((v, i) => {
-      let frac = s.log
-        ? Math.min(1, Math.log10(Math.max(1, v)) / 7)   // 1B..10MB/s scale
-        : Math.min(1, v / s.max);
-      const x = i * w / (HIST - 1);
-      const y = (h - 20) * (1 - frac) + 10;
-      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-    });
-    ctx.stroke();
-  });
-}
-
-// ==========================================================================
-// PAGE 2: 进程
-// ==========================================================================
 let procCache = [];
 let procSort = { key: 'cpu', dir: -1 };
 
@@ -481,7 +312,7 @@ $('procRefresh').addEventListener('click', refreshProc);
 $('procSearch').addEventListener('input', renderProc);
 
 // ==========================================================================
-// PAGE 3: 连接
+// PAGE: 连接
 // ==========================================================================
 let connCache = [];
 
@@ -541,7 +372,7 @@ $('connSearch').addEventListener('input', renderConn);
 $('connProto').addEventListener('change', renderConn);
 
 // ==========================================================================
-// PAGE 4: 文件占用
+// PAGE: 文件占用
 // ==========================================================================
 async function probeFile() {
   const p = $('filePath').value.trim();
@@ -597,8 +428,7 @@ async function mainLoop() {
   if (!serviceOk && tick % 5 === 0) await checkHealth();
   const active = document.querySelector('.page.active').id;
   if (!serviceOk) { tick++; return; }
-  if (active === 'page-perf') await refreshPerf();
-  else if (active === 'page-proc' && $('procAuto').checked) await refreshProc();
+  if (active === 'page-proc' && $('procAuto').checked) await refreshProc();
   else if (active === 'page-conn' && $('connAuto').checked) await refreshConn();
   tick++;
 }
@@ -608,10 +438,8 @@ async function mainLoop() {
     if (th.dataset.sort === 'cpu') th.textContent += ' ↓';
   });
   await checkHealth();
-  if (serviceOk) { refreshPerf(); refreshProc(); refreshConn(); }
-  pollGpu();
+  if (serviceOk) { refreshProc(); refreshConn(); }
   setInterval(mainLoop, 1500);
-  setInterval(pollGpu, 4000);
   setInterval(checkHealth, 30000);
 })();
 </script>

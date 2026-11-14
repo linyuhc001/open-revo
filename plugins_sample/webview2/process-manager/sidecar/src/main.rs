@@ -2,7 +2,6 @@
 //
 // Standalone HTTP sidecar exposing system-level introspection over localhost:
 //   GET  /api/health                  liveness probe
-//   GET  /api/system                  CPU per-core / memory / disks / network counters
 //   GET  /api/processes               process list (cpu%, memory, path, ppid)
 //   POST /api/process/kill            {pid, tree}     end process (optionally whole tree)
 //   GET  /api/connections             TCP/UDP endpoint table with owning PID
@@ -21,7 +20,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
-use sysinfo::{Disks, Networks, Pid, ProcessesToUpdate, System};
+use sysinfo::{Pid, ProcessesToUpdate, System};
 
 const LOG_FILE: &str = "sys_service.log";
 
@@ -57,100 +56,25 @@ fn log(msg: &str) {
 
 struct AppState {
     sys: System,
-    nets: Networks,
-    disks: Disks,
     started: Instant,
-    // PDH disk-throughput counters (\PhysicalDisk(_Total)); 0 = unavailable.
-    pdh_query: isize,
-    pdh_read: isize,
-    pdh_write: isize,
-    disk_read_bps: f64,
-    disk_write_bps: f64,
 }
 
 impl AppState {
     fn new() -> Self {
-        let mut sys = System::new_all();
+        let mut sys = System::new();
         sys.refresh_processes(ProcessesToUpdate::All, true);
-        sys.refresh_memory();
-        sys.refresh_cpu_all();
-        let (pdh_query, pdh_read, pdh_write) = pdh_init();
         AppState {
             sys,
-            nets: Networks::new_with_refreshed_list(),
-            disks: Disks::new_with_refreshed_list(),
             started: Instant::now(),
-            pdh_query,
-            pdh_read,
-            pdh_write,
-            disk_read_bps: 0.0,
-            disk_write_bps: 0.0,
         }
     }
 
+    // Only the process table is tracked: process CPU% is computed by sysinfo
+    // from GetProcessTimes deltas between two consecutive refreshes, so the
+    // fixed 1s cadence below is what makes the numbers stable.
     fn refresh_all(&mut self) {
         self.sys.refresh_processes(ProcessesToUpdate::All, true);
-        self.sys.refresh_memory();
-        self.sys.refresh_cpu_all();
-        let _ = self.nets.refresh(true);
-        self.disks.refresh(false);
     }
-
-    // Rate counters: each collect finalizes the interval since the previous
-    // collect, so call this from a fixed-cadence ticker and read right after.
-    #[cfg(windows)]
-    fn collect_disk_io(&mut self) {
-        if self.pdh_query == 0 {
-            return;
-        }
-        unsafe {
-            if PdhCollectQueryData(self.pdh_query) != 0 {
-                return;
-            }
-            let mut ctype: u32 = 0;
-            let mut val = PDH_FMT_COUNTERVALUE {
-                CStatus: 0,
-                Anonymous: PDH_FMT_COUNTERVALUE_0 { doubleValue: 0.0 },
-            };
-            if PdhGetFormattedCounterValue(self.pdh_read, PDH_FMT_DOUBLE, &mut ctype, &mut val) == 0 {
-                self.disk_read_bps = val.Anonymous.doubleValue;
-            }
-            if PdhGetFormattedCounterValue(self.pdh_write, PDH_FMT_DOUBLE, &mut ctype, &mut val) == 0 {
-                self.disk_write_bps = val.Anonymous.doubleValue;
-            }
-        }
-    }
-
-    #[cfg(not(windows))]
-    fn collect_disk_io(&mut self) {}
-}
-
-#[cfg(windows)]
-fn pdh_init() -> (isize, isize, isize) {
-    use std::os::windows::ffi::OsStrExt;
-    let to_wide = |s: &str| -> Vec<u16> {
-        std::ffi::OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
-    };
-    unsafe {
-        let mut q: isize = 0;
-        if PdhOpenQueryW(std::ptr::null(), 0, &mut q) != 0 {
-            return (0, 0, 0);
-        }
-        let mut r: isize = 0;
-        let mut w: isize = 0;
-        let read_ok = PdhAddEnglishCounterW(q, to_wide("\\PhysicalDisk(_Total)\\Disk Read Bytes/sec").as_ptr(), 0, &mut r) == 0;
-        let write_ok = PdhAddEnglishCounterW(q, to_wide("\\PhysicalDisk(_Total)\\Disk Write Bytes/sec").as_ptr(), 0, &mut w) == 0;
-        if !read_ok || !write_ok || PdhCollectQueryData(q) != 0 {
-            let _ = PdhCloseQuery(q);
-            return (0, 0, 0);
-        }
-        (q, r, w)
-    }
-}
-
-#[cfg(not(windows))]
-fn pdh_init() -> (isize, isize, isize) {
-    (0, 0, 0)
 }
 
 static STATE: std::sync::OnceLock<Mutex<AppState>> = std::sync::OnceLock::new();
@@ -183,17 +107,16 @@ fn main() {
         return;
     }
 
-    // Pre-warm the telemetry snapshot so the first /api/system call has deltas.
+    // Pre-warm the process snapshot so the first /api/processes call has deltas.
     let _ = state();
 
-    // Background ticker: refresh the snapshot on a fixed 1s cadence so that
-    // (a) process CPU% windows are stable regardless of request timing and
+    // Background ticker: refresh the process snapshot on a fixed 1s cadence so
+    // that (a) process CPU% windows are stable regardless of request timing and
     // (b) the first request after opening a tab already has fresh deltas.
     std::thread::spawn(|| loop {
         std::thread::sleep(Duration::from_secs(1));
         if let Ok(mut st) = state().lock() {
             st.refresh_all();
-            st.collect_disk_io();
         }
     });
 
@@ -396,7 +319,6 @@ fn route(method: &str, path: &str, query: &HashMap<String, String>, body: &[u8])
                 "elevated": is_elevated()
             }),
         ),
-        ("GET", "/api/system") => api_system(),
         ("GET", "/api/processes") => api_processes(),
         ("POST", "/api/process/kill") => with_json_body(body, api_process_kill),
         ("GET", "/api/connections") => api_connections(),
@@ -420,72 +342,6 @@ fn with_json_body(body: &[u8], f: fn(&Value) -> (u16, Value)) -> (u16, Value) {
     }
 }
 
-// ------------------------------------------------------------- /api/system --
-
-fn api_system() -> (u16, Value) {
-    let st = match state().lock() {
-        Ok(g) => g,
-        Err(_) => return (500, json!({"error": "state poisoned"})),
-    };
-    // Snapshot is refreshed by the background ticker; do NOT refresh here or
-    // request timing would skew the CPU delta windows.
-
-    let cores: Vec<f32> = st.sys.cpus().iter().map(|c| c.cpu_usage()).collect();
-    let freq = st.sys.cpus().first().map(|c| c.frequency()).unwrap_or(0);
-    // Computed manually instead of System::global_cpu_usage() to stay
-    // independent of minor-version API churn.
-    let global = if cores.is_empty() {
-        0.0
-    } else {
-        cores.iter().sum::<f32>() / cores.len() as f32
-    };
-    let mem_total = st.sys.total_memory();
-    let mem_used = st.sys.used_memory();
-    let swap_total = st.sys.total_swap();
-    let swap_used = st.sys.used_swap();
-
-    let disks: Vec<Value> = st
-        .disks
-        .list()
-        .iter()
-        .map(|d| {
-            json!({
-                "mount": d.mount_point().to_string_lossy(),
-                "label": d.name().to_string_lossy(),
-                "kind": format!("{:?}", d.kind()),
-                "total": d.total_space(),
-                "free": d.available_space(),
-            })
-        })
-        .collect();
-
-    let mut net: Vec<Value> = Vec::new();
-    for (name, data) in &st.nets {
-        net.push(json!({
-            "iface": name.to_string(),
-            "rx_total": data.total_received(),
-            "tx_total": data.total_transmitted(),
-            "rx_delta": data.received(),
-            "tx_delta": data.transmitted(),
-        }));
-    }
-
-    (
-        200,
-        json!({
-            "uptime_s": st.started.elapsed().as_secs(),
-            "cpu": { "global": global, "freq_mhz": freq, "cores": cores },
-            "memory": { "total": mem_total, "used": mem_used, "swap_total": swap_total, "swap_used": swap_used },
-            "disk_io": {
-                "read_bps": st.disk_read_bps,
-                "write_bps": st.disk_write_bps,
-            },
-            "disks": disks,
-            "networks": net,
-        }),
-    )
-}
-
 // ----------------------------------------------------------- /api/processes --
 
 fn api_processes() -> (u16, Value) {
@@ -498,7 +354,10 @@ fn api_processes() -> (u16, Value) {
     // sysinfo reports per-core semantics (100% = one full core, up to
     // nb_cpus * 100); divide by the logical core count to match Task
     // Manager's whole-machine scale (100% = all cores).
-    let nb_cpus = st.sys.cpus().len().max(1) as f32;
+    let nb_cpus = std::thread::available_parallelism()
+        .map(|n| n.get() as f32)
+        .unwrap_or(1.0)
+        .max(1.0);
 
     let mut list: Vec<Value> = Vec::with_capacity(st.sys.processes().len());
     for (pid, p) in st.sys.processes() {
@@ -928,11 +787,6 @@ use windows_sys::Win32::NetworkManagement::IpHelper::{
 #[cfg(windows)]
 use windows_sys::Win32::Security::{
     GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
-};
-#[cfg(windows)]
-use windows_sys::Win32::System::Performance::{
-    PdhAddEnglishCounterW, PdhCloseQuery, PdhCollectQueryData, PdhGetFormattedCounterValue,
-    PdhOpenQueryW, PDH_FMT_COUNTERVALUE, PDH_FMT_COUNTERVALUE_0, PDH_FMT_DOUBLE,
 };
 #[cfg(windows)]
 use windows_sys::Win32::System::RestartManager::{

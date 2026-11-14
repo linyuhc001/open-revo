@@ -1,6 +1,6 @@
 name: Build Sys Service
 
-# Compiles the sys-inspector companion service into a standalone .exe and
+# Compiles the process-manager companion service into a standalone .exe and
 # publishes it as an artifact. The sidecar crate lives inside the plugin
 # folder and has no dependency on src-tauri, so this workflow never builds
 # the host.
@@ -12,9 +12,9 @@ on:
     # under sidecar/, and matching it here would make every artifact commit
     # trigger another build.
     paths:
-      - 'plugins_sample/webview2/sys-inspector/sidecar/src/**'
-      - 'plugins_sample/webview2/sys-inspector/sidecar/Cargo.toml'
-      - 'plugins_sample/webview2/sys-inspector/sidecar/Cargo.lock'
+      - 'plugins_sample/webview2/process-manager/sidecar/src/**'
+      - 'plugins_sample/webview2/process-manager/sidecar/Cargo.toml'
+      - 'plugins_sample/webview2/process-manager/sidecar/Cargo.lock'
       - '.github/workflows/sys-service.yml'
 
 permissions:
@@ -37,10 +37,10 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: plugins_sample/webview2/sys-inspector/sidecar
+          workspaces: plugins_sample/webview2/process-manager/sidecar
 
       - name: Build sidecar
-        working-directory: plugins_sample/webview2/sys-inspector/sidecar
+        working-directory: plugins_sample/webview2/process-manager/sidecar
         shell: pwsh
         run: |
           cargo build --release 2>&1 | Tee-Object -FilePath build-output.log
@@ -50,7 +50,7 @@ jobs:
       # forks; re-emit the first cargo errors as public check annotations.
       - name: Emit errors as annotations
         if: failure()
-        working-directory: plugins_sample/webview2/sys-inspector/sidecar
+        working-directory: plugins_sample/webview2/process-manager/sidecar
         shell: pwsh
         run: |
           if (Test-Path build-output.log) {
@@ -64,7 +64,7 @@ jobs:
           }
 
       - name: Verify binary
-        working-directory: plugins_sample/webview2/sys-inspector/sidecar
+        working-directory: plugins_sample/webview2/process-manager/sidecar
         shell: pwsh
         run: |
           $exe = "target/release/sys-service.exe"
@@ -83,5 +83,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: sys-service
-          path: plugins_sample/webview2/sys-inspector/sidecar/target/release/sys-service.exe
+          path: plugins_sample/webview2/process-manager/sidecar/target/release/sys-service.exe
           if-no-files-found: error
