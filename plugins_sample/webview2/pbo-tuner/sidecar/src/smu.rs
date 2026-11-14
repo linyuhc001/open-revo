@@ -10,6 +10,7 @@
 // Moved out of the OpenRevo host so the whole feature ships inside the plugin.
 
 use crate::pawnio::PawnIo;
+use serde_json::{json, Value};
 use std::sync::{Mutex, OnceLock};
 
 // ---- SMU mailbox function names exported by RyzenSMU.bin ----
@@ -17,6 +18,8 @@ const FN_GET_SMU_VERSION: &str = "ioctl_get_smu_version";
 const FN_SEND_SMU_COMMAND: &str = "ioctl_send_smu_command";
 const FN_RESOLVE_PM_TABLE: &str = "ioctl_resolve_pm_table";
 const FN_GET_CODE_NAME: &str = "ioctl_get_code_name";
+const FN_UPDATE_PM_TABLE: &str = "ioctl_update_pm_table";
+const FN_READ_PM_TABLE: &str = "ioctl_read_pm_table";
 
 // ---- SMU status codes ----
 pub const SMU_OK: u32 = 0x01;
@@ -813,6 +816,125 @@ fn default_pm_table_size(code: CpuCodeName, version: u32) -> u32 {
         },
         _ => 0x994,
     }
+}
+
+// ---- PM table: per-core live telemetry ----
+
+/// Per-core field base indices (f32 slots) inside the PM table, keyed by
+/// pm_table_version. The PM table is an array of little-endian f32 values;
+/// core N's voltage lives at `voltage + N`. The registry follows the same
+/// per-CPU adaptation pattern as `resolve_commands` / `default_pm_table_size`:
+/// an unknown version simply yields None and the frontend hides the column
+/// instead of guessing at offsets. Sources of verified offsets:
+///   - LibreHardwareMonitor (Amd17Cpu.GetPerCoreBaseIndices)
+///   - on-machine calibration via /api/smu_pmtable {dump:true}
+#[derive(Debug, Clone, Copy)]
+pub struct PmCoreLayout {
+    /// f32 index of core 0 voltage; core N at `voltage + N`.
+    pub voltage: usize,
+    /// f32 index of core 0 temperature; core N at `temperature + N`.
+    pub temperature: usize,
+}
+
+/// Layout registry: pm_table_version -> per-core field bases.
+pub fn pm_core_layout(version: u32) -> Option<PmCoreLayout> {
+    match version {
+        // Zen5 Granite Ridge / Fire Range family — offsets verified by
+        // LibreHardwareMonitor against pm table 0x00621202 (size 0x994).
+        0x00621202 => Some(PmCoreLayout { voltage: 317, temperature: 333 }),
+        _ => None,
+    }
+}
+
+/// A refreshed PM table snapshot, exposed as f32 slots.
+pub struct PmTableSnapshot {
+    pub version: u32,
+    pub size: u32,
+    pub values: Vec<f32>,
+}
+
+/// Ask the SMU to refresh its DRAM-resident PM table, then read it back.
+/// ReadPmTable returns `(size + 7) / 8` u64 words that re-interpret to f32s,
+/// exactly like LibreHardwareMonitor's long[] -> float[] BlockCopy.
+fn read_pm_table_raw() -> Result<PmTableSnapshot, String> {
+    with_bridge(|b| {
+        if b.pm_table_size == 0 {
+            return Err("PM table not supported on this CPU".into());
+        }
+        b.pawn.execute(FN_UPDATE_PM_TABLE, &[], 1)?;
+        let words =
+            b.pawn.execute(FN_READ_PM_TABLE, &[], ((b.pm_table_size as usize) + 7) / 8)?;
+        let mut bytes = Vec::with_capacity(words.len() * 8);
+        for w in &words {
+            bytes.extend_from_slice(&w.to_le_bytes());
+        }
+        let values = bytes
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        Ok(PmTableSnapshot {
+            version: b.pm_table_version,
+            size: b.pm_table_size,
+            values,
+        })
+    })
+}
+
+/// GET-ish live telemetry endpoint body. `dump=true` returns the raw f32
+/// array for offset calibration on machines whose pm_table_version is not in
+/// the registry yet; otherwise returns per-core voltage/temperature arrays
+/// (null when a slot is outside its sane range) when the layout is known.
+pub fn pmtable_live(dump: bool) -> Result<Value, String> {
+    let snap = read_pm_table_raw()?;
+    let layout = pm_core_layout(snap.version);
+
+    if dump {
+        let values: Vec<Value> = snap
+            .values
+            .iter()
+            .map(|v| if v.is_finite() { json!(v) } else { Value::Null })
+            .collect();
+        return Ok(json!({
+            "supported": layout.is_some(),
+            "pm_version": format!("0x{:08X}", snap.version),
+            "size": snap.size,
+            "values": values,
+        }));
+    }
+
+    let Some(l) = layout else {
+        return Ok(json!({
+            "supported": false,
+            "pm_version": format!("0x{:08X}", snap.version),
+            "size": snap.size,
+        }));
+    };
+
+    let sane = |v: f32, lo: f32, hi: f32| -> Option<f64> {
+        if v > lo && v < hi && v.is_finite() {
+            Some(((v * 1000.0).round() / 1000.0) as f64)
+        } else {
+            None
+        }
+    };
+    let n = detect_physical_core_count() as usize;
+    let voltage: Vec<Option<f64>> = (0..n)
+        .map(|i| snap.values.get(l.voltage + i).copied())
+        .map(|v| v.and_then(|x| sane(x, 0.1, 3.0)))
+        .collect();
+    let temperature: Vec<Option<f64>> = (0..n)
+        .map(|i| snap.values.get(l.temperature + i).copied())
+        .map(|v| v.and_then(|x| sane(x, 1.0, 125.0)))
+        .collect();
+
+    Ok(json!({
+        "supported": true,
+        "pm_version": format!("0x{:08X}", snap.version),
+        "size": snap.size,
+        "cores": n,
+        "voltage": voltage,
+        "temperature": temperature,
+    }))
 }
 
 fn with_bridge<T>(f: impl FnOnce(&SmuBridge) -> Result<T, String>) -> Result<T, String> {

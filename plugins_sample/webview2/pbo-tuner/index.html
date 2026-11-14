@@ -234,6 +234,16 @@
     .core-row input.positive { color: #f87171; border-color: rgba(248,113,113,0.35); }
     .core-row input:disabled { opacity: 0.45; cursor: not-allowed; }
     .core-row input.dirty { box-shadow: inset 0 0 0 1px rgba(245,158,11,0.55); }
+    /* Per-core live voltage readout (from the SMU PM table). */
+    .core-v {
+      flex: 0 0 58px;
+      font-size: 11px;
+      font-family: "Consolas", monospace;
+      color: var(--text-dim);
+      text-align: left;
+      white-space: nowrap;
+    }
+    .core-v.ok { color: var(--accent); }
 
     .row {
       display: flex;
@@ -608,6 +618,7 @@
       buildCcdPanels();
       await refreshValues({ initial: true });
       await refreshFmaxScalar();
+      startVoltagePolling();
 
       // Auto-apply is a host-side setting; reflect whatever the saved profile says.
       try {
@@ -637,6 +648,51 @@
     function countCcds() {
       const set = new Set(STATE.cores.map(c => c.ccd));
       return set.size;
+    }
+
+    // ---- Per-core live voltage (SMU PM table) ----
+    // The sidecar refreshes and reads the whole PM table (~2.4 KB) and parses
+    // per-core voltage/temperature by pm_table_version; the registry there is
+    // adapted per CPU like every other SMU table, so unsupported versions
+    // blank the readouts instead of showing garbage.
+    let pmTimer = null;
+    let pmSupported = null; // null = not probed yet
+
+    async function refreshVoltages() {
+      let d;
+      try {
+        d = await rpc('smu_pmtable');
+      } catch (_) {
+        return; // service busy or restarting — keep last values
+      }
+      if (!d || !d.supported) {
+        if (pmSupported === false) return;
+        pmSupported = false;
+        document.querySelectorAll('[data-vcore]').forEach(el => {
+          el.textContent = '';
+          el.title = '该 CPU 的 PM 表版本（' + (d && d.pm_version || '?') + '）暂无布局适配，无法显示实时电压';
+        });
+        return;
+      }
+      pmSupported = true;
+      const volt = d.voltage || [];
+      document.querySelectorAll('[data-vcore]').forEach(el => {
+        const core = Number(el.dataset.vcore);
+        const val = volt[core];
+        if (val != null) {
+          el.textContent = val.toFixed(3) + 'V';
+          el.classList.add('ok');
+        } else {
+          el.textContent = '—';
+          el.classList.remove('ok');
+        }
+      });
+    }
+
+    function startVoltagePolling() {
+      if (pmTimer) clearInterval(pmTimer);
+      refreshVoltages();
+      pmTimer = setInterval(refreshVoltages, 1000);
     }
 
     function renderPlatform(info) {
@@ -738,7 +794,8 @@
           row.innerHTML = `
             <span class="core-name">C${c.core}</span>
             <input type="number" data-core="${c.core}" value="0"
-                   min="${CO_MIN}" max="${CO_MAX}" step="1" ${STATE.canWrite ? '' : 'disabled'} />`;
+                   min="${CO_MIN}" max="${CO_MAX}" step="1" ${STATE.canWrite ? '' : 'disabled'} />
+            <span class="core-v" data-vcore="${c.core}" title="该核心实时电压（来自 SMU PM 表）">—</span>`;
           grid.appendChild(row);
         });
 

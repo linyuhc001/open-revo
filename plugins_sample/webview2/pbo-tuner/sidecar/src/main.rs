@@ -192,6 +192,10 @@ fn route(method: &str, path: &str, body: &[u8]) -> Result<Value, String> {
         "/api/smu_get_core_layout" => {
             Ok(serde_json::to_value(smu::get_core_layout()).unwrap_or(Value::Null))
         }
+        "/api/smu_pmtable" => {
+            let dump = req.get("dump").and_then(|v| v.as_bool()).unwrap_or(false);
+            Ok(smu::pmtable_live(dump)?)
+        }
         "/api/smu_get_co_single_core" => {
             let (core, ccd, ccx) = placement(&req)?;
             Ok(json!(smu::get_co_single_core(core, ccd, ccx)?))
