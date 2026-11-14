@@ -234,16 +234,22 @@
     .core-row input.positive { color: #f87171; border-color: rgba(248,113,113,0.35); }
     .core-row input:disabled { opacity: 0.45; cursor: not-allowed; }
     .core-row input.dirty { box-shadow: inset 0 0 0 1px rgba(245,158,11,0.55); }
-    /* Per-core live voltage readout (from the SMU PM table). */
+    /* Per-core live voltage readout (from the SMU PM table) — boxed like
+       the 3D V-Cache badge, in the same amber instead of purple. */
     .core-v {
-      flex: 0 0 58px;
+      flex: 0 0 64px;
       font-size: 11px;
+      font-weight: 600;
       font-family: "Consolas", monospace;
-      color: var(--text-dim);
-      text-align: left;
+      color: #facc15;
+      background: rgba(250, 204, 21, 0.10);
+      border: 1px solid rgba(250, 204, 21, 0.35);
+      border-radius: 5px;
+      padding: 4px 3px;
+      text-align: center;
       white-space: nowrap;
     }
-    .core-v.ok { color: var(--accent); }
+    .core-v.empty { visibility: hidden; }
 
     .row {
       display: flex;
@@ -670,6 +676,7 @@
         pmSupported = false;
         document.querySelectorAll('[data-vcore]').forEach(el => {
           el.textContent = '';
+          el.classList.add('empty');
           el.title = '该 CPU 的 PM 表版本（' + (d && d.pm_version || '?') + '）暂无布局适配，无法显示实时电压';
         });
         return;
@@ -681,10 +688,10 @@
         const val = volt[core];
         if (val != null) {
           el.textContent = val.toFixed(3) + 'V';
-          el.classList.add('ok');
+          el.classList.remove('empty');
         } else {
           el.textContent = '—';
-          el.classList.remove('ok');
+          el.classList.remove('empty');
         }
       });
     }
