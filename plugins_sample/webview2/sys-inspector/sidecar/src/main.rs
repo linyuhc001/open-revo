@@ -742,14 +742,16 @@ fn api_connection_close(v: &Value) -> (u16, Value) {
     let raddr = v.get("remote_addr").and_then(|x| x.as_str()).and_then(parse_ip).unwrap_or(0);
     let rport = v.get("remote_port").and_then(|x| x.as_u64()).map(|p| port_dw(p as u16)).unwrap_or(0);
 
-    let mut row = MIB_TCPROW {
+    let row = MIB_TCPROW_W2K {
         dwState: MIB_TCP_STATE_DELETE_TCB,
         dwLocalAddr: laddr,
         dwLocalPort: lport,
         dwRemoteAddr: raddr,
         dwRemotePort: rport,
     };
-    let rc = unsafe { SetTcpEntry(&mut row) };
+    // windows-sys 0.59 has no plain MIB_TCPROW; MIB_TCPROW_W2K is layout-identical
+    // to MIB_TCPROW_LH (what SetTcpEntry actually takes).
+    let rc = unsafe { SetTcpEntry(&row as *const MIB_TCPROW_W2K as *const MIB_TCPROW_LH) };
     if rc != 0 {
         return (500, json!({"error": format!("SetTcpEntry failed (err {}), requires admin", rc)}));
     }
@@ -886,7 +888,7 @@ fn is_elevated() -> bool {
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
 #[cfg(windows)]
 use windows_sys::Win32::NetworkManagement::IpHelper::{
-    GetExtendedTcpTable, GetExtendedUdpTable, SetTcpEntry, MIB_TCPROW,
+    GetExtendedTcpTable, GetExtendedUdpTable, SetTcpEntry, MIB_TCPROW_LH, MIB_TCPROW_W2K,
 };
 #[cfg(windows)]
 use windows_sys::Win32::Security::{
