@@ -495,6 +495,10 @@ fn api_processes() -> (u16, Value) {
     };
     // CPU% is normalized by the ticker's fixed 1s windows; serving the cached
     // snapshot keeps values identical across consecutive polls.
+    // sysinfo reports per-core semantics (100% = one full core, up to
+    // nb_cpus * 100); divide by the logical core count to match Task
+    // Manager's whole-machine scale (100% = all cores).
+    let nb_cpus = st.sys.cpus().len().max(1) as f32;
 
     let mut list: Vec<Value> = Vec::with_capacity(st.sys.processes().len());
     for (pid, p) in st.sys.processes() {
@@ -502,7 +506,7 @@ fn api_processes() -> (u16, Value) {
             "pid": pid.as_u32(),
             "ppid": p.parent().map(|x| x.as_u32()),
             "name": p.name().to_string_lossy(),
-            "cpu": p.cpu_usage(),
+            "cpu": p.cpu_usage() / nb_cpus,
             "mem": p.memory(),
             "exe": p.exe().map(|e| e.to_string_lossy()).unwrap_or_default(),
         }));
