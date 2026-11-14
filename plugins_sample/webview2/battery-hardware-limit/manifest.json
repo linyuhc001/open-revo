@@ -1,9 +1,9 @@
 {
   "id": "battery-hardware-limit",
   "name": "电池充电上限守护者",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "author": "OpenRevo Official & Community",
-  "description": "官方演示插件：基于微内核硬件网关的多协议底层限充调控中心。默认采用原生三寄存器模式 (EC 0x07A6 保护模式 + 0x07B9 上限 + 0x07D0 回落下限)，与固件一致、零心跳；另保留同方门控持续钉住法(Pin & Keep-Alive)与传统脉冲存储法以兼容老模具，自由设定 1~100% 充电阈值。",
+  "description": "官方演示插件：基于微内核硬件网关的原生三寄存器限充调控中心 (EC 0x07A6 保护模式 + 0x07B9 上限 + 0x07D0 回落下限)，与固件一致、零心跳、不触碰平台身份码，自由设定 1~100% 充电阈值。",
   "type": "tab",
   "min_host_version": "0.9.4",
   "window": {
@@ -28,7 +28,7 @@
     "default_mode": "native",
     "strategies": {
       "native_registers": {
-        "name": "原生三寄存器模式 (Native Registers，现代 Uniwill 固件推荐)",
+        "name": "原生三寄存器模式 (Native Registers，现代固件推荐)",
         "protocol": "TongfangDirectEc",
         "limit_up_reg": 1977,
         "limit_down_reg": 2000,
@@ -37,41 +37,12 @@
         "mode_balance": 17,
         "mode_longlife": 1,
         "touchpad_bitmask": 8,
-        "platform_id_reg": 1987,
-        "platform_id_restore": 7,
-        "down_offset": 5,
-        "keepalive_interval_ms": 0
-      },
-      "tongfang_pin": {
-        "name": "同方门控持续保持法 (Pin & Keep-Alive，现代机型推荐)",
-        "protocol": "TongfangDirectEc",
-        "limit_reg": 1977,
-        "gate_reg": 1987,
-        "probe_order": [
-          4,
-          5
-        ],
-        "keepalive_interval_ms": 4000,
-        "status_reg": 1858,
-        "status_bit": 2
-      },
-      "tongfang_pulse": {
-        "name": "同方系脉冲触发存储法 (老款固件 NVRAM 兼容)",
-        "protocol": "TongfangDirectEc",
-        "limit_reg": 1977,
-        "gate_reg": 1987,
-        "pulse_val_gaming": 5,
-        "pulse_val_thin": 4,
-        "pulse_hold_ms": 2500,
-        "gate_settle_ms": 7000,
-        "status_reg": 1858,
-        "status_bit": 2
+        "down_offset": 5
       },
       "generic_wmi": {
         "name": "通用 ACPI-WMI MULONG 邮箱通道",
         "protocol": "GenericAcpiWmi",
         "limit_reg": 1977,
-        "gate_reg": 1987,
         "storage_reg": 2175
       },
       "bld_mailbox": {
