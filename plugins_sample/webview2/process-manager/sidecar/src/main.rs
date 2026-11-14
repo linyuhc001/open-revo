@@ -57,6 +57,10 @@ fn log(msg: &str) {
 struct AppState {
     sys: System,
     started: Instant,
+    /// Last request that requires fresh data (anything except /api/health).
+    last_activity: Instant,
+    /// True while the background ticker is paused because no page is polling.
+    dormant: bool,
 }
 
 impl AppState {
@@ -66,6 +70,8 @@ impl AppState {
         AppState {
             sys,
             started: Instant::now(),
+            last_activity: Instant::now(),
+            dormant: false,
         }
     }
 
@@ -74,6 +80,15 @@ impl AppState {
     // fixed 1s cadence below is what makes the numbers stable.
     fn refresh_all(&mut self) {
         self.sys.refresh_processes(ProcessesToUpdate::All, true);
+    }
+
+    fn trim_working_set() {
+        // SetProcessWorkingSetSize(-1,-1) == EmptyWorkingSet: pages just
+        // soft-fault back in on demand, so trimming costs nothing functionally.
+        #[cfg(windows)]
+        unsafe {
+            SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX);
+        }
     }
 }
 
@@ -110,14 +125,27 @@ fn main() {
     // Pre-warm the process snapshot so the first /api/processes call has deltas.
     let _ = state();
 
-    // Background ticker: refresh the process snapshot on a fixed 1s cadence so
-    // that (a) process CPU% windows are stable regardless of request timing and
-    // (b) the first request after opening a tab already has fresh deltas.
+    // Background ticker — activity-driven so the service stays idle while no
+    // plugin page is open. The page polls every 1.5s; while requests keep
+    // arriving the snapshot is refreshed on a fixed 1s cadence (stable CPU%
+    // windows). After 10s without data requests (page closed) the ticker
+    // stops refreshing and trims the working set, dropping reported memory
+    // to ~1MB; the first request after waking refreshes synchronously.
     std::thread::spawn(|| loop {
         std::thread::sleep(Duration::from_secs(1));
-        if let Ok(mut st) = state().lock() {
-            st.refresh_all();
+        let mut st = match state().lock() {
+            Ok(g) => g,
+            Err(_) => continue,
+        };
+        if st.last_activity.elapsed() > Duration::from_secs(10) {
+            if !st.dormant {
+                st.dormant = true;
+                AppState::trim_working_set();
+            }
+            continue;
         }
+        st.dormant = false;
+        st.refresh_all();
     });
 
     let addr = ("127.0.0.1", port);
@@ -175,6 +203,14 @@ fn handle_client(mut stream: TcpStream) {
     }
 
     let (path, query) = split_target(&target);
+    // Activity marker: /api/health is just a liveness probe (the page also
+    // fires it every 30s), it must NOT keep the service awake — only data
+    // requests do. This is what makes the service idle once the page closes.
+    if path != "/api/health" && path != "/" {
+        if let Ok(mut st) = state().lock() {
+            st.last_activity = Instant::now();
+        }
+    }
     let started = Instant::now();
     let (status, value) = route(method.as_str(), path.as_str(), &query, &req.2);
     let ms = started.elapsed().as_millis();
@@ -345,6 +381,15 @@ fn with_json_body(body: &[u8], f: fn(&Value) -> (u16, Value)) -> (u16, Value) {
 // ----------------------------------------------------------- /api/processes --
 
 fn api_processes() -> (u16, Value) {
+    // Wake-up path: the ticker is dormant (page was closed / idle). Refresh
+    // synchronously so the first response after reopening the page is fresh;
+    // while awake the 1s ticker owns refreshing and this is a no-op.
+    if let Ok(mut st) = state().lock() {
+        if st.dormant {
+            st.refresh_all();
+            st.dormant = false;
+        }
+    }
     let st = match state().lock() {
         Ok(g) => g,
         Err(_) => return (500, json!({"error": "state poisoned"})),
@@ -811,5 +856,6 @@ use windows_sys::Win32::System::RestartManager::{
 };
 #[cfg(windows)]
 use windows_sys::Win32::System::Threading::{
-    GetCurrentProcess, OpenProcess, OpenProcessToken, TerminateProcess, PROCESS_TERMINATE,
+    GetCurrentProcess, OpenProcess, OpenProcessToken, SetProcessWorkingSetSize, TerminateProcess,
+    PROCESS_TERMINATE,
 };
