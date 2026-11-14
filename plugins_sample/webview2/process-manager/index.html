@@ -354,19 +354,19 @@ function renderProc() {
       if (!kids.has(parent)) kids.set(parent, []);
       kids.get(parent).push(p);
     });
-    // 子树聚合：父节点按「整棵子树的最大 CPU/内存」参与排序，
-    // 让挂着高占用子进程的应用（如 WorkBuddy 挂在 explorer 下）浮到顶部，
-    // 与任务管理器的观感一致；文本列（名称/PID）仍按自身值排序。
+    // 子树聚合：父节点按「整棵子树的 CPU/内存总和」排序与显示，
+    // 与任务管理器一致——父行显示整棵树的合计，而不是自身值。
     const agg = new Map();
     const computeAgg = (p) => {
-      if (agg.has(p.pid)) return agg.get(p.pid);
+      if (agg.has(p.pid)) return agg.get(p.pid); // 环路防护
+      agg.set(p.pid, { cpu: 0, mem: 0 }); // 先占位再递归，防环
       const a = { cpu: p.cpu || 0, mem: p.mem || 0 };
-      agg.set(p.pid, a);
       (kids.get(p.pid) || []).forEach((c) => {
         const ca = computeAgg(c);
-        if (ca.cpu > a.cpu) a.cpu = ca.cpu;
-        if (ca.mem > a.mem) a.mem = ca.mem;
+        a.cpu += ca.cpu;
+        a.mem += ca.mem;
       });
+      agg.set(p.pid, a);
       return a;
     };
     (kids.get(ROOT) || []).forEach(computeAgg);
@@ -384,7 +384,8 @@ function renderProc() {
     const visit = (p, depth) => {
       if (visited.has(p.pid)) return;
       visited.add(p.pid);
-      list.push({ p, depth, hasKids: (kids.get(p.pid) || []).length > 0 });
+      const a = agg.get(p.pid) || p;
+      list.push({ p, depth, hasKids: (kids.get(p.pid) || []).length > 0, dispCpu: a.cpu || 0, dispMem: a.mem || 0 });
       if (!procExpanded.has(p.pid) && !kw) return; // 未展开：不深入子树
       [...kids.get(p.pid) || []].sort(cmpTree).forEach((c) => visit(c, depth + 1));
     };
@@ -396,7 +397,8 @@ function renderProc() {
       const visitAll = (p, depth) => {
         if (visited2.has(p.pid)) return;
         visited2.add(p.pid);
-        list.push({ p, depth, hasKids: (kids.get(p.pid) || []).length > 0 });
+        const a = agg.get(p.pid) || p;
+        list.push({ p, depth, hasKids: (kids.get(p.pid) || []).length > 0, dispCpu: a.cpu || 0, dispMem: a.mem || 0 });
         [...kids.get(p.pid) || []].sort(cmpTree).forEach((c) => visitAll(c, depth + 1));
       };
       (kids.get(ROOT) || []).sort(rootCmp).forEach((r) => visitAll(r, 0));
@@ -407,9 +409,11 @@ function renderProc() {
   const tb = $('procBody');
   tb.innerHTML = '';
   const frag = document.createDocumentFragment();
-  list.forEach(({ p, depth, hasKids }) => {
+  list.forEach(({ p, depth, hasKids, dispCpu, dispMem }) => {
     const tr = document.createElement('tr');
-    const mem = fmtBytes(p.mem);
+    // 父行显示整棵子树的合计值（任务管理器规则），叶子行显示自身值
+    const cpu = hasKids ? dispCpu : p.cpu;
+    const mem = fmtBytes(hasKids ? dispMem : p.mem);
     const arrow = hasKids
       ? `<span data-a="toggle" data-pid="${p.pid}" style="cursor:pointer; display:inline-block; width:14px; color:var(--text-dim); user-select:none">${procExpanded.has(p.pid) ? '▾' : '▸'}</span>`
       : '<span style="display:inline-block; width:14px"></span>';
@@ -418,7 +422,7 @@ function renderProc() {
       <td title="${p.name}">${nameHtml}</td>
       <td class="num">${p.pid}</td>
       <td class="num">${p.ppid ?? '—'}</td>
-      <td class="num" style="color:${p.cpu > 50 ? 'var(--status-err)' : p.cpu > 15 ? 'var(--status-warn)' : 'inherit'}">${p.cpu.toFixed(1)}</td>
+      <td class="num" style="color:${cpu > 50 ? 'var(--status-err)' : cpu > 15 ? 'var(--status-warn)' : 'inherit'}">${cpu.toFixed(1)}</td>
       <td class="num">${mem}</td>
       <td style="color:var(--text-dim); font-size:11px" title="${p.exe}">${p.exe}</td>
       <td><div class="row-actions">
