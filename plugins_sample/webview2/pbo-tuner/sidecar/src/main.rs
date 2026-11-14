@@ -29,22 +29,34 @@ static CURRENT_PORT: AtomicU16 = AtomicU16::new(DEFAULT_PORT);
 
 fn main() {
     let port = parse_port();
+    log(&format!("pbo-service {VERSION} starting on 127.0.0.1:{port}"));
+
+    // Announce the profile path early: the only way to debug a "profile not
+    // found" report is to know which directory the service resolved.
+    log(&format!("config dir: {}", config_dir().display()));
 
     // Port handover: /api/config_port spawns a replacement before the old
     // process releases the listener, so retry the bind briefly to absorb the
     // gap. Cold starts succeed on the first attempt.
     let listener = match bind_with_retry(port) {
         Ok(l) => l,
-        Err(_) => std::process::exit(2),
+        Err(e) => {
+            log(&format!("bind failed: {e}"));
+            std::process::exit(2);
+        }
     };
     CURRENT_PORT.store(port, Ordering::Relaxed);
+    log(&format!("pbo-service listening on 127.0.0.1:{port}"));
 
     // The host launches this at boot with auto_start, before any plugin tab
     // exists — that is what makes "apply my profile on startup" possible now
     // that the host no longer runs it.
     std::thread::spawn(|| {
         std::thread::sleep(std::time::Duration::from_secs(8));
-        let _ = auto_apply_profile();
+        match auto_apply_profile() {
+            Ok(msg) => log(&format!("auto-apply: {msg}")),
+            Err(e) => log(&format!("auto-apply skipped: {e}")),
+        }
     });
 
     for stream in listener.incoming() {
@@ -54,7 +66,7 @@ fn main() {
                     let _ = handle(s);
                 });
             }
-            Err(_) => continue,
+            Err(e) => log(&format!("accept failed: {e}")),
         }
     }
 }
@@ -668,6 +680,25 @@ fn auto_apply_profile() -> Result<String, String> {
     }
 
     Ok(format!("applied {applied} cores ({failed} failed)"))
+}
+
+// ---- Logging ----
+
+fn log(msg: &str) {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let line = format!("[{ts}] {msg}\n");
+    let path = config_dir().join("pbo_service.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = f.write_all(line.as_bytes());
+    }
+    eprintln!("{}", line.trim_end());
 }
 
 // ---- Registry (HKCU\Software\OpenRevo DataPath) ----

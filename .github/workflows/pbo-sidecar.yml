@@ -58,7 +58,7 @@ jobs:
           if ($size -lt 200KB) { throw "binary too small: $size bytes" }
           $bytes = [System.IO.File]::ReadAllBytes($exe)
           $text = [System.Text.Encoding]::ASCII.GetString($bytes)
-          foreach ($needle in @("ioctl_send_smu_command", "/api/health")) {
+          foreach ($needle in @("ioctl_send_smu_command", "pbo_service.log")) {
             if ($text.IndexOf($needle) -lt 0) { throw "missing embedded marker: $needle" }
           }
 
