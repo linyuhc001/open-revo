@@ -38,12 +38,17 @@
   .dot.ok { background: var(--status-ok); box-shadow: 0 0 6px var(--status-ok); }
 
   /* ---- nav ---- */
-  .nav { display: flex; gap: 4px; margin-bottom: 14px; border-bottom: 1px solid var(--border-subtle); padding-bottom: 0; }
+  .nav { display: flex; gap: 6px; margin-bottom: 14px; }
   .nav button {
-    background: none; border: none; color: var(--text-dim); font: inherit;
-    padding: 8px 16px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px;
+    background: var(--surface); border: 1px solid var(--border-subtle); color: var(--text-dim);
+    font: inherit; font-size: 13px; padding: 7px 18px; cursor: pointer;
+    border-radius: 8px; transition: background 0.15s, color 0.15s, border-color 0.15s;
   }
-  .nav button.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .nav button:hover { color: var(--text-primary); border-color: #3d4653; background: #1c232e; }
+  .nav button.active {
+    background: #1f6feb33; border-color: #388bfd66; color: var(--accent);
+    font-weight: 600; box-shadow: inset 0 0 0 1px #388bfd22;
+  }
   .page { display: none; }
   .page.active { display: block; }
 
