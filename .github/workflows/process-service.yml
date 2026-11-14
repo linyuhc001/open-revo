@@ -75,7 +75,7 @@ jobs:
           if ($size -lt 200KB) { throw "binary too small: $size bytes" }
           $bytes = [System.IO.File]::ReadAllBytes($exe)
           $text = [System.Text.Encoding]::ASCII.GetString($bytes)
-          foreach ($needle in @("GetExtendedTcpTable", "RmStartSession", "process_service.log")) {
+          foreach ($needle in @("GetExtendedTcpTable", "RmStartSession", "/api/processes")) {
             if ($text.IndexOf($needle) -lt 0) { throw "missing embedded marker: $needle" }
           }
 
