@@ -7,6 +7,9 @@
 //   GET  /api/connections             TCP/UDP endpoint table with owning PID
 //   POST /api/connections/close       {local_addr, local_port, remote_addr?, remote_port?} force TCP close
 //   GET  /api/file/occupiers?path=    Restart Manager: which processes lock this file
+//   GET  /api/port/check?port=N       is a TCP port free on 127.0.0.1 (with owner lookup)
+//   POST /api/config/port             {port} rewrite manifest.json service port and
+//                                     hand over to a fresh instance listening there
 //
 // The host (open-revo daemon) starts/stops this process per manifest.json
 // `service` configuration and spawns it elevated when requested. This binary
@@ -16,6 +19,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -23,6 +27,10 @@ use serde_json::{json, Value};
 use sysinfo::{Pid, ProcessesToUpdate, System};
 
 const LOG_FILE: &str = "process_service.log";
+
+/// Port this instance is actually listening on (reported by /api/health and
+/// used for manifest rewrites). Defaults to the manifest port.
+static CURRENT_PORT: AtomicU16 = AtomicU16::new(18956);
 
 // ---------------------------------------------------------------- logging ---
 
@@ -148,14 +156,17 @@ fn main() {
         st.refresh_all();
     });
 
-    let addr = ("127.0.0.1", port);
-    let listener = match TcpListener::bind(addr) {
+    // Port handover: when /api/config/port spawns a replacement instance the
+    // old process still holds the listener for a few hundred ms, so retry the
+    // bind for up to ~5s before giving up. Cold starts bind on the first try.
+    let listener = match bind_with_retry(port) {
         Ok(l) => l,
         Err(e) => {
-            log(&format!("FATAL: cannot bind {:?}: {}", addr, e));
+            log(&format!("FATAL: cannot bind 127.0.0.1:{}: {}", port, e));
             std::process::exit(1);
         }
     };
+    CURRENT_PORT.store(port, Ordering::Relaxed);
     log(&format!("process-service listening on 127.0.0.1:{}", port));
 
     for stream in listener.incoming() {
@@ -171,6 +182,20 @@ fn main() {
 }
 
 // ---------------------------------------------------------- http plumbing ---
+
+fn bind_with_retry(port: u16) -> std::io::Result<TcpListener> {
+    let mut last: Option<std::io::Error> = None;
+    for _ in 0..25 {
+        match TcpListener::bind(("127.0.0.1", port)) {
+            Ok(l) => return Ok(l),
+            Err(e) => {
+                last = Some(e);
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| std::io::Error::other("bind failed")))
+}
 
 fn handle_client(mut stream: TcpStream) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(8)));
@@ -351,6 +376,7 @@ fn route(method: &str, path: &str, query: &HashMap<String, String>, body: &[u8])
                 "status": "ok",
                 "service": "process-service",
                 "version": env!("CARGO_PKG_VERSION"),
+                "port": CURRENT_PORT.load(Ordering::Relaxed),
                 "uptime_s": state().lock().map(|s| s.started.elapsed().as_secs()).unwrap_or(0),
                 "elevated": is_elevated()
             }),
@@ -363,6 +389,11 @@ fn route(method: &str, path: &str, query: &HashMap<String, String>, body: &[u8])
             Some(p) if !p.trim().is_empty() => api_file_occupiers(p.trim()),
             _ => (400, json!({"error": "missing ?path= parameter"})),
         },
+        ("GET", "/api/port/check") => match query.get("port") {
+            Some(p) => api_port_check(p),
+            None => (400, json!({"error": "missing ?port= parameter"})),
+        },
+        ("POST", "/api/config/port") => with_json_body(body, api_config_port),
         ("GET", "/") => (200, json!({"service": "process-service", "version": env!("CARGO_PKG_VERSION")})),
         _ => (404, json!({"error": format!("no route: {} {}", method, path)})),
     }
@@ -376,6 +407,203 @@ fn with_json_body(body: &[u8], f: fn(&Value) -> (u16, Value)) -> (u16, Value) {
         Ok(v) => f(&v),
         Err(e) => (400, json!({"error": format!("invalid JSON body: {}", e)})),
     }
+}
+
+// ------------------------------------------------------------ port config --
+
+/// Is `port` bindable on 127.0.0.1? If not, report who holds it by looking up
+/// the LISTEN row in the TCP table.
+fn find_listener_owner(port: u16) -> (String, Option<u32>) {
+    unsafe {
+        let mut size: u32 = 0;
+        let rc = GetExtendedTcpTable(
+            std::ptr::null_mut(),
+            &mut size,
+            0,
+            2, // AF_INET
+            TCP_TABLE_OWNER_PID_ALL as i32,
+            0,
+        );
+        if rc == 122 {
+            let mut buf = vec![0u8; size as usize];
+            let rc = GetExtendedTcpTable(
+                buf.as_mut_ptr() as *mut core::ffi::c_void,
+                &mut size,
+                0,
+                2,
+                TCP_TABLE_OWNER_PID_ALL as i32,
+                0,
+            );
+            if rc == 0 {
+                let base = buf.as_mut_ptr() as *const u32;
+                let count = *base as usize;
+                let row_ptr = base.add(1) as *const TcpRow;
+                for i in 0..count {
+                    let r = std::ptr::read(row_ptr.add(i));
+                    if r.state == 2 && port_from_dw(r.local_port) == port {
+                        // r.local_addr 0 == 0.0.0.0 (any interface) wins over a
+                        // specific one, but either way the first match is fine.
+                        let name = pid_names(&[r.pid])
+                            .get(&r.pid)
+                            .cloned()
+                            .unwrap_or_default();
+                        return (name, Some(r.pid));
+                    }
+                }
+            }
+        }
+    }
+    (String::new(), None)
+}
+
+fn api_port_check(port_param: &str) -> (u16, Value) {
+    let Ok(p) = port_param.trim().parse::<u16>() else {
+        return (400, json!({"error": "invalid port"}));
+    };
+    if p == 0 {
+        return (400, json!({"error": "invalid port"}));
+    }
+    let cur = CURRENT_PORT.load(Ordering::Relaxed);
+    if p == cur {
+        // Our own listener holds it — usable by definition.
+        return (200, json!({"port": p, "free": true, "self": true}));
+    }
+    match TcpListener::bind(("127.0.0.1", p)) {
+        Ok(l) => {
+            drop(l);
+            (200, json!({"port": p, "free": true, "self": false}))
+        }
+        Err(_) => {
+            let (owner, pid) = find_listener_owner(p);
+            (
+                200,
+                json!({"port": p, "free": false, "owner": owner, "pid": pid}),
+            )
+        }
+    }
+}
+
+/// Rewrite <plugin>/manifest.json so `service.port`, `service.health_url` and
+/// `service.args` all point at `new_port`. The host re-reads the manifest on
+/// every status/start call, so the change takes effect immediately.
+fn update_manifest_port(new_port: u16) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| format!("current_exe: {}", e))?;
+    // Layout: <plugin>/sidecar/process-service.exe -> <plugin>/manifest.json
+    let manifest_path = exe
+        .parent()
+        .and_then(|d| d.parent())
+        .map(|d| d.join("manifest.json"))
+        .ok_or_else(|| "cannot resolve plugin dir".to_string())?;
+
+    let raw = std::fs::read_to_string(&manifest_path)
+        .map_err(|e| format!("read {}: {}", manifest_path.display(), e))?;
+    let mut v: Value =
+        serde_json::from_str(&raw).map_err(|e| format!("parse manifest: {}", e))?;
+
+    let cur = CURRENT_PORT.load(Ordering::Relaxed);
+    let svc = v
+        .get_mut("service")
+        .and_then(|s| s.as_object_mut())
+        .ok_or_else(|| "manifest has no service object".to_string())?;
+
+    svc.insert("port".into(), json!(new_port));
+
+    if let Some(hu) = svc.get("health_url").and_then(|x| x.as_str()).map(String::from) {
+        let updated = hu.replace(&format!("127.0.0.1:{}", cur), &format!("127.0.0.1:{}", new_port));
+        svc.insert("health_url".into(), json!(updated));
+    }
+
+    // Rebuild args: keep everything except port tokens, then ensure --serve
+    // and the new --port are present.
+    let mut kept: Vec<String> = Vec::new();
+    let old_args: Vec<String> = svc
+        .get("args")
+        .and_then(|a| a.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut skip_next = false;
+    for a in &old_args {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if a == "--port" {
+            skip_next = true;
+            continue;
+        }
+        if a.starts_with("--port=") || a == "--serve" {
+            continue;
+        }
+        kept.push(a.clone());
+    }
+    let mut args = vec!["--serve".to_string()];
+    args.extend(kept);
+    args.push("--port".to_string());
+    args.push(new_port.to_string());
+    svc.insert("args".into(), json!(args));
+
+    let out = serde_json::to_string_pretty(&v)
+        .map_err(|e| format!("serialize manifest: {}", e))?;
+    std::fs::write(&manifest_path, out)
+        .map_err(|e| format!("write {}: {}", manifest_path.display(), e))?;
+    Ok(())
+}
+
+fn api_config_port(v: &Value) -> (u16, Value) {
+    let Some(p) = v.get("port").and_then(|x| x.as_u64()) else {
+        return (400, json!({"error": "missing numeric \"port\""}));
+    };
+    if p == 0 || p > 65535 {
+        return (400, json!({"error": "invalid port"}));
+    }
+    let p = p as u16;
+    let cur = CURRENT_PORT.load(Ordering::Relaxed);
+
+    if p != cur && TcpListener::bind(("127.0.0.1", p)).is_err() {
+        let (owner, pid) = find_listener_owner(p);
+        return (
+            409,
+            json!({
+                "error": format!("port {} is occupied by {} (pid {:?})", p, owner, pid),
+                "free": false,
+            }),
+        );
+    }
+
+    if let Err(e) = update_manifest_port(p) {
+        return (500, json!({"error": format!("manifest update failed: {}", e)}));
+    }
+
+    if p == cur {
+        // Same port: manifest is now consistent, nothing to restart.
+        return (200, json!({"ok": true, "port": p, "restarting": false}));
+    }
+
+    // Handover: spawn a replacement on the new port, then exit. The old
+    // listener is released when this process dies; the replacement retries
+    // its bind for a few seconds to absorb the gap. The host kills our
+    // replacement by exe name on panel close / host exit, so no orphans.
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("process-service.exe"));
+    let spawned = std::process::Command::new(&exe)
+        .args(["--serve", "--port", &p.to_string()])
+        .spawn()
+        .is_ok();
+    if !spawned {
+        return (
+            500,
+            json!({"error": "manifest updated but replacement instance failed to spawn"}),
+        );
+    }
+    // Let the HTTP response flush before terminating.
+    std::thread::spawn(|| {
+        std::thread::sleep(Duration::from_millis(400));
+        std::process::exit(0);
+    });
+    (200, json!({"ok": true, "port": p, "restarting": true}))
 }
 
 // ----------------------------------------------------------- /api/processes --

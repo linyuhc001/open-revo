@@ -1,6 +1,6 @@
 [package]
 name = "process-service"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2021"
 description = "OpenRevo process-manager companion service (processes / connections / file occupancy)"
 

@@ -120,6 +120,7 @@
     <button data-page="proc" class="active">⚙️ 进程</button>
     <button data-page="conn">🔌 连接</button>
     <button data-page="file">📁 文件占用</button>
+    <button data-page="port">🛠 端口</button>
   </div>
 
   <!-- ======================= 进程 ======================= -->
@@ -175,14 +176,38 @@
     </div>
   </div>
 
+  <!-- ======================= 端口 ======================= -->
+  <div class="page" id="page-port">
+    <div class="card" style="max-width:620px">
+      <div class="label"><span>process-service 监听端口</span><span id="portCurrent"></span></div>
+      <div class="toolbar" style="margin-bottom:10px">
+        <input type="text" id="portInput" inputmode="numeric" placeholder="1024 - 65535" style="width:150px" />
+        <button class="btn" id="portCheck">🔍 检测</button>
+        <button class="btn primary" id="portApply" disabled>✔ Apply</button>
+        <span id="portHint" style="font-size:12px"></span>
+      </div>
+      <div style="font-size:11px; color:var(--text-dim); line-height:1.7">
+        点击 Apply 后 process-service 以新端口自动重启，本面板随之切换通信端口；端口写入 manifest.json 持久化，宿主重启后依然生效。恢复默认端口填 <b>18956</b> 再 Apply 即可。
+      </div>
+    </div>
+  </div>
+
   <div class="toast" id="toast"></div>
 
 <script>
 'use strict';
 // ==========================================================================
-// 进程管理 (process-manager) — data source: local sidecar process-service.exe (:18956)
+// 进程管理 (process-manager) — data source: local sidecar process-service.exe
+// The listening port is configurable (端口 tab); it persists in the plugin
+// manifest (source of truth) and is cached here for fast first connect.
 // ==========================================================================
-const API = 'http://127.0.0.1:18956';
+let apiPort = Number(localStorage.getItem('pm-port')) || 18956;
+let API = 'http://127.0.0.1:' + apiPort;
+function setApiPort(p) {
+  apiPort = p;
+  localStorage.setItem('pm-port', String(p));
+  API = 'http://127.0.0.1:' + p;
+}
 const $ = (id) => document.getElementById(id);
 
 // ---------------- toast ----------------
@@ -203,6 +228,8 @@ async function checkHealth() {
     const r = await fetchTimeout(API + '/api/health', 3000);
     const j = await r.json();
     serviceOk = j.status === 'ok';
+    // The service reports its real port; adopt it if we connected via a stale cache.
+    if (serviceOk && j.port && j.port !== apiPort) setApiPort(j.port);
     const el = j.elevated;
     $('svcText').textContent = serviceOk
       ? `process-service 在线 ${el ? '(管理员)' : '(未提权!)'} · v${j.version || ''}`
@@ -450,6 +477,109 @@ $('fileResult').addEventListener('click', async (e) => {
 // Drag & drop removed: WebView2 never exposes full file paths to page JS,
 // and capturing them would require host-side changes. Users type/paste paths.
 
+
+// ==========================================================================
+// PAGE: 端口
+// ==========================================================================
+let portState = null; // last /api/port/check result
+let portCheckTimer = null;
+
+function portHintSet(text, color) {
+  const h = $('portHint');
+  h.textContent = text;
+  h.style.color = color || 'inherit';
+}
+
+function portApplyEnabled() {
+  $('portApply').disabled = !(portState && portState.free);
+}
+
+async function checkPort() {
+  const p = Number($('portInput').value.trim());
+  if (!p || p < 1 || p > 65535) {
+    portState = null;
+    portHintSet('请输入 1-65535 的端口号', 'var(--status-err)');
+    portApplyEnabled();
+    return;
+  }
+  portHintSet('检测中…', 'var(--text-dim)');
+  try {
+    const d = await api('/api/port/check?port=' + p);
+    portState = d;
+    if (d.free) {
+      portHintSet(
+        d.self ? `✅ 端口 ${p} 可用（当前端口）` : `✅ 端口 ${p} 可用`,
+        'var(--status-ok)');
+    } else {
+      const who = d.owner ? `${d.owner}${d.pid ? ' (PID ' + d.pid + ')' : ''}` : '其他进程';
+      portHintSet(`❌ 端口 ${p} 已被 ${who} 占用`, 'var(--status-err)');
+    }
+  } catch (e) {
+    portState = null;
+    portHintSet('检测失败: ' + e.message, 'var(--status-err)');
+  }
+  portApplyEnabled();
+}
+
+async function applyPort() {
+  if (!portState || !portState.free) return;
+  const p = portState.port;
+  $('portApply').disabled = true;
+  portHintSet('重启服务中…', 'var(--text-dim)');
+  try {
+    await api('/api/config/port', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ port: p }) });
+  } catch (e) {
+    portHintSet('应用失败', 'var(--status-err)');
+    toast('应用失败: ' + e.message, true);
+    portApplyEnabled();
+    return;
+  }
+
+  // Old instance hands over to a fresh one on the new port; poll health there.
+  setApiPort(p);
+  serviceOk = false;
+  let ok = false;
+  for (let i = 0; i < 20 && !ok; i++) {
+    await new Promise((r) => setTimeout(r, 400));
+    try {
+      const r = await fetchTimeout(API + '/api/health', 1500);
+      const j = await r.json();
+      if (j.status === 'ok') {
+        ok = true;
+        if (j.port && j.port !== apiPort) setApiPort(j.port);
+      }
+    } catch (_) { /* not up yet */ }
+  }
+
+  if (ok) {
+    $('svcDot').classList.add('ok');
+    $('svcText').textContent = `process-service 在线 · 端口 ${apiPort}`;
+    checkHealth();
+    refreshProc(); refreshConn();
+    portHintSet(`✅ 已切换到端口 ${apiPort}`, 'var(--status-ok)');
+    toast(`process-service 已在端口 ${apiPort} 重新上线`);
+  } else {
+    portHintSet('服务未在新端口上线 — 检查端口后重开面板', 'var(--status-err)');
+    toast('服务重启失败', true);
+    checkHealth();
+  }
+  portApplyEnabled();
+}
+
+$('portCheck').addEventListener('click', checkPort);
+$('portApply').addEventListener('click', applyPort);
+$('portInput').addEventListener('input', () => {
+  clearTimeout(portCheckTimer);
+  portCheckTimer = setTimeout(checkPort, 400);
+});
+$('portInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') checkPort(); });
+// Prefill + check whenever the tab is opened
+document.querySelector('#nav button[data-page="port"]').addEventListener('click', () => {
+  $('portInput').value = apiPort;
+  $('portCurrent').textContent = `当前端口: ${apiPort}`;
+  checkPort();
+});
 
 // ==========================================================================
 // main loop
