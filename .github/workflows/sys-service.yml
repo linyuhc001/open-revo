@@ -41,7 +41,27 @@ jobs:
 
       - name: Build sidecar
         working-directory: plugins_sample/webview2/sys-inspector/sidecar
-        run: cargo build --release
+        shell: pwsh
+        run: |
+          cargo build --release 2>&1 | Tee-Object -FilePath build-output.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # Compiler errors are otherwise invisible to non-admin API clients on
+      # forks; re-emit the first cargo errors as public check annotations.
+      - name: Emit errors as annotations
+        if: failure()
+        working-directory: plugins_sample/webview2/sys-inspector/sidecar
+        shell: pwsh
+        run: |
+          if (Test-Path build-output.log) {
+            $errs = Select-String -Path build-output.log -Pattern "^(error(\[E[0-9]+\])?:|warning: unused)" | Select-Object -First 10
+            foreach ($e in $errs) {
+              Write-Output ("::error::" + $e.Line)
+              Get-Content build-output.log |
+                Select-Object -Skip $e.LineNumber -First 10 |
+                ForEach-Object { Write-Output ("::error::  " + $_) }
+            }
+          }
 
       - name: Verify binary
         working-directory: plugins_sample/webview2/sys-inspector/sidecar
