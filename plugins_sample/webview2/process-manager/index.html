@@ -134,6 +134,9 @@
       <div class="clear-wrap" style="flex:1; min-width:180px"><input type="text" id="procSearch" placeholder="搜索进程名 / PID…" /></div>
       <button class="btn" id="procRefresh">↻ 刷新</button>
       <label style="font-size:12px; color:var(--text-dim); display:flex; align-items:center; gap:4px;">
+        <input type="checkbox" id="procHideSys" /> 隐藏系统
+      </label>
+      <label style="font-size:12px; color:var(--text-dim); display:flex; align-items:center; gap:4px;">
         <input type="checkbox" id="procAuto" checked /> 自动(3s)
       </label>
       <span style="font-size:11px; color:var(--text-dim)" id="procCount"></span>
@@ -308,6 +311,14 @@ let procSort = { key: 'cpu', dir: -1 };
 // procExpanded 保存已展开的 PID，刷新后保持展开状态。
 // 注意 pid 0 是 System Idle Process，子进程映射按真实 ppid 建，不用数字哨兵键。
 const procExpanded = new Set();
+// 「隐藏系统」勾选状态持久化：exe 在 Windows 目录下或无 exe 路径
+// （System Idle Process / System / Registry / Memory Compression 等
+// 内核进程）的视为系统进程。
+let procHideSys = localStorage.getItem('proc-hide-sys') === '1';
+const isSystemProc = (p) => {
+  const exe = (p.exe || '').toLowerCase();
+  return exe === '' || exe.startsWith('c:\\windows');
+};
 
 async function refreshProc() {
   let d;
@@ -319,6 +330,7 @@ async function refreshProc() {
 function renderProc() {
   const kw = $('procSearch').value.trim().toLowerCase();
   let rows = procCache;
+  if (procHideSys) rows = rows.filter((p) => !isSystemProc(p));
   if (kw) rows = rows.filter((p) =>
     p.name.toLowerCase().includes(kw) || String(p.pid).includes(kw));
   const { key, dir } = procSort;
@@ -466,6 +478,13 @@ document.querySelectorAll('#page-proc th[data-sort]').forEach((th) => {
   });
 });
 $('procRefresh').addEventListener('click', refreshProc);
+const procHideSysEl = $('procHideSys');
+procHideSysEl.checked = procHideSys;
+procHideSysEl.addEventListener('change', () => {
+  procHideSys = procHideSysEl.checked;
+  localStorage.setItem('proc-hide-sys', procHideSys ? '1' : '0');
+  renderProc();
+});
 $('procSearch').addEventListener('input', renderProc);
 
 // ==========================================================================
