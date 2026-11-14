@@ -18,9 +18,14 @@ use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU16, Ordering};
 
-const VERSION: &str = "1.0.0";
+const VERSION: &str = "1.1.0";
 const DEFAULT_PORT: u16 = 18955;
+
+/// Port this instance is actually listening on; reported by /api/health and
+/// used when rewriting the manifest on a port change.
+static CURRENT_PORT: AtomicU16 = AtomicU16::new(DEFAULT_PORT);
 
 fn main() {
     let port = parse_port();
@@ -30,13 +35,18 @@ fn main() {
     // found" report is to know which directory the service resolved.
     log(&format!("config dir: {}", config_dir().display()));
 
-    let listener = match TcpListener::bind(("127.0.0.1", port)) {
+    // Port handover: /api/config_port spawns a replacement before the old
+    // process releases the listener, so retry the bind briefly to absorb the
+    // gap. Cold starts succeed on the first attempt.
+    let listener = match bind_with_retry(port) {
         Ok(l) => l,
         Err(e) => {
             log(&format!("bind failed: {e}"));
             std::process::exit(2);
         }
     };
+    CURRENT_PORT.store(port, Ordering::Relaxed);
+    log(&format!("pbo-service listening on 127.0.0.1:{port}"));
 
     // The host launches this at boot with auto_start, before any plugin tab
     // exists — that is what makes "apply my profile on startup" possible now
@@ -76,6 +86,20 @@ fn parse_port() -> u16 {
         i += 1;
     }
     DEFAULT_PORT
+}
+
+fn bind_with_retry(port: u16) -> std::io::Result<TcpListener> {
+    let mut last: Option<std::io::Error> = None;
+    for _ in 0..25 {
+        match TcpListener::bind(("127.0.0.1", port)) {
+            Ok(l) => return Ok(l),
+            Err(e) => {
+                last = Some(e);
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| std::io::Error::other("bind failed")))
 }
 
 // ---- HTTP plumbing ----
@@ -147,6 +171,7 @@ fn route(method: &str, path: &str, body: &[u8]) -> Result<Value, String> {
         return Ok(json!({
             "status": "ok",
             "version": VERSION,
+            "port": CURRENT_PORT.load(Ordering::Relaxed),
             "cpu": smu::cpu_name(),
         }));
     }
@@ -161,6 +186,8 @@ fn route(method: &str, path: &str, body: &[u8]) -> Result<Value, String> {
     };
 
     match path {
+        "/api/port_check" => port_check(&req),
+        "/api/config_port" => config_port(&req),
         "/api/smu_init" => Ok(serde_json::to_value(smu::init_smu()?).unwrap_or(Value::Null)),
         "/api/smu_get_core_layout" => {
             Ok(serde_json::to_value(smu::get_core_layout()).unwrap_or(Value::Null))
@@ -264,6 +291,276 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack
         .windows(needle.len())
         .position(|w| w == needle)
+}
+
+// ---- Port config (custom listening port, persisted in manifest.json) ----
+//
+// Same mechanism as the process-manager plugin: the host re-reads the plugin
+// manifest on every service start/status call, so rewriting `service.port`,
+// `health_url` and `args` there is the single source of truth. Apply spawns a
+// replacement instance on the new port, then this process exits; the host
+// cleans up by exe name on panel close, so the handover leaves no orphans.
+
+fn port_check(req: &Value) -> Result<Value, String> {
+    let p = req
+        .get("port")
+        .and_then(|v| v.as_u64())
+        .ok_or("port missing")?;
+    if p == 0 || p > 65535 {
+        return Err("invalid port".into());
+    }
+    let p = p as u16;
+    let cur = CURRENT_PORT.load(Ordering::Relaxed);
+    if p == cur {
+        // Our own listener holds it — usable by definition.
+        return Ok(json!({ "port": p, "free": true, "self": true }));
+    }
+    match TcpListener::bind(("127.0.0.1", p)) {
+        Ok(_) => Ok(json!({ "port": p, "free": true })),
+        Err(_) => {
+            let owner = winnet::listener_owner(p);
+            Ok(match owner {
+                Some((name, pid)) => json!({ "port": p, "free": false, "owner": name, "pid": pid }),
+                None => json!({ "port": p, "free": false, "owner": "", "pid": null }),
+            })
+        }
+    }
+}
+
+fn config_port(req: &Value) -> Result<Value, String> {
+    let p = req
+        .get("port")
+        .and_then(|v| v.as_u64())
+        .ok_or("port missing")?;
+    if p == 0 || p > 65535 {
+        return Err("invalid port".into());
+    }
+    let p = p as u16;
+    let cur = CURRENT_PORT.load(Ordering::Relaxed);
+
+    if p != cur && TcpListener::bind(("127.0.0.1", p)).is_err() {
+        return Err(format!("端口 {p} 已被占用，无法应用"));
+    }
+
+    update_manifest_port(p)?;
+
+    if p == cur {
+        // Same port: manifest is now consistent, nothing to restart.
+        return Ok(json!({ "ok": true, "port": p, "restarting": false }));
+    }
+
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    std::process::Command::new(&exe)
+        .args(["--serve", "--port", &p.to_string()])
+        .spawn()
+        .map_err(|e| format!("manifest updated but replacement spawn failed: {e}"))?;
+    // Let the HTTP response flush before terminating.
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        std::process::exit(0);
+    });
+    Ok(json!({ "ok": true, "port": p, "restarting": true }))
+}
+
+/// Rewrite <plugin>/manifest.json so `service.port`, `service.health_url` and
+/// `service.args` all point at `new_port`.
+fn update_manifest_port(new_port: u16) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+    // Layout: <plugin>/sidecar/pbo-service.exe -> <plugin>/manifest.json
+    let manifest_path = exe
+        .parent()
+        .and_then(|d| d.parent())
+        .map(|d| d.join("manifest.json"))
+        .ok_or_else(|| "cannot resolve plugin dir".to_string())?;
+
+    let raw = std::fs::read_to_string(&manifest_path)
+        .map_err(|e| format!("read {}: {e}", manifest_path.display()))?;
+    let mut v: Value = serde_json::from_str(&raw).map_err(|e| format!("parse manifest: {e}"))?;
+
+    let cur = CURRENT_PORT.load(Ordering::Relaxed);
+    let svc = v
+        .get_mut("service")
+        .and_then(|s| s.as_object_mut())
+        .ok_or("manifest has no service object")?;
+
+    svc.insert("port".into(), json!(new_port));
+
+    if let Some(hu) = svc
+        .get("health_url")
+        .and_then(|x| x.as_str())
+        .map(String::from)
+    {
+        let updated =
+            hu.replace(&format!("127.0.0.1:{cur}"), &format!("127.0.0.1:{new_port}"));
+        svc.insert("health_url".into(), json!(updated));
+    }
+
+    // Rebuild args: keep everything except port tokens, then ensure --serve
+    // and the new --port are present.
+    let old_args: Vec<String> = svc
+        .get("args")
+        .and_then(|a| a.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let mut kept: Vec<String> = Vec::new();
+    let mut skip_next = false;
+    for a in &old_args {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if a == "--port" {
+            skip_next = true;
+            continue;
+        }
+        if a.starts_with("--port=") || a == "--serve" {
+            continue;
+        }
+        kept.push(a.clone());
+    }
+    let mut args = vec!["--serve".to_string()];
+    args.extend(kept);
+    args.push("--port".to_string());
+    args.push(new_port.to_string());
+    svc.insert("args".into(), json!(args));
+
+    let out =
+        serde_json::to_string_pretty(&v).map_err(|e| format!("serialize manifest: {e}"))?;
+    std::fs::write(&manifest_path, out)
+        .map_err(|e| format!("write {}: {e}", manifest_path.display()))?;
+    Ok(())
+}
+
+// Manual Win32 externs (no windows crate in this crate's deps): who owns a
+// LISTEN socket? iphlpapi's GetExtendedTcpTable finds the PID, kernel32's
+// Toolhelp32Snapshot resolves it to an image name.
+#[cfg(windows)]
+mod winnet {
+    const AF_INET: u32 = 2;
+    const TCP_TABLE_OWNER_PID_ALL: u32 = 5;
+    const TH32CS_SNAPPROCESS: u32 = 0x2;
+    const INVALID_HANDLE_VALUE: isize = -1;
+
+    #[link(name = "iphlpapi")]
+    extern "system" {
+        fn GetExtendedTcpTable(
+            table: *mut core::ffi::c_void,
+            size: *mut u32,
+            order: u32,
+            family: u32,
+            class: u32,
+            reserved: u32,
+        ) -> u32;
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateToolhelp32Snapshot(flags: u32, pid: u32) -> isize;
+        fn Process32FirstW(snapshot: isize, entry: *mut ProcessEntry32W) -> i32;
+        fn Process32NextW(snapshot: isize, entry: *mut ProcessEntry32W) -> i32;
+        fn CloseHandle(handle: isize) -> i32;
+    }
+
+    #[repr(C)]
+    struct ProcessEntry32W {
+        size: u32,
+        usage: u32,
+        process_id: u32,
+        default_heap: usize,
+        module_id: u32,
+        threads: u32,
+        parent_process_id: u32,
+        base_priority: i32,
+        flags: u32,
+        exe_file: [u16; 260],
+    }
+
+    /// First LISTEN row bound to `port` -> (image name, pid).
+    pub fn listener_owner(port: u16) -> Option<(String, u32)> {
+        unsafe {
+            let mut size: u32 = 0;
+            let rc = GetExtendedTcpTable(
+                std::ptr::null_mut(),
+                &mut size,
+                0,
+                AF_INET,
+                TCP_TABLE_OWNER_PID_ALL,
+                0,
+            );
+            if rc != 122 {
+                return None; // ERROR_INSUFFICIENT_BUFFER expected on probe
+            }
+            let mut buf = vec![0u8; size as usize];
+            let rc = GetExtendedTcpTable(
+                buf.as_mut_ptr() as *mut core::ffi::c_void,
+                &mut size,
+                0,
+                AF_INET,
+                TCP_TABLE_OWNER_PID_ALL,
+                0,
+            );
+            if rc != 0 {
+                return None;
+            }
+            let base = buf.as_mut_ptr() as *const u32;
+            let count = *base as usize;
+            // MIB_TCPROW_OWNER_PID: state, localAddr, localPort, remoteAddr,
+            // remotePort, owningPid — six u32s per row.
+            let words = std::slice::from_raw_parts(base.add(1), count * 6);
+            let mut pid: Option<u32> = None;
+            for i in 0..count {
+                let r = &words[i * 6..i * 6 + 6];
+                if r[0] == 2 {
+                    // TCP_STATE_LISTEN; ports are in network byte order.
+                    let lp = (((r[2] >> 8) & 0xff) | ((r[2] & 0xff) << 8)) as u16;
+                    if lp == port {
+                        pid = Some(r[5]);
+                        break;
+                    }
+                }
+            }
+            let pid = pid?;
+            let name = process_image_name(pid)?;
+            Some((name, pid))
+        }
+    }
+
+    fn process_image_name(pid: u32) -> Option<String> {
+        unsafe {
+            let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if snap == INVALID_HANDLE_VALUE || snap == 0 {
+                return None;
+            }
+            let mut entry: ProcessEntry32W = std::mem::zeroed();
+            entry.size = std::mem::size_of::<ProcessEntry32W>() as u32;
+            let mut found: Option<String> = None;
+            if Process32FirstW(snap, &mut entry) != 0 {
+                loop {
+                    if entry.process_id == pid {
+                        let len = entry
+                            .exe_file
+                            .iter()
+                            .position(|&c| c == 0)
+                            .unwrap_or(entry.exe_file.len());
+                        found = Some(String::from_utf16_lossy(&entry.exe_file[..len]));
+                        break;
+                    }
+                    if Process32NextW(snap, &mut entry) == 0 {
+                        break;
+                    }
+                }
+            }
+            CloseHandle(snap);
+            found
+        }
+    }
+}
+
+#[cfg(not(windows))]
+mod winnet {
+    pub fn listener_owner(_port: u16) -> Option<(String, u32)> {
+        None
+    }
 }
 
 // ---- Config dir / profile ----

@@ -423,6 +423,22 @@
   </div>
 
   <div class="section">
+    <h2>服务端口 <span class="tag">Listen Port</span></h2>
+    <div class="row">
+      <label>pbo-service 监听</label>
+      <input type="number" id="inputPort" value="" min="1024" max="65535" step="1" />
+      <button id="btnCheckPort" class="secondary">检测</button>
+      <button id="btnApplyPort" disabled>Apply</button>
+      <span class="hint" id="portHint">输入端口号后自动检测占用</span>
+    </div>
+    <div class="row">
+      <span class="hint" style="line-height:1.7">
+        Apply 后 pbo-service 以新端口自动重启，本页面随之切换通信端口；端口写入 manifest.json 持久化，宿主重启后依然生效。恢复默认填 <b>18955</b> 再 Apply。
+      </span>
+    </div>
+  </div>
+
+  <div class="section">
     <h2>操作日志</h2>
     <div class="console" id="consoleBox">[系统] 初始化中…</div>
   </div>
@@ -437,8 +453,16 @@
     // which forced the feature into src-tauri. The service below ships inside
     // the plugin and the host only launches it, so nothing here depends on
     // host source. Endpoint names match the old command names 1:1.
-    const SERVICE_PORT = 18955;
-    const SERVICE_BASE = `http://127.0.0.1:${SERVICE_PORT}/api`;
+    // The listening port is configurable in the 服务端口 card below; the
+    // manifest is the source of truth and this cache just speeds up first
+    // connect. /api/health reports the real port and re-syncs the cache.
+    let SERVICE_PORT = Number(localStorage.getItem('pbo-port')) || 18955;
+    let SERVICE_BASE = `http://127.0.0.1:${SERVICE_PORT}/api`;
+    function setServicePort(p) {
+      SERVICE_PORT = p;
+      localStorage.setItem('pbo-port', String(p));
+      SERVICE_BASE = `http://127.0.0.1:${p}/api`;
+    }
 
     async function rpc(command, args = {}) {
       let res;
@@ -519,12 +543,21 @@
       const deadline = Date.now() + timeoutMs;
       let lastErr = null;
       while (Date.now() < deadline) {
-        try {
-          const res = await fetch(`http://127.0.0.1:${SERVICE_PORT}/api/health`, { cache: 'no-store' });
-          if (res.ok) return await res.json();
-          lastErr = new Error('health HTTP ' + res.status);
-        } catch (e) {
-          lastErr = e;
+        // Try the cached port first, then the manifest default — covers a
+        // stale cache after the port was reset externally.
+        for (const p of [...new Set([SERVICE_PORT, 18955])]) {
+          try {
+            const res = await fetch(`http://127.0.0.1:${p}/api/health`, { cache: 'no-store' });
+            if (res.ok) {
+              const j = await res.json();
+              if (p !== SERVICE_PORT) setServicePort(p);
+              if (j.port && j.port !== SERVICE_PORT) setServicePort(j.port);
+              return j;
+            }
+            lastErr = new Error('health HTTP ' + res.status);
+          } catch (e) {
+            lastErr = e;
+          }
         }
         await new Promise(r => setTimeout(r, 600));
       }
@@ -534,9 +567,10 @@
     async function initSmu() {
       let info = null;
       try {
-        log('正在连接 PBO 伴随服务 (127.0.0.1:18955)…');
+        log(`正在连接 PBO 伴随服务 (127.0.0.1:${SERVICE_PORT})…`);
         const health = await waitForService();
         if (health && health.cpu) log(`[+] 服务已就绪 · ${health.cpu}`);
+        document.getElementById('inputPort').value = SERVICE_PORT;
         log('正在初始化 SMU 链路 (PawnIO → RyzenSMU.bin → RSMU)…');
         info = await rpc('smu_init');
         STATE.smuInfo = info;
@@ -1131,6 +1165,89 @@
       } catch (e) {
         log('[-] Scalar 失败: ' + e);
       }
+    });
+
+    // ---- 服务端口 (custom listening port) ----
+    let portState = null;
+    let portCheckTimer = null;
+    function portHintSet(text, color) {
+      const h = document.getElementById('portHint');
+      h.textContent = text;
+      h.style.color = color || '';
+    }
+    function updatePortApply() {
+      document.getElementById('btnApplyPort').disabled = !(portState && portState.free);
+    }
+    async function checkPort() {
+      const p = parseInt(document.getElementById('inputPort').value, 10);
+      if (!p || p < 1 || p > 65535) {
+        portState = null;
+        portHintSet('请输入 1-65535 的端口号', 'var(--status-error)');
+        updatePortApply();
+        return;
+      }
+      portHintSet('检测中…', 'var(--text-dim)');
+      try {
+        const d = await rpc('port_check', { port: p });
+        portState = d;
+        if (d.free) {
+          portHintSet(d.self ? `✅ 端口 ${p} 可用（当前端口）` : `✅ 端口 ${p} 可用`, 'var(--status-ok)');
+        } else {
+          const who = d.owner ? `${d.owner}${d.pid ? ' (PID ' + d.pid + ')' : ''}` : '其他进程';
+          portHintSet(`❌ 端口 ${p} 已被 ${who} 占用`, 'var(--status-error)');
+        }
+      } catch (e) {
+        portState = null;
+        portHintSet('检测失败: ' + e.message, 'var(--status-error)');
+      }
+      updatePortApply();
+    }
+    async function applyPort() {
+      if (!portState || !portState.free) return;
+      const p = portState.port;
+      document.getElementById('btnApplyPort').disabled = true;
+      portHintSet('重启服务中…', 'var(--text-dim)');
+      log(`[i] 正在将 pbo-service 切换到端口 ${p}…`);
+      try {
+        await rpc('config_port', { port: p });
+      } catch (e) {
+        portHintSet('应用失败', 'var(--status-error)');
+        log('[-] 端口切换失败: ' + e);
+        updatePortApply();
+        return;
+      }
+      // Old instance hands over to a fresh one on the new port; poll health there.
+      setServicePort(p);
+      let ok = false;
+      for (let i = 0; i < 20 && !ok; i++) {
+        await new Promise(r => setTimeout(r, 400));
+        try {
+          const res = await fetch(`http://127.0.0.1:${SERVICE_PORT}/api/health`, { cache: 'no-store' });
+          if (res.ok) {
+            const j = await res.json();
+            if (j.port && j.port !== SERVICE_PORT) setServicePort(j.port);
+            ok = true;
+          }
+        } catch (_) { /* not up yet */ }
+      }
+      if (ok) {
+        portHintSet(`✅ 已切换到端口 ${SERVICE_PORT}`, 'var(--status-ok)');
+        document.getElementById('inputPort').value = SERVICE_PORT;
+        log(`[+] pbo-service 已在端口 ${SERVICE_PORT} 重新上线`);
+      } else {
+        portHintSet('服务未在新端口上线 — 重开面板重试', 'var(--status-error)');
+        log('[-] 端口切换后服务未响应');
+      }
+      updatePortApply();
+    }
+    document.getElementById('btnCheckPort').addEventListener('click', checkPort);
+    document.getElementById('btnApplyPort').addEventListener('click', applyPort);
+    document.getElementById('inputPort').addEventListener('input', () => {
+      clearTimeout(portCheckTimer);
+      portCheckTimer = setTimeout(checkPort, 400);
+    });
+    document.getElementById('inputPort').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') checkPort();
     });
 
     // ---- Boot ----
