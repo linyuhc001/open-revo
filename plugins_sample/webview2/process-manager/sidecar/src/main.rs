@@ -15,7 +15,7 @@
 // `service` configuration and spawns it elevated when requested. This binary
 // never touches host code.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -39,6 +39,9 @@ struct AppState {
     last_activity: Instant,
     /// True while the background ticker is paused because no page is polling.
     dormant: bool,
+    /// PIDs owning at least one visible top-level window — the Task-Manager
+    /// notion of "Apps". Recomputed together with the process snapshot.
+    gui: HashSet<u32>,
 }
 
 impl AppState {
@@ -50,6 +53,7 @@ impl AppState {
             started: Instant::now(),
             last_activity: Instant::now(),
             dormant: false,
+            gui: visible_window_pids(),
         }
     }
 
@@ -58,6 +62,7 @@ impl AppState {
     // fixed 1s cadence below is what makes the numbers stable.
     fn refresh_all(&mut self) {
         self.sys.refresh_processes(ProcessesToUpdate::All, true);
+        self.gui = visible_window_pids();
     }
 
     fn trim_working_set() {
@@ -74,6 +79,45 @@ static STATE: std::sync::OnceLock<Mutex<AppState>> = std::sync::OnceLock::new();
 
 fn state() -> &'static Mutex<AppState> {
     STATE.get_or_init(|| Mutex::new(AppState::new()))
+}
+
+// --------------------------------------------------- visible window probing --
+
+// Task-Manager-style "Apps": processes owning at least one visible top-level
+// window. EnumWindows over ~100 top-level windows costs microseconds, so this
+// rides along with the 1s refresh cadence without measurably waking the CPU.
+fn visible_window_pids() -> HashSet<u32> {
+    #[cfg(windows)]
+    {
+        extern "system" fn collect(
+            hwnd: windows_sys::Win32::Foundation::HWND,
+            lparam: isize,
+        ) -> i32 {
+            unsafe {
+                use windows_sys::Win32::UI::WindowsAndMessaging::{
+                    GetWindowThreadProcessId, IsWindowVisible,
+                };
+                if IsWindowVisible(hwnd) != 0 {
+                    let mut pid: u32 = 0;
+                    GetWindowThreadProcessId(hwnd, &mut pid);
+                    if pid != 0 {
+                        (*(lparam as *mut HashSet<u32>)).insert(pid);
+                    }
+                }
+            }
+            1 // keep enumerating
+        }
+        let mut set: HashSet<u32> = HashSet::new();
+        unsafe {
+            use windows_sys::Win32::UI::WindowsAndMessaging::EnumWindows;
+            EnumWindows(Some(collect), &mut set as *mut _ as isize);
+        }
+        set
+    }
+    #[cfg(not(windows))]
+    {
+        HashSet::new()
+    }
 }
 
 // ------------------------------------------------------------------ main ----
@@ -604,6 +648,7 @@ fn api_processes() -> (u16, Value) {
             "cpu": p.cpu_usage() / nb_cpus,
             "mem": p.memory(),
             "exe": p.exe().map(|e| e.to_string_lossy()).unwrap_or_default(),
+            "app": st.gui.contains(&pid.as_u32()),
         }));
     }
 
