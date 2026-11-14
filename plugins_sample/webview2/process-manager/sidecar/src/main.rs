@@ -779,7 +779,8 @@ fn save_schedule(tasks: &[Value]) {
 
 #[cfg(windows)]
 fn local_now() -> (String, String) {
-    use windows_sys::Win32::System::SystemInformation::{GetLocalTime, SYSTEMTIME};
+    use windows_sys::Win32::Foundation::SYSTEMTIME;
+    use windows_sys::Win32::System::SystemInformation::GetLocalTime;
     let mut st = SYSTEMTIME::default();
     unsafe { GetLocalTime(&mut st) };
     (
@@ -911,7 +912,7 @@ fn spawn_scheduler() {
             Err(_) => continue,
         };
         let mut changed = false;
-        tasks.retain(|t| {
+        tasks.retain_mut(|t| {
             let mode = t.get("mode").and_then(|x| x.as_str()).unwrap_or("");
             let time = t.get("time").and_then(|x| x.as_str()).unwrap_or("");
             if time.len() != 5 {
@@ -927,8 +928,7 @@ fn spawn_scheduler() {
                 "once" => {
                     let date = t.get("date").and_then(|x| x.as_str()).unwrap_or("");
                     !date.is_empty()
-                        && (date.as_str() < today.as_str()
-                            || (date == today.as_str() && time <= hhmm.as_str()))
+                        && (date < today.as_str() || (date == today.as_str() && time <= hhmm.as_str()))
                 }
                 _ => false,
             };
