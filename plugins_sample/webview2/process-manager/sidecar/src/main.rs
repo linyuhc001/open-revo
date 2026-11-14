@@ -26,39 +26,9 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use sysinfo::{Pid, ProcessesToUpdate, System};
 
-const LOG_FILE: &str = "process_service.log";
-
 /// Port this instance is actually listening on (reported by /api/health and
 /// used for manifest rewrites). Defaults to the manifest port.
 static CURRENT_PORT: AtomicU16 = AtomicU16::new(18956);
-
-// ---------------------------------------------------------------- logging ---
-
-fn log_path() -> PathBuf {
-    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("process-service.exe"));
-    let dir = exe.parent().map(|p| p.to_path_buf()).unwrap_or_default();
-    let cand = dir.join(LOG_FILE);
-    // Probing writability once at startup; %APPDATA% plugin dirs are writable.
-    if std::fs::OpenOptions::new().create(true).append(true).open(&cand).is_ok() {
-        cand
-    } else {
-        std::env::temp_dir().join(LOG_FILE)
-    }
-}
-
-fn log(msg: &str) {
-    use std::fmt::Write as _;
-    let path = log_path();
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let mut line = String::new();
-        let _ = writeln!(line, "[{}] {}", now, msg);
-        let _ = f.write_all(line.as_bytes());
-    }
-}
 
 // ------------------------------------------------------------ app state -----
 
@@ -161,13 +131,9 @@ fn main() {
     // bind for up to ~5s before giving up. Cold starts bind on the first try.
     let listener = match bind_with_retry(port) {
         Ok(l) => l,
-        Err(e) => {
-            log(&format!("FATAL: cannot bind 127.0.0.1:{}: {}", port, e));
-            std::process::exit(1);
-        }
+        Err(_) => std::process::exit(1),
     };
     CURRENT_PORT.store(port, Ordering::Relaxed);
-    log(&format!("process-service listening on 127.0.0.1:{}", port));
 
     for stream in listener.incoming() {
         match stream {
@@ -176,7 +142,7 @@ fn main() {
                 // while a slow /api/processes refresh is in flight.
                 std::thread::spawn(move || handle_client(s));
             }
-            Err(e) => log(&format!("accept error: {}", e)),
+            Err(_) => continue,
         }
     }
 }
@@ -238,10 +204,7 @@ fn handle_client(mut stream: TcpStream) {
     }
     let started = Instant::now();
     let (status, value) = route(method.as_str(), path.as_str(), &query, &req.2);
-    let ms = started.elapsed().as_millis();
-    if ms > 800 || status != 200 {
-        log(&format!("{} {} -> {} ({} ms)", method, path, status, ms));
-    }
+    let _ = started.elapsed();
     respond(&mut stream, status, &value);
 }
 
