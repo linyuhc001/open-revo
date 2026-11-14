@@ -11,6 +11,22 @@ pub fn register(window: &MainWindow, ui_weak: slint::Weak<MainWindow>) {
     });
 
     let ui_cb = ui_weak.clone();
+    window.on_bld_fan_lock_toggled(move |rpm| {
+        ipc::send_action_to_host("toggle_bld_fan_lock", serde_json::json!({ "rpm": rpm }));
+        if let Some(ui) = ui_cb.upgrade() {
+            ui.set_fan_boost(!ui.get_fan_boost());
+        }
+    });
+
+    let ui_cb = ui_weak.clone();
+    window.on_bld_fan_rpm_changed(move |rpm| {
+        if let Some(ui) = ui_cb.upgrade() {
+            ui.set_bld_fan_rpm(rpm);
+        }
+        ipc::send_action_to_host("set_bld_fan_rpm", serde_json::json!({ "rpm": rpm }));
+    });
+
+    let ui_cb = ui_weak.clone();
     window.on_camera_toggled(move || {
         ipc::send_action_to_host("toggle_camera", serde_json::json!({}));
         if let Some(ui) = ui_cb.upgrade() {
@@ -105,7 +121,12 @@ pub fn register(window: &MainWindow, ui_weak: slint::Weak<MainWindow>) {
         } else {
             false
         };
-        ipc::send_action_to_host("toggle_oem", serde_json::json!({ "take_over": !cur_running }));
+        // When OEM is currently running (cur_running=true), user clicks "接管官方控制台", take_over must be true.
+        // When OEM is currently stopped/taken over (cur_running=false), user clicks "恢复官方控制台", take_over must be false.
+        ipc::send_action_to_host("toggle_oem", serde_json::json!({ "take_over": cur_running }));
+        if let Some(ui) = ui_oem.upgrade() {
+            ui.set_oem_running(!cur_running);
+        }
     });
 
     // GPU Boost Handlers

@@ -47,7 +47,10 @@
         "protocol": "TongfangDirectEc",
         "limit_reg": 1977,
         "gate_reg": 1987,
-        "probe_order": [4, 5],
+        "probe_order": [
+          4,
+          5
+        ],
         "keepalive_interval_ms": 4000,
         "status_reg": 1858,
         "status_bit": 2

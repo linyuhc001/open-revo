@@ -52,8 +52,11 @@
 | `target_slot` / `slot` | `string` | 条件必填 | `slot` | 挂载的目标宿主插槽代号（如 `"power.hardware_limit"`） |
 | `slot_height` / `slotHeight` | `string` | 可选 | `slot` | 微插槽高度约束（如 `"36px"` 或 `"54px"`，默认 `"54px"`） |
 | `theme_css` | `string` | `skin`可选 | `skin` | 皮肤样式表入口相对路径（默认 `"theme.css"`） |
+| `tokens` / `slint_tokens` | `object` | 可选 | `skin` | **【Slint 原生全局 Token 字典】**声明通用设计 Token（键值如 `bg_root`, `surface_card`, `accent_brand`, `radius_md`） |
+| `tokens_light` / `tokens_dark` / `tokens_mono` | `object` | 可选 | `skin` | **【三态色调独立声明】**单皮肤包分别声明浅色奶油、深焙暗黑、版画黑白三套独立 Token，随顶栏主题按钮实时切换 |
 | `background_css` | `string` | `background`可选 | `background` | 背景样式表入口相对路径（默认 `"background.css"`，回退 `"theme.css"`） |
-| `image` / `wallpaper` | `string` | 可选 | `background` | **【零代码壁纸】**直接指定图片路径（如 `"bg.png"`），无需编写一行 CSS，宿主自动合成全套适配样式 |
+| `image` / `wallpaper` | `string` | 可选 | `background`/`skin` | **【零代码壁纸】**直接指定图片路径（如 `"bg.png"`），无需编写一行 CSS，宿主自动合成全套适配样式并注入 Slint 与 WebView2 |
+| `bg_image_opacity` / `opacity` | `number` | 可选 | `background`/`skin` | 背景壁纸渲染不透明度（范围 `0.05 ~ 1.0`，默认 `0.15`） |
 | `entry` | `string` | 可选 | `widget`/`tab`/`service` | 默认入口相对路径，如 `index.html` 或 `welcome.rhai` |
 | `tab` | `object` | 可选 | 全类型 | **【控制台专属页签出口】**声明插件在控制台工作区的 Tab 入口（含 `entry`、`type`、`title`、`icon`，支持 WebView2 与 Slint 独立指定） |
 | `widget` | `object` | 可选 | 全类型 | **【桌面独立悬浮视窗出口】**声明插件在桌面的独立挂件（含 `entry`、`type`、`window`，支持 WebView2 与 Slint 独立指定） |
@@ -89,6 +92,7 @@
 | `transparent` | `boolean` | `true` | 是否启用全透明 Alpha 通道（异形桌宠设为 `true`，复杂实色工具面板设为 `false`） |
 | `always_on_top` | `boolean` | `true` | 是否保持在其他软件窗口上方置顶（大型复杂工具通常设为 `false`） |
 | `skip_taskbar` | `boolean` | `true` | 是否在 Windows 系统任务栏跳过显示（设为 `false` 可在任务栏显示独立图标，支持 `Alt+Tab` 秒切） |
+| `click_through` | `boolean` | `false` | **【鼠标点击穿透】**：设为 `true` 即可让挂件初始具备全穿透特性（游戏与桌面点击直接透过挂件）。挂件运行时支持按住 `Ctrl` 临时唤醒拖拽摆放，或在托盘菜单与界面中随时切换锁定 |
 
 ### `telemetry` 硬件遥测按需声明子对象 (On-Demand Telemetry Contract)
 
@@ -154,6 +158,126 @@
 
 > 💡 **Tab 插件一键弹出独立视窗 (Detachable Pop-out Tab)**：
 > 无论插件被定义为 `widget` 还是 `tab`，宿主均在主界面选项卡右上角原生提供**【独立视窗运行】**按钮。用户既能在控制中心中内嵌使用，也能随时一键弹出为独立多屏调优窗口，零代码改动即可双模共存！
+
+### `skin` 皮肤设计 Token 与壁纸配置表 (Slint & WebView2 Dual Theming)
+
+对于 `plugin_type: "skin"`，除了通过 `theme.css` 编写标准样式，还可直接在 `manifest.json` 中配置原生 Token 与背景参数，微内核将全量映射至 Slint 原生主窗口、Slint 原生 OSD 悬浮窗及 WebView2 界面：
+
+```json
+{
+  "theme_css": "theme.css",
+  "image": "assets/wallpaper.webp",
+  "bg_image_opacity": 0.18,
+  "tokens_light": {
+    "bg_root": "#F5EEDA",
+    "surface_card": "#FFFCF3",
+    "text_primary": "#35291C",
+    "accent_brand": "#D9772F",
+    "radius_md": 12.0
+  },
+  "tokens_dark": {
+    "bg_root": "#332B24",
+    "surface_card": "#42382E",
+    "text_primary": "#F7F0E5",
+    "accent_brand": "#E79A50",
+    "radius_md": 12.0
+  },
+  "tokens_mono": {
+    "bg_root": "#1F1D1A",
+    "surface_card": "#2E2A27",
+    "text_primary": "#FAF6F0",
+    "accent_brand": "#FAF6F0",
+    "radius_md": 12.0
+  }
+}
+```
+
+| 子属性 | 类型 | 默认值 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `tokens_light` | `object` | 可选 | 浅色基准 Token 字典（随顶栏切换为 Light 浅色态时优先覆写） |
+| `tokens_dark` | `object` | 可选 | 暗色基准 Token 字典（随顶栏切换为 Dark 深色态时优先覆写） |
+| `tokens_mono` | `object` | 可选 | 极简黑白 Token 字典（随顶栏切换为 Mono 版画黑白态时优先覆写） |
+| `tokens` / `slint_tokens` | `object` | 可选 | 通用单态 Token 字典（若未区分多态，将作为全局默认基准） |
+| `image` / `wallpaper` | `string` | 可选 | 皮肤自带的背景贴图相对路径（支持 `.png`, `.jpg`, `.webp`） |
+| `bg_image_opacity` | `number` | `0.15` | 背景贴图不透明度（范围 `0.05 ~ 1.0`） |
+
+### `watchers` 声明式自动化规则子对象详细配置表 (Universal Watcher & Trigger Hub)
+
+> 💡 **0 MB 内存、0 Webview 开销常驻自愈**：
+> 凡是需要开机常驻、切页保活、电源重连自愈或硬件门控断言的逻辑，**严禁在前端 UI 中开 `setInterval` 死循环**。
+> 开发者只需在 `manifest.json` 的 `watchers` 数组中声明规则，微内核启动阶段（`bootstrap_enabled_plugins`）即会自动接管调度！即使控制台重启且用户未点击该插件，微内核也会在后台全自动运转。
+>
+> 💡 **动态注册持久化支持**：
+> 若在前端通过 `window.OpenRevo.registerWatcher(...)` 动态注册规则，宿主微内核会自动将其持久化到 `custom_watchers.json`，重启宿主后由内核自动恢复，彻底解决“重启后必须手动进插件触发”的问题。
+
+```json
+"watchers": [
+  {
+    "id": "battery-limit-ac-reconnect-guard",
+    "name": "微内核电源重连限充断言守护",
+    "enabled": true,
+    "cooldown_ms": 3000,
+    "condition": {
+      "type": "power_event",
+      "event": "ac_connected"
+    },
+    "actions": [
+      {
+        "action": "set_battery_limit",
+        "limit": 80
+      }
+    ]
+  },
+  {
+    "id": "periodic-ec-keepalive",
+    "name": "周期性门控断言",
+    "enabled": true,
+    "cooldown_ms": 0,
+    "condition": {
+      "type": "interval",
+      "every_ms": 4000
+    },
+    "actions": [
+      {
+        "action": "raw_ec_write",
+        "address": "0x07C3",
+        "value": 4
+      }
+    ]
+  }
+]
+```
+
+#### Watcher 基础属性
+| 属性名 | 类型 | 默认值 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `id` | `string` | **必填** | 规则全局唯一标识符（建议带插件前缀） |
+| `name` | `string` | **必填** | 规则的人类可读名称，用于日志追踪与 OSD 提示 |
+| `enabled` | `boolean` | `true` | 是否启用该规则 |
+| `cooldown_ms` | `number` | `5000` | 触发冷却锁定时间（毫秒），防止边界临界值抖动高频触发 |
+| `when` / `condition` | `object` | **必填** | 规则触发条件判定对象（见下方条件类型表） |
+| `actions` | `object[]` | `[]` | 触发后按顺序执行的微内核动作序列（见下方动作类型表） |
+
+#### `condition` 条件判定类型表
+| 类型 (`type`) | 字段参数 | 说明 |
+| :--- | :--- | :--- |
+| `"interval"` | `every_ms: number` | **【微内核周期定时断言】**以固定周期（毫秒，>=500ms）在后台定时触发，用于硬件心跳保活与门控自愈，无需唤醒任何前端视窗 |
+| `"power_event"` | `event: string` | **【电源拓扑事件】**支持 `"ac_connected"`（适配器插入）、`"ac_disconnected"`（拔出供电）、`"screen_on"`、`"screen_off"` |
+| `"telemetry"` | `power_mode`, `power_mode_in`, `cpu_temp_gt/gte/lt`, `gpu_temp_gt/gte`, `is_dc_online`, `fan_boost`, `battery_level_gt/gte/lt/lte`, `is_charging`, `is_ac_online` | **【动态硬件遥测条件】**当微内核硬件遥测采样满足设定阈值时触发 |
+| `"foreground_process"`| `targets: string[]`, `trigger_on: "enter" \| "exit" \| "both"` | **【前台进程感知】**当匹配的游戏或应用程序进程进入或退出前台焦点时触发 |
+| `"raw_ec_diff"` | `address: u16 \| string`, `mask?: u8 \| string` | **【底层寄存器值变动追踪】**监听指定 EC 寄存器指定掩码位发生跳变时触发 |
+
+#### `actions` 执行动作类型表
+| 动作 (`action`) | 参数 | 说明 |
+| :--- | :--- | :--- |
+| `"set_battery_limit"` | `limit: number` | **【硬件限充设置】**安全调整硬件电池充电阈值（`1 ~ 100`），调用微内核原生驱动完成协议对齐与门控锁定 |
+| `"set_power_mode"` | `mode: number` | **【性能模式切换】**`1`-办公, `2`-均衡, `3`-狂暴, `4`-极客自定义 |
+| `"set_fan_boost"` | `enable: boolean` | **【一键强冷】**切换强冷开启/关闭 |
+| `"raw_ec_write"` | `address: u16 \| string`, `value: u8 \| string` | **【EC 安全写入】**写入受微内核防爆盾（Blast Shield）受控保护的指定物理寄存器 |
+| `"raw_ec_modify_mask"`| `address: u16 \| string`, `mask: u8 \| string`, `value: boolean` | **【EC 掩码置位】**原子性修改特定 EC 控制位，保持其他位不变 |
+| `"delay_ms"` | `duration: number` | **【微内核延迟】**执行时在动作序列中插入延时（毫秒） |
+| `"notify_osd"` | `title: string`, `message: string` | **【OSD 悬浮通知】**在屏幕上方弹出原生机甲风格 OSD 提示框 |
+| `"plugin_event"` | `event_name: string`, `payload: object` | **【全局广播事件】**向公频事件总线派发自定义事件，供其他前端或挂件消费 |
 
 ---
 

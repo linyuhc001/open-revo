@@ -317,6 +317,7 @@ pub fn sync_slint_display_state() {
         "color_profiles_list": profiles_list,
         "color_profiles_ids": profiles_ids,
         "monitor_name": monitor_name,
+        "brightness": crate::system::display::get_brightness().unwrap_or(76),
         "refresh_rate": curr_hz,
         "rates_row1": rates_row1,
         "rates_row2": rates_row2,
@@ -399,6 +400,17 @@ pub fn sync_slint_switches_state() {
     let switches = crate::system::device_switches::get_switches_state();
     let cfg = crate::system::config::load_config();
     let model_alias = crate::system::model_engine::get_active_alias();
+    let manifest = crate::hal::declarative::load_matched_manifest();
+    let is_bld_fan_lock = manifest
+        .as_ref()
+        .and_then(|m| m.capabilities.fan_boost_mode.as_deref())
+        == Some("direct_rpm_clamp");
+    let clamped_rpm = crate::driver::bld_driver_mgr::get_bld_fan_clamp_rpm();
+    let bld_fan_rpm = if clamped_rpm >= 2200 {
+        clamped_rpm
+    } else {
+        super::actions::switches::get_slint_bld_target_rpm()
+    };
     let flags = crate::driver::wmi_ec::get_hardware_support_flags();
     send_slint_ipc_message(serde_json::json!({
         "action": "sync_state",
@@ -413,11 +425,14 @@ pub fn sync_slint_switches_state() {
         "wifi_enabled": switches.wifi,
         "bt_enabled": switches.bluetooth,
         "fan_boost": cfg.fan_boost,
+        "is_bld_fan_lock": is_bld_fan_lock,
+        "bld_fan_rpm": bld_fan_rpm,
         "power_mode": cfg.power_mode,
         "is_dc_online": crate::commands::power_cmd::is_dc_round_plugged_in(),
         "is_thin_and_light": crate::commands::power_cmd::is_thin_and_light_or_pure_igpu(),
         "unlock_battery_limit": cfg.unlock_battery_power_limit,
         "theme_mode": cfg.theme_mode,
+        "theme_tokens": serde_json::to_value(crate::system::slint_theme::resolve_slint_theme(&cfg)).unwrap_or_default(),
         "model_name": &model_alias,
         "custom_status_text": &model_alias,
         "oem_installed": crate::system::process::is_oem_installed(),
@@ -433,18 +448,40 @@ pub fn sync_slint_switches_state() {
 pub fn sync_slint_lighting_state() {
     let lm = crate::driver::ite_lighting::get_global_lighting();
     let st = lm.state.lock().clone();
+    if st.kb_engine == "custom" {
+        let _ = super::actions::lighting::ensure_active_custom_script_loaded(&st.custom_script_id);
+    }
+    let scripts = super::actions::lighting::load_parsed_brfx_scripts();
+    let fx = crate::driver::custom_fx_engine::get_custom_fx_engine();
+    let active_script = scripts
+        .iter()
+        .find(|s| s.id == st.custom_script_id)
+        .or_else(|| scripts.first());
+    let custom_speed = fx
+        .get_tuning_speed()
+        .unwrap_or_else(|| active_script.map(|s| s.default_speed).unwrap_or(1.2));
+    let custom_scale = fx.get_tuning_scale();
+    let custom_reactive = fx.get_tuning_reactive();
+    let custom_marquee_text = fx.get_active_text();
+
     send_slint_ipc_message(serde_json::json!({
         "action": "sync_lighting_state",
         "sleep_minutes": st.sleep_minutes,
         "ceremony_enabled": st.ceremony_enabled,
         "kb_enabled": st.kb_enabled,
-        "kb_effect": if st.kb_engine == "streamer" { st.streamer_effect } else { st.kb_effect },
+        "kb_effect": if st.kb_engine == "streamer" || st.kb_engine == "custom" { st.streamer_effect } else { st.kb_effect },
         "kb_brightness": st.kb_brightness,
         "kb_speed": st.kb_speed,
         "kb_direction": st.kb_direction,
         "kb_color": st.kb_color,
         "kb_engine": st.kb_engine,
         "kb_fps": st.kb_fps,
+        "custom_script_id": active_script.map(|s| s.id.as_str()).unwrap_or(&st.custom_script_id),
+        "custom_speed": custom_speed,
+        "custom_scale": custom_scale,
+        "custom_reactive": custom_reactive,
+        "custom_marquee_text": custom_marquee_text,
+        "custom_scripts": scripts,
         "lb_enabled": st.lb_enabled,
         "lb_effect": st.lb_effect,
         "lb_brightness": st.lb_brightness,
@@ -622,6 +659,17 @@ pub fn sync_slint_plugins_state() {
             "plugins": list,
         }));
     }
+}
+
+pub fn sync_slint_theme_tokens() {
+    let cfg = crate::system::config::load_config();
+    let tokens = crate::system::slint_theme::resolve_slint_theme(&cfg);
+    send_slint_ipc_message(serde_json::json!({
+        "action": "sync_theme",
+        "theme_mode": cfg.theme_mode,
+        "tokens": tokens,
+    }));
+    crate::system::osd_window::send_osd_theme_tokens(&tokens);
 }
 
 pub fn sync_slint_power_schemes(restore_msg: Option<&str>) {

@@ -75,6 +75,7 @@ pub fn handle(action: &str, val: &serde_json::Value, _app: Option<&AppHandle>) -
                 let mut cfg = crate::system::config::load_config();
                 cfg.theme_mode = mode as u8;
                 let _ = crate::system::config::save_config(&cfg);
+                super::super::sync::sync_slint_theme_tokens();
             }
             true
         }
@@ -96,6 +97,12 @@ pub fn handle(action: &str, val: &serde_json::Value, _app: Option<&AppHandle>) -
         }
         "slint_window_shown" => {
             crate::system::telemetry::set_main_window_visible(true);
+            if let Ok(b) = crate::system::display::get_brightness() {
+                send_slint_ipc_message(serde_json::json!({
+                    "action": "sync_state",
+                    "brightness": b,
+                }));
+            }
             true
         }
         "slint_window_hidden" => {

@@ -6,6 +6,7 @@ import { DashboardCustomTuningView } from "../views/tuning/tuning_view.slint";
 import { DashboardGpuView } from "../views/gpu/gpu_view.slint";
 import { DashboardPowerView } from "../views/power/power_view.slint";
 import { DashboardLightingView } from "../views/lighting/lighting_view.slint";
+import { BrfxScriptItem } from "../views/lighting/lighting_types.slint";
 import { DashboardWaterView } from "../views/water/water_view.slint";
 import { WaterCoolerDeviceItem } from "../views/water/cooler_types.slint";
 import { DashboardPluginsView, CustomPluginItem } from "../views/plugins/plugins_view.slint";
@@ -21,6 +22,14 @@ export component FullDashboard inherits Rectangle {
     border-width: 1px;
     border-color: AppTheme.border_subtle;
     clip: true;
+
+    if AppTheme.bg_image.width > 0: Image {
+        source: AppTheme.bg_image;
+        width: 100%;
+        height: 100%;
+        image-fit: cover;
+        opacity: AppTheme.bg_image_opacity;
+    }
 
     // Application Meta
     in-out property <string> app_version: "v0.9.7";
@@ -144,7 +153,7 @@ export component FullDashboard inherits Rectangle {
     in-out property <string> gpu_name: "RTX 4090 Laptop GPU";
     in-out property <string> gpu_mode: "dgpu";
     in-out property <int> brightness: 76;
-    callback gpu_mode_clicked(string);
+    callback gpu_mode_clicked(string, bool);
     callback brightness_changed(int);
     callback set_tuning_enabled(bool);
     callback toggle_tuning_enabled();
@@ -207,6 +216,23 @@ export component FullDashboard inherits Rectangle {
     in-out property <string> kb_color_hex: "#6366F1";
     in-out property <color> kb_color: #6366f1;
 
+    in-out property <[BrfxScriptItem]> custom_scripts: [];
+    in-out property <string> custom_script_id: "kamehameha";
+    in-out property <string> custom_script_name: "龟派气功 vs 终极闪光 (Kamehameha)";
+    in-out property <string> custom_script_file_name: "kamehameha.brfx";
+    in-out property <string> custom_script_author: "OpenRevo Community";
+    in-out property <string> custom_script_desc: "";
+    in-out property <int> custom_speed_x10: 12;
+    in-out property <int> custom_scale_pct: 100;
+    in-out property <bool> custom_reactive: false;
+    in-out property <bool> custom_is_marquee: false;
+    in-out property <string> custom_marquee_text: "I LOVE OPEN-REVO";
+    in-out property <int> custom_default_speed_x10: 12;
+    in-out property <int> custom_default_scale_pct: 100;
+    in-out property <int> custom_default_direction: 0;
+    in-out property <bool> custom_default_reactive: false;
+    in-out property <string> custom_default_color_hex: "#00F0FF";
+
     in-out property <bool> lb_enabled: true;
     in-out property <int> lb_effect: 3;
     in-out property <int> lb_brightness: 3;
@@ -248,6 +274,13 @@ export component FullDashboard inherits Rectangle {
     callback set_kb_brightness(int);
     callback set_kb_speed(int);
     callback set_kb_color(string, color);
+    callback select_custom_script_id(string);
+    callback refresh_custom_scripts();
+    callback view_custom_script_source(string);
+    callback import_custom_script();
+    callback export_custom_script(string);
+    callback update_custom_tuning(int, int, int, bool, string, string);
+    callback reset_custom_tuning();
 
     callback toggle_lb_enabled();
     callback set_lb_effect(int);
@@ -312,6 +345,9 @@ export component FullDashboard inherits Rectangle {
 
     // Quick Actions Props & Callbacks
     in-out property <bool> fan_boost: false;
+    in-out property <bool> has_fan_boost: true;
+    in-out property <bool> is_bld_fan_lock: false;
+    in-out property <int> bld_fan_rpm: 5800;
     in-out property <bool> auto_min_hz: true;
     in-out property <int> refresh_rate: 240;
     in-out property <string> monitor_name: "京东方";
@@ -321,6 +357,8 @@ export component FullDashboard inherits Rectangle {
     in-out property <string> primary_monitor_name: "内置主屏";
     in-out property <string> secondary_monitor_name: "外接副屏";
     callback toggle_fan_boost();
+    callback toggle_bld_fan_lock(int);
+    callback change_bld_fan_rpm(int);
     callback toggle_auto_min_hz();
     callback switch_hz(int);
     callback select_monitor(string);
@@ -641,8 +679,13 @@ export component FullDashboard inherits Rectangle {
                 }
 
                 fan_boost: root.fan_boost;
+                has_fan_boost: root.has_fan_boost;
+                is_bld_fan_lock: root.is_bld_fan_lock;
+                bld_fan_rpm <=> root.bld_fan_rpm;
                 auto_min_hz: root.auto_min_hz;
                 toggle_fan_boost => { root.toggle_fan_boost(); }
+                toggle_bld_fan_lock(rpm) => { root.toggle_bld_fan_lock(rpm); }
+                change_bld_fan_rpm(rpm) => { root.change_bld_fan_rpm(rpm); }
                 toggle_auto_min_hz => { root.toggle_auto_min_hz(); }
                 osd_config: root.osd_config;
                 change_osd_theme(t) => { root.change_osd_theme(t); }
@@ -898,7 +941,7 @@ export component FullDashboard inherits Rectangle {
 
                 set_gpu_mode(mode, restart) => {
                     root.gpu_mode = mode;
-                    root.gpu_mode_clicked(mode);
+                    root.gpu_mode_clicked(mode, restart);
                 }
                 change_brightness(b) => {
                     root.brightness = b;
@@ -1018,6 +1061,22 @@ export component FullDashboard inherits Rectangle {
                 kb_speed <=> root.kb_speed;
                 kb_color_hex <=> root.kb_color_hex;
                 kb_color <=> root.kb_color;
+                custom_scripts: root.custom_scripts;
+                custom_script_id <=> root.custom_script_id;
+                custom_script_name <=> root.custom_script_name;
+                custom_script_file_name <=> root.custom_script_file_name;
+                custom_script_author <=> root.custom_script_author;
+                custom_script_desc <=> root.custom_script_desc;
+                custom_speed_x10 <=> root.custom_speed_x10;
+                custom_scale_pct <=> root.custom_scale_pct;
+                custom_reactive <=> root.custom_reactive;
+                custom_is_marquee <=> root.custom_is_marquee;
+                custom_marquee_text <=> root.custom_marquee_text;
+                custom_default_speed_x10: root.custom_default_speed_x10;
+                custom_default_scale_pct: root.custom_default_scale_pct;
+                custom_default_direction: root.custom_default_direction;
+                custom_default_reactive: root.custom_default_reactive;
+                custom_default_color_hex: root.custom_default_color_hex;
 
                 lb_enabled <=> root.lb_enabled;
                 lb_effect <=> root.lb_effect;
@@ -1059,6 +1118,13 @@ export component FullDashboard inherits Rectangle {
                 set_kb_brightness(b) => { root.set_kb_brightness(b); }
                 set_kb_speed(s) => { root.set_kb_speed(s); }
                 set_kb_color(hex, c) => { root.set_kb_color(hex, c); }
+                select_custom_script_id(id) => { root.select_custom_script_id(id); }
+                refresh_custom_scripts() => { root.refresh_custom_scripts(); }
+                view_custom_script_source(fn) => { root.view_custom_script_source(fn); }
+                import_custom_script() => { root.import_custom_script(); }
+                export_custom_script(id) => { root.export_custom_script(id); }
+                update_custom_tuning(sp, sc, dir, rx, col, txt) => { root.update_custom_tuning(sp, sc, dir, rx, col, txt); }
+                reset_custom_tuning() => { root.reset_custom_tuning(); }
 
                 toggle_lb_enabled => { root.toggle_lb_enabled(); }
                 set_lb_effect(eff) => { root.set_lb_effect(eff); }

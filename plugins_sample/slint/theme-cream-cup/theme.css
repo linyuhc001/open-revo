@@ -1,0 +1,138 @@
+/* ==========================================================================
+   OpenRevo Slint 皮肤 · 奶油纸杯 (Paper & Oil Cartoon)
+   基于 ZTN-Silent 浅色纸质油画卡通配色 (支持浅色奶油 / 深焙可可 / 报纸黑白 三态)
+   ========================================================================== */
+
+/* 1. 浅色态 (Light) —— 奶油米纸 */
+:root,
+html[data-skin],
+[data-theme=light] {
+  --bg-root: #F5EEDA;
+  --surface-base: #FCF8EC;
+  --surface-card: #FFFCF3;
+  --surface-card-hover: #FFF7E4;
+  --surface-pill: #EBDDC4;
+  --surface-elevated: #FFFDF6;
+  --surface-overlay: #FFFDF6;
+  --surface-sunken: #E8DEC6;
+
+  --border-subtle: #DECDB5;
+  --border-medium: #BAA78E;
+  --border-highlight: #7E6E58;
+
+  --text-primary: #35291C;
+  --text-secondary: #57493A;
+  --text-muted: #7E6E58;
+  --font-family: "Microsoft YaHei";
+
+  --color-brand: #D9772F;
+  --color-office: #4E8B3F;
+  --color-balance: #3D74A8;
+  --color-beast: #B8433A;
+  --color-fan: #2E8FA8;
+  --color-gold: #C8850F;
+
+  --accent-active: #D9772F;
+  --accent-active-bg: rgba(217, 119, 47, 0.14);
+  --accent-active-border: rgba(217, 119, 47, 0.40);
+
+  --accent-heart: #B8433A;
+  --accent-heart-bg: rgba(184, 67, 58, 0.14);
+  --accent-heart-border: rgba(184, 67, 58, 0.40);
+
+  --tag-brand-text: #FFFDF6;
+
+  --radius-xs: 6px;
+  --radius-sm: 9px;
+  --radius-md: 12px;
+  --radius-lg: 15px;
+}
+
+/* 2. 深色态 (Dark) —— 深焙奶茶与可可 */
+html[data-theme=cyber],
+[data-theme=cyber],
+[data-theme=dark] {
+  --bg-root: #332B24;
+  --surface-base: #3E342B;
+  --surface-card: #42382E;
+  --surface-card-hover: #4D4237;
+  --surface-pill: #4C3F35;
+  --surface-elevated: #473C32;
+  --surface-overlay: #473C32;
+  --surface-sunken: #241D17;
+
+  --border-subtle: #5A4C3E;
+  --border-medium: #756453;
+  --border-highlight: #9E8873;
+
+  --text-primary: #F7F0E5;
+  --text-secondary: #E2D7C6;
+  --text-muted: #CDBFA9;
+  --font-family: "Microsoft YaHei";
+
+  --color-brand: #E79A50;
+  --color-office: #7CC46A;
+  --color-balance: #74ADE3;
+  --color-beast: #EE7B72;
+  --color-fan: #5BBAD4;
+  --color-gold: #E8B45A;
+
+  --accent-active: #E79A50;
+  --accent-active-bg: rgba(231, 154, 80, 0.15);
+  --accent-active-border: rgba(231, 154, 80, 0.40);
+
+  --accent-heart: #EE7B72;
+  --accent-heart-bg: rgba(238, 123, 114, 0.14);
+  --accent-heart-border: rgba(238, 123, 114, 0.40);
+
+  --tag-brand-text: #2A231C;
+
+  --radius-xs: 6px;
+  --radius-sm: 9px;
+  --radius-md: 12px;
+  --radius-lg: 15px;
+}
+
+/* 3. 单色/极客黑白 (Mono) —— 复古报纸版画 */
+html[data-theme=mono],
+[data-theme=mono] {
+  --bg-root: #1F1D1A;
+  --surface-base: #282522;
+  --surface-card: #2E2A27;
+  --surface-card-hover: #3A3632;
+  --surface-pill: #383430;
+  --surface-elevated: #36322E;
+  --surface-overlay: #36322E;
+  --surface-sunken: #141311;
+
+  --border-subtle: #47423D;
+  --border-medium: #6E6760;
+  --border-highlight: #B5ACA3;
+
+  --text-primary: #FAF6F0;
+  --text-secondary: #D8D1C7;
+  --text-muted: #A8A096;
+  --font-family: "Microsoft YaHei";
+
+  --color-brand: #FAF6F0;
+  --color-office: #FAF6F0;
+  --color-balance: #FAF6F0;
+  --color-beast: #FAF6F0;
+  --color-fan: #FAF6F0;
+  --color-gold: #FAF6F0;
+
+  --accent-active: #FAF6F0;
+  --accent-active-bg: rgba(250, 246, 240, 0.14);
+  --accent-active-border: rgba(250, 246, 240, 0.40);
+
+  --accent-heart: #FAF6F0;
+  --accent-heart-bg: rgba(250, 246, 240, 0.14);
+  --accent-heart-border: rgba(250, 246, 240, 0.40);
+
+  --tag-brand-text: #1F1D1A;
+
+  --radius-xs: 6px;
+  --radius-sm: 9px;
+  --radius-md: 12px;
+  --radius-lg: 15px;
+}
