@@ -305,7 +305,9 @@ function fmtBytes(n) {
 }
 let procCache = [];
 let procSort = { key: 'cpu', dir: -1 };
-let procTree = localStorage.getItem('proc-tree') === '1';
+// 默认树状（任务管理器风格）；用户切回平铺后记住选择。
+// 注意不能用数字 0 当根节点键：Windows System Idle Process 的 PID 就是 0。
+let procTree = localStorage.getItem('proc-tree') !== '0';
 
 function syncTreeBtn() {
   const b = $('procTreeBtn');
@@ -354,18 +356,22 @@ function renderProc() {
     }
     const pidSet = new Set(keep.map((p) => p.pid));
     const kids = new Map();
+    const ROOT = '__root__';
     keep.forEach((p) => {
-      const parent = (p.ppid != null && p.ppid !== p.pid && pidSet.has(p.ppid)) ? p.ppid : 0;
+      const parent = (p.ppid != null && p.ppid !== p.pid && pidSet.has(p.ppid)) ? p.ppid : ROOT;
       if (!kids.has(parent)) kids.set(parent, []);
       kids.get(parent).push(p);
     });
     list = [];
+    const visited = new Set();
     const visit = (p, depth) => {
+      if (visited.has(p.pid)) return;
+      visited.add(p.pid);
       list.push({ p, depth });
       const ch = kids.get(p.pid);
       if (ch) [...ch].sort(cmp).forEach((c) => visit(c, depth + 1));
     };
-    (kids.get(0) || []).sort(cmp).forEach((r) => visit(r, 0));
+    (kids.get(ROOT) || []).sort(cmp).forEach((r) => visit(r, 0));
   }
   $('procCount').textContent = `共 ${list.length}${kw ? '/' + procCache.length : ''} 项`;
 
