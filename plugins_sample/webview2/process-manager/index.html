@@ -416,9 +416,8 @@ function renderProc() {
       (kids.get(ROOT) || []).sort(rootCmp).forEach((r) => visitAll(r, 0));
     }
   }
-  // 计数显示「过滤后的进程总数」，不随展开/收起变化；
-  // 有过滤（勾选隐藏系统或搜索）时附带总进程数作参照。
-  $('procCount').textContent = `共 ${rows.length} 项${(kw || procHideSys) ? ' / 全部 ' + procCache.length : ''}`;
+  // 计数显示「过滤后的进程总数」，不随展开/收起变化。
+  $('procCount').textContent = `共 ${rows.length} 项`;
 
   const tb = $('procBody');
   tb.innerHTML = '';
