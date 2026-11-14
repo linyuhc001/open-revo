@@ -1,4 +1,4 @@
-// sys-service — OpenRevo sys-inspector companion service.
+// process-service — OpenRevo process-manager companion service.
 //
 // Standalone HTTP sidecar exposing system-level introspection over localhost:
 //   GET  /api/health                  liveness probe
@@ -22,12 +22,12 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use sysinfo::{Pid, ProcessesToUpdate, System};
 
-const LOG_FILE: &str = "sys_service.log";
+const LOG_FILE: &str = "process_service.log";
 
 // ---------------------------------------------------------------- logging ---
 
 fn log_path() -> PathBuf {
-    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("sys-service.exe"));
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("process-service.exe"));
     let dir = exe.parent().map(|p| p.to_path_buf()).unwrap_or_default();
     let cand = dir.join(LOG_FILE);
     // Probing writability once at startup; %APPDATA% plugin dirs are writable.
@@ -118,7 +118,7 @@ fn main() {
     }
     if !serve {
         // Started without --serve (e.g. manual probe): just report and exit.
-        println!("sys-service v{} (pass --serve --port N to run)", env!("CARGO_PKG_VERSION"));
+        println!("process-service v{} (pass --serve --port N to run)", env!("CARGO_PKG_VERSION"));
         return;
     }
 
@@ -156,7 +156,7 @@ fn main() {
             std::process::exit(1);
         }
     };
-    log(&format!("sys-service listening on 127.0.0.1:{}", port));
+    log(&format!("process-service listening on 127.0.0.1:{}", port));
 
     for stream in listener.incoming() {
         match stream {
@@ -349,7 +349,7 @@ fn route(method: &str, path: &str, query: &HashMap<String, String>, body: &[u8])
             200,
             json!({
                 "status": "ok",
-                "service": "sys-service",
+                "service": "process-service",
                 "version": env!("CARGO_PKG_VERSION"),
                 "uptime_s": state().lock().map(|s| s.started.elapsed().as_secs()).unwrap_or(0),
                 "elevated": is_elevated()
@@ -363,7 +363,7 @@ fn route(method: &str, path: &str, query: &HashMap<String, String>, body: &[u8])
             Some(p) if !p.trim().is_empty() => api_file_occupiers(p.trim()),
             _ => (400, json!({"error": "missing ?path= parameter"})),
         },
-        ("GET", "/") => (200, json!({"service": "sys-service", "version": env!("CARGO_PKG_VERSION")})),
+        ("GET", "/") => (200, json!({"service": "process-service", "version": env!("CARGO_PKG_VERSION")})),
         _ => (404, json!({"error": format!("no route: {} {}", method, path)})),
     }
 }

@@ -1,11 +1,11 @@
 [package]
-name = "sys-service"
-version = "1.0.0"
+name = "process-service"
+version = "1.1.0"
 edition = "2021"
 description = "OpenRevo process-manager companion service (processes / connections / file occupancy)"
 
 [[bin]]
-name = "sys-service"
+name = "process-service"
 path = "src/main.rs"
 
 # Standalone on purpose: this crate lives inside the plugin folder, not in the

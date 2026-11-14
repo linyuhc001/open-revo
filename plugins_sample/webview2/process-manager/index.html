@@ -180,7 +180,7 @@
 <script>
 'use strict';
 // ==========================================================================
-// 进程管理 (process-manager) — data source: local sidecar sys-service.exe (:18956)
+// 进程管理 (process-manager) — data source: local sidecar process-service.exe (:18956)
 // ==========================================================================
 const API = 'http://127.0.0.1:18956';
 const $ = (id) => document.getElementById(id);
@@ -205,7 +205,7 @@ async function checkHealth() {
     serviceOk = j.status === 'ok';
     const el = j.elevated;
     $('svcText').textContent = serviceOk
-      ? `sys-service 在线 ${el ? '(管理员)' : '(未提权!)'} · v${j.version || ''}`
+      ? `process-service 在线 ${el ? '(管理员)' : '(未提权!)'} · v${j.version || ''}`
       : '服务异常';
   } catch (_) {
     serviceOk = false;
@@ -220,7 +220,7 @@ function fetchTimeout(url, ms, opts) {
   return fetch(url, { ...opts, signal: c.signal }).finally(() => clearTimeout(t));
 }
 async function api(path, opts) {
-  if (!serviceOk && !(await checkHealth())) throw new Error('sys-service 未在线');
+  if (!serviceOk && !(await checkHealth())) throw new Error('process-service 未在线');
   const r = await fetchTimeout(API + path, 15000, opts);
   const j = await r.json();
   if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));

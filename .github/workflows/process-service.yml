@@ -1,4 +1,4 @@
-name: Build Sys Service
+name: Build Process Service
 
 # Compiles the process-manager companion service into a standalone .exe and
 # publishes it as an artifact. The sidecar crate lives inside the plugin
@@ -8,20 +8,20 @@ name: Build Sys Service
 on:
   workflow_dispatch:
   push:
-    # Only source inputs rebuild. The committed sys-service.exe also lives
+    # Only source inputs rebuild. The built process-service.exe also lives
     # under sidecar/, and matching it here would make every artifact commit
     # trigger another build.
     paths:
       - 'plugins_sample/webview2/process-manager/sidecar/src/**'
       - 'plugins_sample/webview2/process-manager/sidecar/Cargo.toml'
       - 'plugins_sample/webview2/process-manager/sidecar/Cargo.lock'
-      - '.github/workflows/sys-service.yml'
+      - '.github/workflows/process-service.yml'
 
 permissions:
   contents: read
 
 concurrency:
-  group: sys-service-${{ github.ref }}
+  group: process-service-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -67,21 +67,21 @@ jobs:
         working-directory: plugins_sample/webview2/process-manager/sidecar
         shell: pwsh
         run: |
-          $exe = "target/release/sys-service.exe"
-          if (-not (Test-Path $exe)) { throw "sys-service.exe missing" }
+          $exe = "target/release/process-service.exe"
+          if (-not (Test-Path $exe)) { throw "process-service.exe missing" }
           $size = (Get-Item $exe).Length
           Write-Host "built $exe ($size bytes)"
           # Guards against a silently empty/stub build before it reaches users.
           if ($size -lt 200KB) { throw "binary too small: $size bytes" }
           $bytes = [System.IO.File]::ReadAllBytes($exe)
           $text = [System.Text.Encoding]::ASCII.GetString($bytes)
-          foreach ($needle in @("GetExtendedTcpTable", "RmStartSession", "sys_service.log")) {
+          foreach ($needle in @("GetExtendedTcpTable", "RmStartSession", "process_service.log")) {
             if ($text.IndexOf($needle) -lt 0) { throw "missing embedded marker: $needle" }
           }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: sys-service
-          path: plugins_sample/webview2/process-manager/sidecar/target/release/sys-service.exe
+          name: process-service
+          path: plugins_sample/webview2/process-manager/sidecar/target/release/process-service.exe
           if-no-files-found: error

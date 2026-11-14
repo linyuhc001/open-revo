@@ -1,6 +1,6 @@
 # 进程管理 (Process Manager)
 
-> **类型**：tab 插件（WebView2 内嵌面板）+ 本地伴随服务 `sys-service.exe`
+> **类型**：tab 插件（WebView2 内嵌面板）+ 本地伴随服务 `process-service.exe`
 > **模块**：进程 · 连接与端口 · 文件占用
 
 ---
@@ -8,7 +8,7 @@
 ## 概述
 
 将 Argus 风格的系统级检视能力带进 OpenRevo：进程管理、网络连接表、文件占用排查。
-前端只做渲染，所有数据来自本地伴随服务 `sys-service.exe`（127.0.0.1:18956），
+前端只做渲染，所有数据来自本地伴随服务 `process-service.exe`（127.0.0.1:18956），
 由宿主按 manifest `service` 配置托管启停（`elevated: true`，随守护进程以管理员运行）。
 
 ## 模块
@@ -29,7 +29,7 @@ process-manager/
 └── sidecar/                 # 独立 Rust crate，不依赖 src-tauri
     ├── Cargo.toml           # sysinfo + windows-sys
     ├── src/main.rs          # 手写 HTTP 服务 + Windows API 封装
-    └── sys-service.exe      # CI 产物（Actions artifact 下载后放入）
+    └── process-service.exe      # CI 产物（Actions artifact 下载后放入）
 ```
 
 ## API 速览
@@ -45,8 +45,8 @@ GET  /api/file/occupiers?path=    Restart Manager 占用列表
 
 ## 构建与部署
 
-1. GitHub Actions：`.github/workflows/sys-service.yml`（手动 `workflow_dispatch` 或改动 sidecar 源码自动触发）
-2. 下载 artifact `sys-service`，将 `sys-service.exe` 放入本插件 `sidecar/` 目录
+1. GitHub Actions：`process-service.yml`（手动 `workflow_dispatch` 或改动 sidecar 源码自动触发）
+2. 下载 artifact `process-service`，将 `process-service.exe` 放入本插件 `sidecar/` 目录
 3. 将整个 `process-manager/` 复制到 `%APPDATA%\OpenRevo\plugins\`
 4. 重启宿主面板，插件列表出现「进程管理」
 
