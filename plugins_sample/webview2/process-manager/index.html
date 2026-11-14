@@ -133,6 +133,7 @@
     <div class="toolbar">
       <div class="clear-wrap" style="flex:1; min-width:180px"><input type="text" id="procSearch" placeholder="搜索进程名 / PID…" /></div>
       <button class="btn" id="procRefresh">↻ 刷新</button>
+      <button class="btn" id="procTreeBtn">🌲 树状</button>
       <label style="font-size:12px; color:var(--text-dim); display:flex; align-items:center; gap:4px;">
         <input type="checkbox" id="procAuto" checked /> 自动(3s)
       </label>
@@ -304,6 +305,14 @@ function fmtBytes(n) {
 }
 let procCache = [];
 let procSort = { key: 'cpu', dir: -1 };
+let procTree = localStorage.getItem('proc-tree') === '1';
+
+function syncTreeBtn() {
+  const b = $('procTreeBtn');
+  b.textContent = procTree ? '🌳 树状中' : '🌲 树状';
+  b.style.borderColor = procTree ? 'var(--accent)' : '';
+  b.style.color = procTree ? 'var(--accent)' : '';
+}
 
 async function refreshProc() {
   let d;
@@ -318,20 +327,59 @@ function renderProc() {
   if (kw) rows = rows.filter((p) =>
     p.name.toLowerCase().includes(kw) || String(p.pid).includes(kw));
   const { key, dir } = procSort;
-  rows = [...rows].sort((a, b) => {
+  const cmp = (a, b) => {
     const va = a[key] ?? '', vb = b[key] ?? '';
     return (typeof va === 'number' ? va - vb : String(va).localeCompare(String(vb))) * dir;
-  });
-  $('procCount').textContent = `共 ${rows.length}${kw ? '/' + procCache.length : ''} 项`;
+  };
+
+  let list;
+  if (!procTree) {
+    list = [...rows].sort(cmp).map((p) => ({ p, depth: 0 }));
+  } else {
+    // 树状：保留命中项及其全部祖先链，再按父子关系缩进展示。
+    // 父进程不在当前集合中的进程作为根节点（避免 Windows 大量
+    // 已退出父进程的孤儿条目悬浮在顶部之外）。
+    let keep = rows;
+    if (kw) {
+      const byPid = new Map(procCache.map((p) => [p.pid, p]));
+      const set = new Set();
+      rows.forEach((start) => {
+        let cur = start; const guard = new Set();
+        while (cur && !guard.has(cur.pid)) {
+          guard.add(cur.pid); set.add(cur.pid);
+          cur = cur.ppid != null ? byPid.get(cur.ppid) : null;
+        }
+      });
+      keep = procCache.filter((p) => set.has(p.pid));
+    }
+    const pidSet = new Set(keep.map((p) => p.pid));
+    const kids = new Map();
+    keep.forEach((p) => {
+      const parent = (p.ppid != null && p.ppid !== p.pid && pidSet.has(p.ppid)) ? p.ppid : 0;
+      if (!kids.has(parent)) kids.set(parent, []);
+      kids.get(parent).push(p);
+    });
+    list = [];
+    const visit = (p, depth) => {
+      list.push({ p, depth });
+      const ch = kids.get(p.pid);
+      if (ch) [...ch].sort(cmp).forEach((c) => visit(c, depth + 1));
+    };
+    (kids.get(0) || []).sort(cmp).forEach((r) => visit(r, 0));
+  }
+  $('procCount').textContent = `共 ${list.length}${kw ? '/' + procCache.length : ''} 项`;
 
   const tb = $('procBody');
   tb.innerHTML = '';
   const frag = document.createDocumentFragment();
-  rows.forEach((p) => {
+  list.forEach(({ p, depth }) => {
     const tr = document.createElement('tr');
     const mem = fmtBytes(p.mem);
+    const nameHtml = procTree && depth > 0
+      ? `<span style="padding-left:${depth * 18}px"><span style="color:var(--text-dim)">└ </span>${p.name}</span>`
+      : p.name;
     tr.innerHTML = `
-      <td title="${p.name}">${p.name}</td>
+      <td title="${p.name}">${nameHtml}</td>
       <td class="num">${p.pid}</td>
       <td class="num">${p.ppid ?? '—'}</td>
       <td class="num" style="color:${p.cpu > 50 ? 'var(--status-err)' : p.cpu > 15 ? 'var(--status-warn)' : 'inherit'}">${p.cpu.toFixed(1)}</td>
@@ -372,6 +420,13 @@ document.querySelectorAll('#page-proc th[data-sort]').forEach((th) => {
   });
 });
 $('procRefresh').addEventListener('click', refreshProc);
+$('procTreeBtn').addEventListener('click', () => {
+  procTree = !procTree;
+  localStorage.setItem('proc-tree', procTree ? '1' : '0');
+  syncTreeBtn();
+  renderProc();
+});
+syncTreeBtn();
 $('procSearch').addEventListener('input', renderProc);
 
 // ==========================================================================
