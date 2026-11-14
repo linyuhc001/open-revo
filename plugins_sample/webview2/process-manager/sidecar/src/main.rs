@@ -688,15 +688,32 @@ fn api_file_occupiers(path: &str) -> (u16, Value) {
                 return (500, json!({"error": format!("RmRegisterResources failed (err {}): verify the path exists", rc)}));
             }
 
+            // Standard two-phase RmGetList: the probing call (NULL array,
+            // count=0) returns ERROR_MORE_DATA (234) and fills `needed`;
+            // allocate and retry. Loop in case the set grows between calls.
+            const ERROR_MORE_DATA: u32 = 234;
             let mut needed: u32 = 0;
             let mut count: u32 = 0;
-            // First call to learn the array size, then retry with the buffer.
-            let _ = RmGetList(session, &mut needed, &mut count, std::ptr::null_mut(), std::ptr::null_mut());
-            let mut list: Vec<RM_PROCESS_INFO> =
-                (0..needed.max(1)).map(|_| unsafe { std::mem::zeroed() }).collect();
-            count = list.len() as u32;
             let mut reasons: u32 = 0;
-            let rc = RmGetList(session, &mut needed, &mut count, list.as_mut_ptr(), &mut reasons);
+            let mut list: Vec<RM_PROCESS_INFO> = Vec::new();
+            let mut rc: u32 = 0;
+            for _ in 0..3 {
+                let array_ptr = if list.is_empty() {
+                    std::ptr::null_mut()
+                } else {
+                    list.as_mut_ptr()
+                };
+                rc = RmGetList(session, &mut needed, &mut count, array_ptr, &mut reasons);
+                if rc == 0 {
+                    break;
+                }
+                if rc == ERROR_MORE_DATA {
+                    list = (0..needed.max(1)).map(|_| std::mem::zeroed()).collect();
+                    count = list.len() as u32;
+                    continue;
+                }
+                return (500, json!({"error": format!("RmGetList failed (err {})", rc)}));
+            }
             if rc != 0 {
                 return (500, json!({"error": format!("RmGetList failed (err {})", rc)}));
             }
