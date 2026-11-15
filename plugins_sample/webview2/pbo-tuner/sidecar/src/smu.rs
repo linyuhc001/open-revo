@@ -286,6 +286,37 @@ fn resolve_commands(code: CpuCodeName) -> (SmuType, RsmuCommands) {
 /// The global SMU bridge (lazy-initialized).
 static SMU_BRIDGE: OnceLock<Mutex<Option<SmuBridge>>> = OnceLock::new();
 
+/// LibreHardwareMonitor's AMDFamily17 PawnIO module (MPL-2.0, ~10 KB, embedded
+/// at build time like RyzenSMU.bin). Exports:
+///   ioctl_read_smn(offset: u64) -> u64
+///   ioctl_read_msr(index: u64)  -> u64   (EAX in the low 32 bits, EDX in the high)
+static MSR_BRIDGE: OnceLock<Mutex<Option<PawnIo>>> = OnceLock::new();
+
+/// Lazy-load the MSR module. Failure (old PawnIO build rejecting the module,
+/// driver missing) is not fatal: the caller just reports voltage unsupported.
+fn with_msr<T>(f: impl FnOnce(&PawnIo) -> Result<T, String>) -> Result<T, String> {
+    let slot = MSR_BRIDGE.get_or_init(|| {
+        let blob: &[u8] = include_bytes!("../AMDFamily17.bin");
+        Mutex::new(PawnIo::load_module_from_bytes(blob).ok())
+    });
+    let guard = slot.lock().map_err(|_| "MSR module lock poisoned".to_string())?;
+    let module = guard
+        .as_ref()
+        .ok_or_else(|| "MSR PawnIO module unavailable".to_string())?;
+    f(module)
+}
+
+/// RDMSR through the AMDFamily17 module — the same ABI LibreHardwareMonitor
+/// uses (`AmdFamily17.ReadMsr`): 1 u64 in (MSR index), 1 u64 out (EAX|EDX<<32).
+fn read_msr(index: u32) -> Result<u64, String> {
+    with_msr(|m| {
+        let out = m.execute("ioctl_read_msr", &[index as u64], 1)?;
+        out.first()
+            .copied()
+            .ok_or_else(|| "ioctl_read_msr: empty output".to_string())
+    })
+}
+
 struct SmuBridge {
     pawn: PawnIo,
     code_name: CpuCodeName,
@@ -682,6 +713,69 @@ fn read_cpuid_topology() -> Option<Vec<CpuidCore>> {
 
 #[cfg(not(target_arch = "x86_64"))]
 fn read_cpuid_topology() -> Option<Vec<CpuidCore>> {
+    None
+}
+
+/// Per-core live voltage via MSR `C001_0293` (Hardware P-state Status) — the
+/// route LibreHardwareMonitor takes on parts whose PM table layout it does not
+/// know: pin the thread to each core's first logical processor, RDMSR, then
+///   CurCpuVid = bits [21:14]
+///   voltage    = 1.550 V - 0.00625 V * VID
+/// The MSR is core-scoped, so the affinity switch is what selects the core.
+/// Returns one slot per physical core (None where the read or the sanity
+/// window failed).
+#[cfg(target_arch = "x86_64")]
+fn msr_core_vids() -> Option<Vec<Option<f32>>> {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetCurrentThread() -> isize;
+        fn SetThreadAffinityMask(thread: isize, mask: usize) -> usize;
+    }
+
+    let Some(entries) = read_topology() else {
+        return None;
+    };
+    let mut core_masks: Vec<usize> = entries
+        .iter()
+        .filter(|e| e.relationship == RELATION_PROCESSOR_CORE)
+        .map(|e| e.processor_mask)
+        .collect();
+    if core_masks.is_empty() {
+        return None;
+    }
+    core_masks.sort_unstable();
+
+    let mut out = Vec::with_capacity(core_masks.len());
+    unsafe {
+        let thread = GetCurrentThread();
+        let original = SetThreadAffinityMask(thread, core_masks[0]);
+        if original == 0 {
+            return None;
+        }
+        for mask in &core_masks {
+            let first_thread = mask & mask.wrapping_neg();
+            if first_thread == 0 || SetThreadAffinityMask(thread, first_thread) == 0 {
+                SetThreadAffinityMask(thread, original);
+                return None;
+            }
+            let slot = read_msr(0xC001_0293).ok().and_then(|raw| {
+                let vid = ((raw >> 14) & 0xFF) as f32;
+                let volt = 1.550f32 - 0.00625f32 * vid;
+                if (0.2..=1.6).contains(&volt) {
+                    Some(volt)
+                } else {
+                    None
+                }
+            });
+            out.push(slot);
+        }
+        SetThreadAffinityMask(thread, original);
+    }
+    Some(out)
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn msr_core_vids() -> Option<Vec<Option<f32>>> {
     None
 }
 
@@ -1215,6 +1309,27 @@ pub fn pmtable_live(dump: bool) -> Result<Value, String> {
     }
 
     let Some(l) = layout else {
+        // No PM-table layout for this pm_table_version — fall back to per-core
+        // MSR reads (the same route LibreHardwareMonitor uses for this case).
+        // Covers Zen2-Zen5, i.e. everything the CO feature supports.
+        #[cfg(target_arch = "x86_64")]
+        if let Some(vids) = msr_core_vids() {
+            crate::log("[voltage] PM layout missing; MSR C0010293 fallback active");
+            let values: Vec<Value> = vids
+                .into_iter()
+                .map(|v| v.map(|x| json!((x * 1000.0).round() / 1000.0)).unwrap_or(Value::Null))
+                .collect();
+            let n = values.len();
+            return Ok(json!({
+                "supported": true,
+                "source": "msr",
+                "pm_version": format!("0x{:08X}", snap.version),
+                "size": snap.size,
+                "cores": n,
+                "voltage": values,
+                "temperature": Value::Null,
+            }));
+        }
         return Ok(json!({
             "supported": false,
             "pm_version": format!("0x{:08X}", snap.version),
@@ -1241,6 +1356,7 @@ pub fn pmtable_live(dump: bool) -> Result<Value, String> {
 
     Ok(json!({
         "supported": true,
+        "source": "pmtable",
         "pm_version": format!("0x{:08X}", snap.version),
         "size": snap.size,
         "cores": n,

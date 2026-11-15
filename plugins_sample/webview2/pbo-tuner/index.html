@@ -250,6 +250,9 @@
       white-space: nowrap;
     }
     .core-v.empty { visibility: hidden; }
+    /* The 电压 toolbar switch hides the readouts entirely so the rows keep
+       the same width as before the feature existed. */
+    .core-v.vhidden { display: none; }
 
     .row {
       display: flex;
@@ -396,6 +399,7 @@
       <button id="btnApplyCO">Apply</button>
       <span class="spacer"></span>
       <button id="btnDebugLog" class="secondary" title="查看服务端调试日志（SMU 命令、核心拓扑映射）">日志</button>
+      <button id="btnVolt" class="secondary" title="切换每核心实时电压显示（默认关闭）">电压</button>
       <button id="btnRefresh" class="secondary">Refresh</button>
     </div>
 
@@ -649,7 +653,7 @@
       buildCcdPanels();
       await refreshValues({ initial: true });
       await refreshFmaxScalar();
-      startVoltagePolling();
+      applyVoltToggle(); // voltage readouts default OFF — 电压 button opts in
 
       // Auto-apply is a host-side setting; reflect whatever the saved profile says.
       try {
@@ -699,10 +703,20 @@
       if (!d || !d.supported) {
         if (pmSupported === false) return;
         pmSupported = false;
+        // Both routes (PM table layout + MSR fallback) unavailable — switch the
+        // toggle back off, disable it and explain once in the console.
+        if (voltShown) {
+          voltShown = false;
+          applyVoltToggle();
+        }
+        const btnVolt = document.getElementById('btnVolt');
+        btnVolt.disabled = true;
+        btnVolt.title = '该 CPU 暂不支持实时电压（PM 表无布局适配且 MSR 读取不可用）';
+        log('[!] 实时电压不可用: PM 表版本 ' + (d && d.pm_version || '?') + ' 无适配且 MSR 读取失败');
         document.querySelectorAll('[data-vcore]').forEach(el => {
           el.textContent = '';
           el.classList.add('empty');
-          el.title = '该 CPU 的 PM 表版本（' + (d && d.pm_version || '?') + '）暂无布局适配，无法显示实时电压';
+          el.title = '该 CPU 暂不支持实时电压';
         });
         return;
       }
@@ -726,6 +740,33 @@
       refreshVoltages();
       pmTimer = setInterval(refreshVoltages, 1000);
     }
+
+    function stopVoltagePolling() {
+      if (pmTimer) {
+        clearInterval(pmTimer);
+        pmTimer = null;
+      }
+    }
+
+    // ---- 电压显示开关 (voltage display toggle) ----
+    // Default OFF: the readouts are hidden and no polling happens until the
+    // user turns the 电压 button on (it lights up like Apply while active).
+    let voltShown = false;
+
+    function applyVoltToggle() {
+      const btnVolt = document.getElementById('btnVolt');
+      btnVolt.classList.toggle('secondary', !voltShown);
+      document.querySelectorAll('.core-v').forEach(el => {
+        el.classList.toggle('vhidden', !voltShown);
+      });
+      if (voltShown) startVoltagePolling(); else stopVoltagePolling();
+    }
+
+    document.getElementById('btnVolt').addEventListener('click', () => {
+      if (pmSupported === false) return; // disabled after the first failed probe
+      voltShown = !voltShown;
+      applyVoltToggle();
+    });
 
     function renderPlatform(info) {
       document.getElementById('platformGrid').style.display = 'grid';
