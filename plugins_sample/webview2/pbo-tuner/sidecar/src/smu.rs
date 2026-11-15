@@ -294,6 +294,10 @@ static MSR_BRIDGE: OnceLock<Mutex<Option<PawnIo>>> = OnceLock::new();
 
 /// Lazy-load the MSR module. Failure (old PawnIO build rejecting the module,
 /// driver missing) is not fatal: the caller just reports voltage unsupported.
+///
+/// Kept (unused since 1.7.0) as the plumbing any future MSR-based readout
+/// needs — the AMDFamily17 module, its RDMSR ABI and the lazy loader.
+#[allow(dead_code)]
 fn with_msr<T>(f: impl FnOnce(&PawnIo) -> Result<T, String>) -> Result<T, String> {
     let slot = MSR_BRIDGE.get_or_init(|| {
         let blob: &[u8] = include_bytes!("../AMDFamily17.bin");
@@ -308,6 +312,7 @@ fn with_msr<T>(f: impl FnOnce(&PawnIo) -> Result<T, String>) -> Result<T, String
 
 /// RDMSR through the AMDFamily17 module — the same ABI LibreHardwareMonitor
 /// uses (`AmdFamily17.ReadMsr`): 1 u64 in (MSR index), 1 u64 out (EAX|EDX<<32).
+#[allow(dead_code)]
 fn read_msr(index: u32) -> Result<u64, String> {
     with_msr(|m| {
         let out = m.execute("ioctl_read_msr", &[index as u64], 1)?;
@@ -724,141 +729,6 @@ fn read_cpuid_topology() -> Option<Vec<CpuidCore>> {
 /// ccd 0 → CO writes aliased onto CCD0) while another failed (L3 fallback →
 /// two CCDs shown) — the mixed answer is precisely the reported bug.
 static CPUID_CACHE: OnceLock<Vec<CpuidCore>> = OnceLock::new();
-
-/// Per-core live voltage via MSR `C001_0293` (Hardware P-state Status) — the
-/// route LibreHardwareMonitor takes on parts whose PM table layout it does not
-/// know: pin the thread to each core's first logical processor, RDMSR, then
-///   CurCpuVid = bits [21:14]
-///   voltage    = 1.550 V - 0.00625 V * VID
-/// The MSR is core-scoped, so the affinity switch is what selects the core.
-/// Returns one slot per physical core (None where the read or the sanity
-/// window failed).
-#[cfg(target_arch = "x86_64")]
-fn msr_core_vids() -> Option<Vec<Option<(u32, f32)>>> {
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn GetCurrentThread() -> isize;
-        fn SetThreadAffinityMask(thread: isize, mask: usize) -> usize;
-        fn GetCurrentProcessorNumber() -> u32;
-        fn SwitchToThread() -> i32;
-    }
-
-    let Some(entries) = read_topology() else {
-        return None;
-    };
-    let mut core_masks: Vec<usize> = entries
-        .iter()
-        .filter(|e| e.relationship == RELATION_PROCESSOR_CORE)
-        .map(|e| e.processor_mask)
-        .collect();
-    if core_masks.is_empty() {
-        return None;
-    }
-    core_masks.sort_unstable();
-
-    let mut out = Vec::with_capacity(core_masks.len());
-    unsafe {
-        let thread = GetCurrentThread();
-        let original = SetThreadAffinityMask(thread, core_masks[0]);
-        if original == 0 {
-            return None;
-        }
-        for mask in &core_masks {
-            let first_thread = mask & mask.wrapping_neg();
-            if first_thread == 0 || SetThreadAffinityMask(thread, first_thread) == 0 {
-                SetThreadAffinityMask(thread, original);
-                return None;
-            }
-            // The MSR is core-scoped, so the read must execute on the target
-            // core. Setting affinity alone does NOT migrate the thread — the
-            // scheduler only moves it at the next opportunity, and a tight
-            // loop of RDMSR IOCTLs kept landing on the first core (12 reads,
-            // one voltage). Spin until the OS confirms the move.
-            let target = first_thread.trailing_zeros();
-            let mut tries = 0;
-            while GetCurrentProcessorNumber() != target && tries < 500 {
-                SwitchToThread();
-                tries += 1;
-            }
-            let slot = read_msr(0xC001_0293).ok().and_then(|raw| {
-                let vid = ((raw >> 14) & 0xFF) as u32;
-                let volt = 1.550f32 - 0.00625f32 * vid as f32;
-                if (0.2..=1.6).contains(&volt) {
-                    Some((vid, volt))
-                } else {
-                    None
-                }
-            });
-            out.push(slot);
-        }
-        SetThreadAffinityMask(thread, original);
-    }
-    Some(out)
-}
-
-/// Per-core MSR diagnostic: pins to each core, reads `C001_0293` and reports
-/// the raw value plus the logical CPU the read actually executed on. Used to
-/// validate the voltage fallback against a machine whose PM layout is known.
-#[cfg(target_arch = "x86_64")]
-pub fn msr_vids_diag() -> serde_json::Value {
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn GetCurrentThread() -> isize;
-        fn SetThreadAffinityMask(thread: isize, mask: usize) -> usize;
-        fn GetCurrentProcessorNumber() -> u32;
-        fn SwitchToThread() -> i32;
-    }
-
-    let mut rows = Vec::new();
-    let Some(entries) = read_topology() else {
-        return serde_json::json!([]);
-    };
-    let mut core_masks: Vec<usize> = entries
-        .iter()
-        .filter(|e| e.relationship == RELATION_PROCESSOR_CORE)
-        .map(|e| e.processor_mask)
-        .collect();
-    core_masks.sort_unstable();
-    unsafe {
-        let thread = GetCurrentThread();
-        let original = SetThreadAffinityMask(thread, core_masks.first().copied().unwrap_or(1));
-        for (i, mask) in core_masks.iter().enumerate() {
-            let first_thread = mask & mask.wrapping_neg();
-            SetThreadAffinityMask(thread, first_thread);
-            let target = first_thread.trailing_zeros();
-            let mut tries = 0;
-            while GetCurrentProcessorNumber() != target && tries < 500 {
-                SwitchToThread();
-                tries += 1;
-            }
-            let landed = GetCurrentProcessorNumber();
-            let raw = read_msr(0xC001_0293).unwrap_or(0);
-            let vid = (raw >> 14) & 0xFF;
-            rows.push(serde_json::json!({
-                "core": i,
-                "target_cpu": target,
-                "landed_cpu": landed,
-                "raw": format!("0x{:016X}", raw),
-                "vid": vid,
-                "volt": 1.550f32 - 0.00625f32 * vid as f32,
-            }));
-        }
-        if original != 0 {
-            SetThreadAffinityMask(thread, original);
-        }
-    }
-    serde_json::json!(rows)
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-pub fn msr_vids_diag() -> serde_json::Value {
-    serde_json::json!([])
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-fn msr_core_vids() -> Option<Vec<Option<(u32, f32)>>> {
-    None
-}
 
 /// Normalize raw CPUID NodeIds into CCD indexes. Consumer parts report
 /// 0-based contiguous nodes; anything else (gaps, 1-based firmware) falls
@@ -1702,13 +1572,17 @@ fn pm_slot_map(stride: usize) -> Vec<usize> {
         .clone()
 }
 
-/// GET-ish live telemetry endpoint body. `dump=true` returns the raw f32
-/// Live per-core VID endpoint. The name is historical: every CPU now reports
-/// per-core VID read from MSR C001_0293 (`CurCpuVid`, bits 21:14), which is
-/// what the UI calls VID. One package operating point means every core answers
-/// with the same VID at that instant — that is the hardware's answer, not a
-/// readout bug. The PM table is only used when the MSR route is dead, and
-/// `dump=true` still dumps it raw for offset calibration.
+/// GET-ish live telemetry endpoint body: per-core live voltage and temperature
+/// read from the SMU PM table. `dump=true` returns the raw f32 array instead,
+/// for offset calibration.
+///
+/// The VID route that 1.6.6 shipped (MSR C001_0293 `CurCpuVid`, one RDMSR per
+/// core after an affinity pin) is gone in 1.7.0: on every part measured,
+/// C001_0293 mirrors the whole-package P-state, so all cores reported the same
+/// number no matter how the threads were pinned. A readout that is identical
+/// for every core is not usable for per-core tuning, so the PM table — the
+/// only per-core source the SMU actually exposes — is the sole route again.
+/// `dump=true` still dumps the raw array for offset calibration.
 pub fn pmtable_live(dump: bool) -> Result<Value, String> {
     if dump {
         let snap = read_pm_table_raw()?;
@@ -1740,39 +1614,6 @@ pub fn pmtable_live(dump: bool) -> Result<Value, String> {
         }));
     }
 
-    // VID for every CPU, first and unconditionally: the per-core VID is the
-    // number the user asked for, and it does not depend on a PM table version
-    // being mapped.
-    #[cfg(target_arch = "x86_64")]
-    if let Some(vids) = msr_core_vids() {
-        let codes: Vec<Value> = vids
-            .iter()
-            .map(|v| match v {
-                Some((code, _)) => json!(*code),
-                None => Value::Null,
-            })
-            .collect();
-        let values: Vec<Value> = vids
-            .iter()
-            .map(|v| match v {
-                Some((_, volt)) => json!(((*volt as f64) * 1000.0).round() / 1000.0),
-                None => Value::Null,
-            })
-            .collect();
-        let n = values.len();
-        return Ok(json!({
-            "supported": true,
-            "source": "vid",
-            "layout": "msr",
-            "cores": n,
-            "vid": codes,
-            "voltage": values,
-            "temperature": Value::Null,
-        }));
-    }
-
-    // MSR dead (no PawnIO module, affinity refused): last resort is the PM
-    // table, when this version has a known or auto-detected layout.
     let snap = match read_pm_table_raw() {
         Ok(s) => s,
         Err(e) => return Ok(json!({ "supported": false, "reason": e })),
