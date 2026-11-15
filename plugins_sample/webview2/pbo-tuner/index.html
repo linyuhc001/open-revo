@@ -398,19 +398,8 @@
       <button id="btnAllZero" class="secondary">All Zero</button>
       <button id="btnApplyCO">Apply</button>
       <span class="spacer"></span>
-      <button id="btnDebugLog" class="secondary" title="查看服务端调试日志（SMU 命令、核心拓扑映射）">日志</button>
       <button id="btnVolt" class="secondary" title="切换每核心实时电压显示（默认关闭）">电压</button>
       <button id="btnRefresh" class="secondary">Refresh</button>
-    </div>
-
-    <div id="debugLogPanel" style="display:none;">
-      <div style="display:flex;gap:6px;align-items:center;margin:6px 0 4px;">
-        <span class="hint" id="debugLogPath" style="color:var(--text-dim);font-size:11px;"></span>
-        <span class="spacer" style="flex:1;"></span>
-        <button id="btnLogReload" class="secondary" style="padding:2px 10px;">刷新</button>
-        <button id="btnLogCopy" class="secondary" style="padding:2px 10px;">复制</button>
-      </div>
-      <pre id="debugLogPre" style="margin:0;padding:10px;border:1px solid var(--surface-overlay);border-radius:8px;background:rgba(0,0,0,0.25);font-family:Consolas,monospace;font-size:11px;line-height:1.5;max-height:260px;overflow:auto;white-space:pre-wrap;word-break:break-all;">…</pre>
     </div>
 
     <div class="ccd-wrap" id="ccdWrap">
@@ -1295,32 +1284,6 @@
       } catch (e) {
         log('[-] Scalar 失败: ' + e);
       }
-    });
-
-    // ---- 服务端调试日志 ----
-    const debugLogPanel = document.getElementById('debugLogPanel');
-    async function loadDebugLog() {
-      try {
-        const d = await rpc('debug_log');
-        document.getElementById('debugLogPath').textContent =
-          `${d.path || ''}（共 ${d.total ?? '?'} 行，显示末尾）`;
-        document.getElementById('debugLogPre').textContent = d.enabled === false
-          ? '（日志开关未开启，文件为空或不存在。可在下方「服务日志」卡片开启）\n'
-          : ((d.lines && d.lines.length ? d.lines.join('\n') : '(空)').trimEnd() + '\n');
-      } catch (e) {
-        document.getElementById('debugLogPre').textContent = '读取失败: ' + e;
-      }
-    }
-    document.getElementById('btnDebugLog').addEventListener('click', () => {
-      const show = debugLogPanel.style.display === 'none';
-      debugLogPanel.style.display = show ? 'block' : 'none';
-      if (show) loadDebugLog();
-    });
-    document.getElementById('btnLogReload').addEventListener('click', loadDebugLog);
-    document.getElementById('btnLogCopy').addEventListener('click', async () => {
-      const text = document.getElementById('debugLogPre').textContent;
-      try { await navigator.clipboard.writeText(text); log('[+] 调试日志已复制到剪贴板'); }
-      catch (_) { log('[-] 复制失败，请手动选择文本复制'); }
     });
 
     // ---- 服务日志开关 (persisted in manifest service.log_enabled) ----
