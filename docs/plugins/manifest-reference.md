@@ -55,8 +55,10 @@
 | `tokens` / `slint_tokens` | `object` | 可选 | `skin` | **【Slint 原生全局 Token 字典】**声明通用设计 Token（键值如 `bg_root`, `surface_card`, `accent_brand`, `radius_md`） |
 | `tokens_light` / `tokens_dark` / `tokens_mono` | `object` | 可选 | `skin` | **【三态色调独立声明】**单皮肤包分别声明浅色奶油、深焙暗黑、版画黑白三套独立 Token，随顶栏主题按钮实时切换 |
 | `background_css` | `string` | `background`可选 | `background` | 背景样式表入口相对路径（默认 `"background.css"`，回退 `"theme.css"`） |
-| `image` / `wallpaper` | `string` | 可选 | `background`/`skin` | **【零代码壁纸】**直接指定图片路径（如 `"bg.png"`），无需编写一行 CSS，宿主自动合成全套适配样式并注入 Slint 与 WebView2 |
-| `bg_image_opacity` / `opacity` | `number` | 可选 | `background`/`skin` | 背景壁纸渲染不透明度（范围 `0.05 ~ 1.0`，默认 `0.15`） |
+| `image` / `wallpaper` / `main_image` | `string` | 可选 | `background`/`skin` | **【零代码主壁纸】**直接指定主窗口背景图片路径（如 `"bg.png"`），无需编写 CSS。若未指定 `drawer_image`，迷你抽屉将自动共享本图片 |
+| `bg_image_opacity` / `opacity` | `number` | 可选 | `background`/`skin` | 主窗口背景壁纸渲染不透明度（范围 `0.05 ~ 1.0`，默认 `0.15` 或 `0.30`） |
+| `drawer_image` / `drawer_wallpaper` / `drawer_bg` | `string` | 可选 | `background`/`skin` | **【迷你抽屉专属壁纸】**指定迷你抽屉界面专属背景图片（如 `"drawer.png"`）。若留空，则自动 fallback 共享主窗口背景图；若指定，则两窗各自独立呈现 |
+| `drawer_opacity` / `drawer_bg_image_opacity` | `number` | 可选 | `background`/`skin` | 迷你抽屉专属背景壁纸不透明度（范围 `0.05 ~ 1.0`）。若留空，自动 fallback 采用 `bg_image_opacity` |
 | `entry` | `string` | 可选 | `widget`/`tab`/`service` | 默认入口相对路径，如 `index.html` 或 `welcome.rhai` |
 | `tab` | `object` | 可选 | 全类型 | **【控制台专属页签出口】**声明插件在控制台工作区的 Tab 入口（含 `entry`、`type`、`title`、`icon`，支持 WebView2 与 Slint 独立指定） |
 | `widget` | `object` | 可选 | 全类型 | **【桌面独立悬浮视窗出口】**声明插件在桌面的独立挂件（含 `entry`、`type`、`window`，支持 WebView2 与 Slint 独立指定） |
@@ -223,8 +225,26 @@
     },
     "actions": [
       {
-        "action": "set_battery_limit",
-        "limit": 80
+        "action": "call_command",
+        "command": "set_battery_limit",
+        "args": { "limit": 80 }
+      }
+    ]
+  },
+  {
+    "id": "gpu-undervolt-boot-guard",
+    "name": "微内核开机/重连显卡降压曲线自愈",
+    "enabled": true,
+    "cooldown_ms": 5000,
+    "condition": {
+      "type": "power_event",
+      "event": "ac_connected"
+    },
+    "actions": [
+      {
+        "action": "call_command",
+        "command": "set_gpu_undervolt_curve",
+        "args": { "targetVoltMv": 875, "maxBoostMhz": 2450 }
       }
     ]
   },
@@ -270,7 +290,8 @@
 #### `actions` 执行动作类型表
 | 动作 (`action`) | 参数 | 说明 |
 | :--- | :--- | :--- |
-| `"set_battery_limit"` | `limit: number` | **【硬件限充设置】**安全调整硬件电池充电阈值（`1 ~ 100`），调用微内核原生驱动完成协议对齐与门控锁定 |
+| `"call_command"` / `"invoke_command"` | `command: string`, `args?: object` | **【微内核通用 IPC 命令分发 (强烈推荐)】** 直接调用宿主全量 IPC 命令（如 `"set_battery_limit"`、`"set_gpu_undervolt_curve"`、`"set_gpu_clock_offsets"`、`"set_fan_boost"` 等），插件开发者 0 Rust 修改成本，前端调用什么命令这里就填什么，全自动开机静默调度 |
+| `"set_battery_limit"` | `limit: number` | **【硬件限充设置 (简写快捷动作)】**安全调整硬件电池充电阈值（`1 ~ 100`），调用微内核原生驱动完成协议对齐与门控锁定 |
 | `"set_power_mode"` | `mode: number` | **【性能模式切换】**`1`-办公, `2`-均衡, `3`-狂暴, `4`-极客自定义 |
 | `"set_fan_boost"` | `enable: boolean` | **【一键强冷】**切换强冷开启/关闭 |
 | `"raw_ec_write"` | `address: u16 \| string`, `value: u8 \| string` | **【EC 安全写入】**写入受微内核防爆盾（Blast Shield）受控保护的指定物理寄存器 |

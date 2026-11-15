@@ -137,6 +137,32 @@ pub fn dispatch_action(app: AppHandle, binding: ShortcutBinding) {
                 let _ = app.emit_to("osd", "touchpad-state-changed", next);
             }
 
+            // 4.1 Toggle Wi-Fi Radio
+            ShortcutAction::ToggleWifi => {
+                let current = crate::system::switches::radio::get_realtime_wifi_state()
+                    .unwrap_or_else(|| crate::system::config::load_config().wifi_enabled);
+                let next = !current;
+                let _ = crate::system::device_switches::set_switch("wifi", next);
+                if osd {
+                    crate::system::osd_window::show_device_switch("wifi", next);
+                }
+                let _ = app.emit("wifi-state-changed", next);
+                let _ = app.emit_to("osd", "wifi-state-changed", next);
+                let _ = app.emit_to("main", "wifi-state-changed", next);
+            }
+
+            // 4.2 Toggle Screen Flip (180°)
+            ShortcutAction::ToggleScreenFlip => {
+                if let Ok(is_flipped) = crate::system::display::toggle_primary_display_orientation() {
+                    if osd {
+                        crate::system::osd_window::show_device_switch("screen_flip", is_flipped);
+                    }
+                    let _ = app.emit("screen-flip-changed", is_flipped);
+                    let _ = app.emit_to("osd", "screen-flip-changed", is_flipped);
+                    let _ = app.emit_to("main", "screen-flip-changed", is_flipped);
+                }
+            }
+
             // 5. Toggle Win Key Lock
             ShortcutAction::ToggleWinLock => {
                 let current = crate::system::hooks::is_win_key_locked();

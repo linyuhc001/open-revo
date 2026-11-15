@@ -9,30 +9,42 @@
   <style>
     :root {
       color-scheme: dark;
-      --bg: #0b0f17;
-      --card: rgba(22, 27, 34, 0.75);
-      --card-hover: rgba(33, 38, 45, 0.85);
-      --border: rgba(255, 255, 255, 0.08);
-      --border-strong: rgba(255, 255, 255, 0.16);
-      --text: #f8fafc;
-      --text-2: #cbd5e1;
-      --text-3: #94a3b8;
-      --ok: #10b981;
-      --warn: #f59e0b;
-      --err: #ef4444;
-      --info: #38bdf8;
-      --cyan: #06b6d4;
-      --indigo: #6366f1;
-      --r-sm: 6px;
-      --r-md: 10px;
-      --r-lg: 14px;
+      --surface-base: #0b0f17;
+      --surface-card: rgba(22, 27, 34, 0.75);
+      --surface-card-hover: rgba(33, 38, 45, 0.85);
+      --surface-overlay: rgba(255, 255, 255, 0.06);
+      --surface-hover: rgba(255, 255, 255, 0.09);
+      --border-subtle: rgba(255, 255, 255, 0.08);
+      --border-medium: rgba(255, 255, 255, 0.16);
+      --border-accent: rgba(6, 182, 212, 0.4);
+      --text-primary: #f8fafc;
+      --text-secondary: #cbd5e1;
+      --text-dim: #94a3b8;
+      --status-ok: #10b981;
+      --status-ok-dim: rgba(16, 185, 129, 0.15);
+      --status-warn: #f59e0b;
+      --status-warn-dim: rgba(245, 158, 11, 0.15);
+      --status-error: #ef4444;
+      --status-error-dim: rgba(239, 68, 68, 0.15);
+      --status-info: #38bdf8;
+      --status-info-dim: rgba(56, 189, 248, 0.15);
+      --accent-cyan: #06b6d4;
+      --accent-indigo: #6366f1;
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 14px;
     }
 
-    * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+    }
 
     html, body {
-      background: var(--bg);
-      color: var(--text);
+      background: var(--surface-base);
+      color: var(--text-primary);
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
       padding: 18px;
       overflow-y: auto;
@@ -40,16 +52,31 @@
       min-height: 100vh;
     }
 
-    ::-webkit-scrollbar { width: 6px; height: 6px; }
-    ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 4px; }
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.2);
+      border-radius: 4px;
+    }
 
-    .container { max-width: 1060px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+    .container {
+      max-width: 1060px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
 
-    .hero {
-      background: linear-gradient(135deg, rgba(6,182,212,0.08), rgba(99,102,241,0.05)), var(--card);
-      border: 1px solid var(--border-strong);
-      border-radius: var(--r-lg);
+    /* Header Banner */
+    .hero-card {
+      background: linear-gradient(135deg, rgba(6, 182, 212, 0.08) 0%, rgba(99, 102, 241, 0.05) 100%), var(--surface-card);
+      border: 1px solid var(--border-medium);
+      border-radius: var(--radius-lg);
       padding: 16px 20px;
       display: flex;
       justify-content: space-between;
@@ -57,878 +84,1653 @@
       flex-wrap: wrap;
       gap: 12px;
     }
-    .hero-title { font-size: 17px; font-weight: 700; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-    .hero-sub { font-size: 12px; color: var(--text-3); margin-top: 4px; }
 
-    .badge {
-      font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: 9999px;
-      background: rgba(16,185,129,0.15); color: var(--ok); border: 1px solid rgba(16,185,129,0.3);
-      display: inline-flex; align-items: center; gap: 5px;
-    }
-    .badge-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 8px var(--ok); }
-
-    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
-    .stat {
-      background: var(--card); border: 1px solid var(--border); border-radius: var(--r-md);
-      padding: 12px 16px; display: flex; flex-direction: column; gap: 6px;
-    }
-    .stat-label { font-size: 11px; color: var(--text-3); display: flex; justify-content: space-between; }
-    .stat-value { font-size: 20px; font-weight: 700; letter-spacing: -0.5px; }
-    .stat-hint { font-size: 10.5px; color: var(--text-3); }
-
-    .panel {
-      background: var(--card); border: 1px solid var(--border); border-radius: var(--r-lg);
-      padding: 16px 20px; display: flex; flex-direction: column; gap: 14px;
-    }
-    .panel-head { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
-    .panel-title { font-size: 14px; font-weight: 700; }
-
-    .row { display: flex; flex-direction: column; gap: 8px; background: rgba(0,0,0,0.2); border: 1px solid var(--border); border-radius: var(--r-md); padding: 12px 14px; }
-    .row-head { display: flex; justify-content: space-between; align-items: center; }
-    .label { font-size: 12.5px; font-weight: 600; color: var(--text-2); }
-    .val-badge { font-size: 13px; font-weight: 700; color: var(--cyan); font-family: Consolas, monospace; padding: 2px 8px; background: rgba(6,182,212,0.1); border: 1px solid rgba(6,182,212,0.25); border-radius: var(--r-sm); }
-
-    input[type="range"] { width: 100%; height: 6px; border-radius: 3px; background: rgba(255,255,255,0.12); outline: none; -webkit-appearance: none; cursor: pointer; }
-    input[type="range"]::-webkit-slider-thumb {
-      -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%;
-      background: var(--cyan); box-shadow: 0 0 10px rgba(6,182,212,0.6); border: 2px solid #fff; cursor: pointer;
+    .hero-title-group {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
     }
 
-    .presets { display: flex; flex-wrap: wrap; gap: 8px; }
-    .preset {
-      background: rgba(255,255,255,0.04); border: 1px solid var(--border-strong); color: var(--text-2);
-      border-radius: var(--r-sm); padding: 8px 14px; font-size: 12px; font-weight: 600; cursor: pointer;
+    .hero-title {
+      font-size: 17px;
+      font-weight: 700;
+      letter-spacing: -0.3px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .hero-subtitle {
+      font-size: 12px;
+      color: var(--text-dim);
+    }
+
+    .badge-pill {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 9px;
+      border-radius: 9999px;
+      background: var(--status-ok-dim);
+      color: var(--status-ok);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .badge-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--status-ok);
+      box-shadow: 0 0 8px var(--status-ok);
+    }
+
+    .badge-sync {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 9px;
+      border-radius: 9999px;
+      background: rgba(99, 102, 241, 0.15);
+      color: #a5b4fc;
+      border: 1px solid rgba(99, 102, 241, 0.35);
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    /* Grid Stats */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 12px;
+    }
+
+    .stat-card {
+      background: var(--surface-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 12px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      transition: border-color 0.15s ease;
+    }
+    .stat-card:hover {
+      border-color: var(--border-medium);
+    }
+
+    .stat-label {
+      font-size: 11px;
+      color: var(--text-dim);
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .stat-value {
+      font-size: 20px;
+      font-weight: 700;
+      font-feature-settings: "tnum";
+      letter-spacing: -0.5px;
+    }
+
+    .stat-hint {
+      font-size: 10.5px;
+      color: var(--text-dim);
+    }
+
+    /* Panel Card */
+    .card-panel {
+      background: var(--surface-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      padding: 16px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--border-subtle);
+      padding-bottom: 10px;
+    }
+
+    .panel-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text-primary);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* Slider Rows */
+    .tune-row {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      background: rgba(0, 0, 0, 0.2);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 12px 14px;
+    }
+
+    .tune-row-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .tune-label {
+      font-size: 12.5px;
+      font-weight: 600;
+      color: var(--text-secondary);
+    }
+
+    .tune-val-badge {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--accent-cyan);
+      font-family: Consolas, monospace;
+      padding: 2px 8px;
+      background: rgba(6, 182, 212, 0.1);
+      border: 1px solid rgba(6, 182, 212, 0.25);
+      border-radius: var(--radius-sm);
+    }
+
+    .range-slider {
+      width: 100%;
+      height: 6px;
+      border-radius: 3px;
+      background: rgba(255, 255, 255, 0.12);
+      outline: none;
+      -webkit-appearance: none;
+      cursor: pointer;
+    }
+    .range-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--accent-cyan);
+      box-shadow: 0 0 10px rgba(6, 182, 212, 0.6);
+      cursor: pointer;
+      border: 2px solid #fff;
+    }
+
+    /* Preset Buttons */
+    .preset-pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .preset-btn {
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--border-medium);
+      color: var(--text-secondary);
+      border-radius: var(--radius-sm);
+      padding: 8px 14px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
       transition: all 0.15s ease;
+      display: flex;
+      align-items: center;
+      gap: 6px;
     }
-    .preset:hover { background: rgba(255,255,255,0.08); color: var(--text); border-color: var(--cyan); }
-    .preset.active { background: rgba(6,182,212,0.15); border-color: var(--cyan); color: var(--cyan); }
-
-    .canvas-wrap { background: #06090e; border: 1px solid var(--border); border-radius: var(--r-md); padding: 12px; }
-    #vfCanvas { width: 100%; height: 240px; display: block; cursor: crosshair; touch-action: none; }
-    #vfCanvas.dragging { cursor: ns-resize; }
-
-    .legend { display: flex; gap: 16px; font-size: 11px; color: var(--text-3); margin-top: 6px; justify-content: flex-end; }
-    .legend-item { display: flex; align-items: center; gap: 5px; }
-    .legend-swatch { width: 12px; height: 3px; border-radius: 2px; }
-
-    .toolbar { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
-    .toolbar .hint { font-size: 11px; color: var(--text-3); margin-right: auto; }
-    .toolbar .hint b { color: var(--text-2); font-weight: 600; }
-    .readout {
-      font-size: 11px; font-family: Consolas, monospace; padding: 3px 8px; border-radius: 5px;
-      background: rgba(6,182,212,0.12); border: 1px solid rgba(6,182,212,0.35); color: #22d3ee;
-      min-width: 210px; text-align: center;
+    .preset-btn:hover {
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text-primary);
+      border-color: var(--accent-cyan);
+    }
+    .preset-btn.active {
+      background: rgba(6, 182, 212, 0.15);
+      border-color: var(--accent-cyan);
+      color: var(--accent-cyan);
     }
 
-    .actions { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 4px; }
-    .btn-group { display: flex; gap: 10px; }
+    /* Curve Visualization Canvas */
+    .curve-canvas-wrap {
+      background: #06090e;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 12px;
+      position: relative;
+    }
+
+    #vfCanvas {
+      width: 100%;
+      height: 200px;
+      display: block;
+    }
+
+    .canvas-legend {
+      display: flex;
+      gap: 16px;
+      font-size: 11px;
+      color: var(--text-dim);
+      margin-top: 6px;
+      justify-content: flex-end;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .legend-color {
+      width: 12px;
+      height: 3px;
+      border-radius: 2px;
+    }
+
+    /* Action Buttons */
+    .actions-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 4px;
+    }
+
+    .btn-group-right {
+      display: flex;
+      gap: 10px;
+    }
+
     .btn {
-      padding: 9px 18px; font-size: 12.5px; font-weight: 600; border-radius: var(--r-md); cursor: pointer;
-      display: inline-flex; align-items: center; gap: 7px; transition: all 0.15s ease; border: none;
-    }
-    .btn-primary { background: linear-gradient(135deg, #06b6d4, #0284c7); color: #fff; box-shadow: 0 4px 14px rgba(6,182,212,0.3); }
-    .btn-primary:hover { box-shadow: 0 4px 18px rgba(6,182,212,0.5); filter: brightness(1.1); }
-    .btn-secondary { background: rgba(255,255,255,0.06); color: var(--text-2); border: 1px solid var(--border-strong); }
-    .btn-secondary:hover { background: rgba(255,255,255,0.1); color: var(--text); }
-    .btn-danger { background: rgba(239,68,68,0.1); color: var(--err); border: 1px solid rgba(239,68,68,0.3); }
-    .btn-danger:hover { background: rgba(239,68,68,0.2); }
-    .btn:disabled { opacity: 0.4; cursor: not-allowed; box-shadow: none; }
-
-    .console {
-      background: #04070c; border: 1px solid var(--border); border-radius: var(--r-md);
-      padding: 10px 14px; font-family: Consolas, "Courier New", monospace; font-size: 11px;
-      color: #38bdf8; max-height: 120px; overflow-y: auto; white-space: pre-wrap;
+      padding: 9px 18px;
+      font-size: 12.5px;
+      font-weight: 600;
+      border-radius: var(--radius-md);
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      transition: all 0.15s ease;
+      border: none;
     }
 
-    .input { background: #121826; border: 1px solid var(--border-strong); color: #fff; font-size: 12px; border-radius: var(--r-sm); padding: 6px 10px; outline: none; width: 90px; }
-  </style>
+    .btn-primary {
+      background: linear-gradient(135deg, #06b6d4, #0284c7);
+      color: #fff;
+      box-shadow: 0 4px 14px rgba(6, 182, 212, 0.3);
+    }
+    .btn-primary:hover {
+      box-shadow: 0 4px 18px rgba(6, 182, 212, 0.5);
+      filter: brightness(1.1);
+    }
+
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text-secondary);
+      border: 1px solid var(--border-medium);
+    }
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.1);
+      color: var(--text-primary);
+    }
+
+    .btn-danger {
+      background: rgba(239, 68, 68, 0.1);
+      color: var(--status-error);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+    }
+    .btn-danger:hover {
+      background: rgba(239, 68, 68, 0.2);
+    }
+
+    /* Console */
+    .console-box {
+      background: #04070c;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 10px 14px;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 11px;
+      color: #38bdf8;
+      max-height: 105px;
+      overflow-y: auto;
+    }
+
+    .input-field {
+      background: #121826;
+      border: 1px solid var(--border-medium);
+      color: #fff;
+      font-size: 12px;
+      border-radius: var(--radius-sm);
+      padding: 6px 10px;
+      outline: none;
+      width: 90px;
+    }
+  
+    /* Manual Dragging & Canvas Toolbar */
+    .canvas-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .canvas-readout {
+      font-size: 11px;
+      font-family: monospace;
+      color: var(--accent-cyan);
+      background: rgba(6, 182, 212, 0.08);
+      border: 1px solid rgba(6, 182, 212, 0.2);
+      border-radius: var(--radius-sm);
+      padding: 3px 8px;
+      min-height: 24px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      user-select: none;
+    }
+    .canvas-btn-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .canvas-micro-btn {
+      background: var(--surface-card);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-secondary);
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      transition: all 0.15s ease;
+      user-select: none;
+    }
+    .canvas-micro-btn:hover:not(:disabled) {
+      background: var(--surface-card-hover);
+      color: var(--text-primary);
+      border-color: var(--border-medium);
+    }
+    .canvas-micro-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    #vfCanvas {
+      width: 100%;
+      height: 230px;
+      display: block;
+      cursor: crosshair;
+      touch-action: none;
+    }
+    #vfCanvas.dragging {
+      cursor: ns-resize;
+    }
+
+    </style>
 </head>
 
 <body>
   <div class="container">
-    <div class="hero">
-      <div>
+    <!-- Header Hero -->
+    <div class="hero-card">
+      <div class="hero-title-group">
         <div class="hero-title">
-          <span id="gpuTitle">NVIDIA GPU</span>
-          <span class="badge"><span class="badge-dot"></span><span>NVAPI 硬件直连就绪</span></span>
+          <span id="gpuTitle">NVIDIA GeForce RTX 4090 Laptop GPU</span>
+          <span class="badge-pill" id="statusPill">
+            <span class="badge-dot"></span>
+            <span>NVAPI 硬件直连就绪</span>
+          </span>
+          <span class="badge-sync" id="modeSyncPill" style="display: none;">
+            <span>🟢 自定义模式联动中 (对齐 config.json)</span>
+          </span>
         </div>
-        <div class="hero-sub">免小飞机纯 Rust 驱动级显卡调优 · 支持 V/F 曲线手动编辑与 plugin_storage 持久化</div>
+        <div class="hero-subtitle">
+          免小飞机纯 Rust 驱动级显卡调优 · 支持 V/F 曲线手动编辑、plugin_storage 持久化与宿主双向事件联动
+        </div>
       </div>
-      <div><button class="btn btn-secondary" onclick="refreshHardwareInfo()">🔄 刷新状态</button></div>
-    </div>
-
-    <div class="stats">
-      <div class="stat">
-        <div class="stat-label"><span>核心频率偏移</span><span id="tmp">--°C</span></div>
-        <div class="stat-value" id="coreOffset">+0 MHz</div>
-        <div class="stat-hint" id="power">实时功耗: -- W</div>
-      </div>
-      <div class="stat">
-        <div class="stat-label"><span>显存时钟增量</span><span id="usage">--%</span></div>
-        <div class="stat-value" id="memOffset">+0 MHz</div>
-        <div class="stat-hint" id="vram">VRAM 显存时钟加成</div>
-      </div>
-      <div class="stat">
-        <div class="stat-label"><span>硬件 V/F 锚点</span><span>ClkVfPoints</span></div>
-        <div class="stat-value" id="anchorCount">-- 点</div>
-        <div class="stat-hint" id="voltRange">--</div>
-      </div>
-      <div class="stat">
-        <div class="stat-label"><span>调谐模式</span><span>plugin_storage</span></div>
-        <div class="stat-value" id="modeText" style="color: var(--ok);">出厂默认</div>
-        <div class="stat-hint" id="storageHint">参数沙盒持久化正常</div>
+      <div>
+        <button class="btn btn-secondary" onclick="refreshHardwareInfo()">🔄 刷新状态</button>
       </div>
     </div>
 
-    <div class="panel">
-      <div class="panel-head">
-        <div class="panel-title">🚀 经典频率时钟调谐 (Core / VRAM Clock Tuning)</div>
-        <span style="font-size: 11px; color: var(--text-3);">滑块拖动无级调节</span>
+    <!-- Quick Stats -->
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-label">
+          <span>核心频率偏移</span>
+          <span id="statTelemetryTemp">--°C</span>
+        </div>
+        <div class="stat-value" id="statCoreOffset">+0 MHz</div>
+        <div class="stat-hint" id="statTelemetryPower">实时 GPU 功耗: -- W</div>
       </div>
-      <div class="row">
-        <div class="row-head"><span class="label">GPU 核心频率偏移</span><span class="val-badge" id="coreBadge">+0 MHz</span></div>
-        <input type="range" id="coreSlider" min="-300" max="250" step="5" value="0" oninput="onCore(this.value)" />
+      <div class="stat-card">
+        <div class="stat-label">
+          <span>显存时钟增量</span>
+          <span id="statTelemetryUsage">--%</span>
+        </div>
+        <div class="stat-value" id="statMemOffset">+0 MHz</div>
+        <div class="stat-hint" id="statTelemetryVram">VRAM 物理显存时钟加成</div>
       </div>
-      <div class="row">
-        <div class="row-head"><span class="label">GPU 显存频率偏移</span><span class="val-badge" id="memBadge">+0 MHz</span></div>
-        <input type="range" id="memSlider" min="0" max="1500" step="25" value="0" oninput="onMem(this.value)" />
+      <div class="stat-card">
+        <div class="stat-label">
+          <span>硬件 V/F 锚点</span>
+          <span>ClkVfPoints</span>
+        </div>
+        <div class="stat-value" id="statAnchorCount">127 点</div>
+        <div class="stat-hint" id="statVoltRange">450 mV ~ 1240 mV</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">
+          <span>调谐模式 & 存储</span>
+          <span>plugin_storage</span>
+        </div>
+        <div class="stat-value" id="statModeText" style="color: var(--status-ok);">出厂默认</div>
+        <div class="stat-hint" id="statStorageHint">参数沙盒持久化正常</div>
       </div>
     </div>
 
-    <div class="panel">
-      <div class="panel-head">
-        <div class="panel-title">⚡ V/F 曲线手动编辑 (Afterburner 风格)</div>
-        <span style="font-size: 11px; color: var(--ok);">● 降压锁频 · 降温 8~15°C</span>
+    <!-- Classic Overclocking Section -->
+    <div class="card-panel">
+      <div class="panel-header">
+        <div class="panel-title">
+          <span>🚀 经典频率时钟调谐 (Core / VRAM Clock Tuning)</span>
+        </div>
+        <span style="font-size: 11px; color: var(--text-dim);">滑块拖动无级调节，松开实时反馈</span>
       </div>
 
-      <div class="presets">
-        <button class="preset" onclick="applyPreset(850, 2250, '极致低温 (850mV)')">❄️ 极致低温 (850mV @ 2250MHz)</button>
-        <button class="preset active" onclick="applyPreset(875, 2450, '黄金甜点 (875mV)')">⚡ 黄金甜点 (875mV @ 2450MHz)</button>
-        <button class="preset" onclick="applyPreset(900, 2600, '极客能效 (900mV)')">🚀 极客能效 (900mV @ 2600MHz)</button>
+      <!-- Core Slider -->
+      <div class="tune-row">
+        <div class="tune-row-header">
+          <span class="tune-label">GPU 核心频率偏移 (Core Clock Offset)</span>
+          <span class="tune-val-badge" id="coreValBadge">+0 MHz</span>
+        </div>
+        <input type="range" class="range-slider" id="coreSlider" min="-300" max="250" step="5" value="0"
+          oninput="onCoreSliderChange(this.value)" />
       </div>
 
-      <div style="display: flex; gap: 16px; align-items: center; flex-wrap: wrap; background: rgba(0,0,0,0.2); padding: 10px 14px; border-radius: var(--r-md); border: 1px solid var(--border);">
+      <!-- Memory Slider -->
+      <div class="tune-row">
+        <div class="tune-row-header">
+          <span class="tune-label">GPU 显存频率偏移 (Memory Clock Offset)</span>
+          <span class="tune-val-badge" id="memValBadge">+0 MHz</span>
+        </div>
+        <input type="range" class="range-slider" id="memSlider" min="0" max="1500" step="25" value="0"
+          oninput="onMemSliderChange(this.value)" />
+      </div>
+    </div>
+
+    <!-- Undervolt Engine (Afterburner Curve Killer) -->
+    <div class="card-panel">
+      <div class="panel-header">
+        <div class="panel-title">
+          <span>⚡ 免小飞机 V/F 曲线降压引擎 (GPU Undervolting & Flat Lock)</span>
+        </div>
+        <span style="font-size: 11px; color: var(--status-ok);">● 降温 8~15°C · 降低功耗 15~30W · 消灭风啸</span>
+      </div>
+
+      <!-- Quick Preset Capsules -->
+      <div class="preset-pill-row">
+        <button class="preset-btn" onclick="applyPreset(850, 2250, '极致低温 (850mV)')">
+          ❄️ 极致低温 (850mV @ 2250MHz)
+        </button>
+        <button class="preset-btn active" onclick="applyPreset(875, 2450, '黄金甜点 (875mV)')">
+          ⚡ 黄金甜点 (875mV @ 2450MHz)
+        </button>
+        <button class="preset-btn" onclick="applyPreset(900, 2600, '极客能效 (900mV)')">
+          🚀 极客能效 (900mV @ 2600MHz)
+        </button>
+      </div>
+
+      <!-- Custom Input Row -->
+      <div style="display: flex; gap: 16px; align-items: center; flex-wrap: wrap; background: rgba(0,0,0,0.2); padding: 10px 14px; border-radius: var(--radius-md); border: 1px solid var(--border-subtle);">
         <div style="display: flex; align-items: center; gap: 8px;">
-          <span style="font-size: 12px; color: var(--text-2);">目标锁压:</span>
-          <input type="number" id="inputTargetVolt" class="input" value="875" min="700" max="1100" step="5" />
-          <span style="font-size: 11px; color: var(--text-3);">mV</span>
+          <span style="font-size: 12px; color: var(--text-secondary);">目标锁压 (Target Volt):</span>
+          <input type="number" id="inputTargetVolt" class="input-field" value="875" min="700" max="1100" step="5" />
+          <span style="font-size: 11px; color: var(--text-dim);">mV</span>
         </div>
         <div style="display: flex; align-items: center; gap: 8px;">
-          <span style="font-size: 12px; color: var(--text-2);">目标平频:</span>
-          <input type="number" id="inputTargetFreq" class="input" value="2450" min="1500" max="3000" step="10" />
-          <span style="font-size: 11px; color: var(--text-3);">MHz</span>
+          <span style="font-size: 12px; color: var(--text-secondary);">目标平频 (Target Freq):</span>
+          <input type="number" id="inputTargetFreq" class="input-field" value="2450" min="1500" max="3000" step="10" />
+          <span style="font-size: 11px; color: var(--text-dim);">MHz</span>
         </div>
-        <button class="btn btn-secondary" style="padding: 5px 12px; font-size: 11.5px;" onclick="applyCustom()">📐 计算并绘制曲线</button>
+        <button class="btn btn-secondary" style="padding: 5px 12px; font-size: 11.5px;" onclick="applyCustomUndervoltInputs()">
+          📐 计算并绘制曲线
+        </button>
       </div>
 
-      <div class="canvas-wrap">
+      <!-- V/F Curve Visualizer & Interactive Tuner -->
+      <div class="curve-canvas-wrap">
+        <div class="canvas-toolbar">
+          <div class="canvas-readout" id="readout">
+            <span>🖱️ <b>拖动</b> 单点微调 · <b>Shift+拖动</b> 右侧整段同幅平移（压过左邻时按橙色虚线预览真实生效形状）· <b>双击</b> 归零</span>
+          </div>
+          <div class="canvas-btn-group">
+            <button class="canvas-micro-btn" id="btnUndo" onclick="undoEdit()" title="撤销上次曲线改动 (快捷键 Ctrl+Z)" disabled>↶ 撤销</button>
+            <button class="canvas-micro-btn" onclick="reloadCurveFromHardware()" title="从显卡驱动重新读回当前实际生效曲线">⟳ 读回显卡</button>
+            <button class="canvas-micro-btn" onclick="saveManualSnapshot()" title="将当前曲线方案独立暂存">💾 保存快照</button>
+            <button class="canvas-micro-btn" id="btnLoadSnapshot" onclick="loadManualSnapshot()" title="从暂存快照读回" disabled>📂 载入快照</button>
+          </div>
+        </div>
         <canvas id="vfCanvas"></canvas>
-        <div class="legend">
-          <div class="legend-item"><span class="legend-swatch" style="background: rgba(255,255,255,0.3);"></span><span>出厂 Stock 曲线</span></div>
-          <div class="legend-item"><span class="legend-swatch" style="background: #06b6d4;"></span><span>当前编辑曲线</span></div>
+        <div class="canvas-legend">
+          <div class="legend-item">
+            <span class="legend-color" style="background: rgba(255, 255, 255, 0.3);"></span>
+            <span>出厂 Stock 曲线</span>
+          </div>
+          <div class="legend-item">
+            <span class="legend-color" style="background: #06b6d4;"></span>
+            <span>规划/生效 V/F 曲线</span>
+          </div>
+          <div class="legend-item" id="legendDriverPreview" style="display: none;">
+            <span class="legend-color" style="background: rgba(251, 146, 60, 0.9); border-bottom: 2px dashed rgba(251, 146, 60, 0.9); height: 0;"></span>
+            <span>驱动单调性实际生效线</span>
+          </div>
+          <div class="legend-item">
+            <span class="legend-color" style="background: #10b981; border-radius: 50%; width: 6px; height: 6px;"></span>
+            <span>锁压/目标锚点</span>
+          </div>
         </div>
       </div>
+    </div>
 
-      <div class="toolbar">
-        <span class="hint"><b>拖动</b> 单点调整 · <b>Shift+拖动</b> 右侧整段同幅平移（压过左邻时按橙色虚线预览真实生效形状）· <b>双击</b> 单点归零</span>
-        <span class="readout" id="readout">未选中锚点</span>
-        <button class="btn btn-secondary" style="padding: 5px 10px; font-size: 11.5px;" onclick="undoEdit()">↶ 撤销</button>
-        <button class="btn btn-secondary" style="padding: 5px 10px; font-size: 11.5px;" onclick="reloadCurve()">⟳ 读回硬件</button>
-        <button class="btn btn-secondary" style="padding: 5px 10px; font-size: 11.5px;" onclick="saveCurve()">💾 保存曲线</button>
-        <button class="btn btn-secondary" id="btnLoad" style="padding: 5px 10px; font-size: 11.5px;" onclick="loadCurve()">📂 读取曲线</button>
+    <!-- Actions & Console -->
+    <div class="actions-bar">
+      <div>
+        <button class="btn btn-danger" onclick="resetToStock()">⚠️ 恢复出厂设置 (Stock Defaults)</button>
+      </div>
+      <div class="btn-group-right">
+        <button class="btn btn-secondary" onclick="applyClockOffsetsOnly()">仅应用时钟偏移</button>
+        <button class="btn btn-primary" onclick="applyFullUndervoltToHardware()">💾 一键写入显卡硬件生效</button>
       </div>
     </div>
 
-    <div class="actions">
-      <div><button class="btn btn-danger" onclick="resetStock()">⚠️ 恢复出厂设置</button></div>
-      <div class="btn-group">
-        <button class="btn btn-secondary" onclick="applyClockOnly()">仅应用时钟偏移</button>
-        <button class="btn btn-primary" onclick="applyAll()">💾 一键写入显卡硬件生效</button>
-      </div>
+    <!-- Output log console -->
+    <div class="console-box" id="consoleBox">
+      [00:00:00] 正在连接 OpenRevo 宿主 NVAPI 驱动网关...
     </div>
-
-    <div class="console" id="console">[00:00:00] 正在连接 OpenRevo 宿主 NVAPI 驱动网关...</div>
   </div>
 
   <script>
-    "use strict";
-
-    // ============================================================
-    //  常量
-    // ============================================================
-    const PLUGIN_ID = "gpu-curve-tuner";
-    const LOCAL_KEY = "openrevo_plugin_gpu_curve_tuner_cfg";
-    const V_MIN = 700, V_MAX = 1150;       // 电压轴（700mV 以下是待机死区；1150mV 以上不显示）
-    const F_MAX = 3000;                    // 频率轴顶端（高于此值的锚点不绘制）
+    const PLUGIN_ID = 'gpu-curve-tuner';
+    const LOCAL_STORAGE_KEY = 'openrevo_plugin_gpu_curve_tuner_cfg';
+    const V_MIN = 700, V_MAX = 1150;        // 电压轴：700mV 以下是待机死区，1150mV 以上不显示
+    const F_MAX = 3000;                     // 频率轴顶端（高于此值的锚点不绘制）
     const DELTA_MIN = -500, DELTA_MAX = 1000; // 单锚点偏移硬限制（与后端 nvapi.rs 一致）
-    const HIT_PX = 14;                     // 命中判定半径（像素）
+    const HIT_PX = 14;      // 命中判定半径 (像素)
 
-    // ============================================================
-    //  状态：delta 表是唯一事实源
-    // ============================================================
-    // deltas[i] = 锚点 i 相对「出厂曲线」的绝对偏移（MHz）。
-    // 出厂曲线 freq_stock[i] 在首次读回时固定下来，之后不再变动，
-    // 这样编辑缓冲区始终有稳定的参照，不会随读回值漂移。
-    const S = {
-      gpu: "NVIDIA GPU",
+    // --- State Storage ---
+    const STATE = {
+      gpuName: 'NVIDIA GPU',
+      isAvailable: false,
+      supportsVfCurve: false,
       coreOffset: 0,
       memOffset: 0,
-      anchors: [],        // { volt_mv, freq_mhz, delta_mhz }  —— 硬件读回的当前曲线
-      stock: [],          // 出厂频率（首次读回时固定）
-      deltas: [],         // 编辑缓冲区，绝对偏移
+      vfPoints: [],
+      // 出厂基线：首次读回时固定下来，之后不再随读回值漂移。
+      // 编辑缓冲区始终以它为参照，delta 的语义才不会自我污染。
+      stockBaseline: [],
+      plannedDeltas: null,
       targetVolt: 875,
       targetFreq: 2450,
-      mode: "出厂默认",
-      savedCurve: null,   // 保存按钮归档的曲线
-      undo: [],
-      hover: -1,
-      geom: null
+      activeMode: '出厂默认',
+      hostPowerMode: null,
+      undoStack: [],
+      savedSnapshot: null,
+      hoverIndex: -1
     };
 
-    // ============================================================
-    //  RPC / 存储 / 日志
-    // ============================================================
-    async function rpc(cmd, args) {
-      if (window.OpenRevo && window.OpenRevo.invoke) return await window.OpenRevo.invoke(cmd, args || {});
-      if (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke) return await window.__TAURI__.core.invoke(cmd, args || {});
-      if (window.parent && window.parent.__OPENREVO_BRIDGE__ && window.parent.__OPENREVO_BRIDGE__.invoke) return await window.parent.__OPENREVO_BRIDGE__.invoke(cmd, args || {});
-      throw new Error("未连接到宿主网关");
+    // --- Unified RPC Invoker ---
+    async function rpc(command, args = {}) {
+      if (window.OpenRevo && typeof window.OpenRevo.invoke === 'function') {
+        return await window.OpenRevo.invoke(command, args);
+      }
+      if (window.__TAURI__ && window.__TAURI__.core && typeof window.__TAURI__.core.invoke === 'function') {
+        return await window.__TAURI__.core.invoke(command, args);
+      }
+      if (window.parent && window.parent.__OPENREVO_BRIDGE__ && typeof window.parent.__OPENREVO_BRIDGE__.invoke === 'function') {
+        return await window.parent.__OPENREVO_BRIDGE__.invoke(command, args);
+      }
+      throw new Error('未连接到 OpenRevo 宿主通信网关');
     }
+
     function log(msg) {
-      const box = document.getElementById("console");
-      const t = new Date().toTimeString().split(" ")[0];
-      box.textContent += "\n[" + t + "] " + msg;
+      const box = document.getElementById('consoleBox');
+      const time = new Date().toTimeString().split(' ')[0];
+      box.innerHTML += `\n[${time}] ${msg}`;
       box.scrollTop = box.scrollHeight;
     }
 
-    async function loadStorage() {
+    // --- WatcherHub Background Guard Synchronization ---
+    async function syncWatcherToHost() {
+      try {
+        if (!STATE.isAvailable) return;
+
+        const actions = [];
+        if (STATE.memOffset !== 0 || STATE.coreOffset !== 0) {
+          actions.push({
+            action: 'call_command',
+            command: 'set_gpu_clock_offsets',
+            args: {
+              coreOffsetMhz: STATE.coreOffset,
+              memOffsetMhz: STATE.memOffset
+            }
+          });
+        }
+
+        if (STATE.plannedDeltas && STATE.plannedDeltas.length >= 16) {
+          actions.push({
+            action: 'call_command',
+            command: 'set_gpu_vf_curve_deltas',
+            args: {
+              deltasMhz: STATE.plannedDeltas
+            }
+          });
+        } else if (STATE.targetVolt && STATE.targetFreq) {
+          actions.push({
+            action: 'call_command',
+            command: 'set_gpu_undervolt_curve',
+            args: {
+              targetVoltMv: STATE.targetVolt,
+              maxBoostMhz: STATE.targetFreq
+            }
+          });
+        }
+
+        if (actions.length === 0) return;
+
+        const watcherDef = {
+          id: 'gpu-undervolt-guard',
+          name: '微内核显卡降压超频自愈守护',
+          plugin_id: PLUGIN_ID,
+          enabled: true,
+          cooldown_ms: 5000,
+          condition: {
+            type: 'power_event',
+            event: 'ac_connected'
+          },
+          actions: actions
+        };
+
+        if (window.OpenRevo && typeof window.OpenRevo.registerWatcher === 'function') {
+          await window.OpenRevo.registerWatcher(watcherDef);
+        } else if (window.parent && window.parent.__OPENREVO_BRIDGE__ && typeof window.parent.__OPENREVO_BRIDGE__.registerWatcher === 'function') {
+          await window.parent.__OPENREVO_BRIDGE__.registerWatcher(watcherDef);
+        } else {
+          await rpc('register_custom_watcher', { watcher: watcherDef });
+        }
+        document.getElementById('statStorageHint').textContent = '已保存并同步至微内核看门狗 (开机自启生效)';
+      } catch (err) {
+        console.warn('[WatcherSync] 同步 Watcher 到宿主事件中心失败:', err);
+      }
+    }
+
+    // --- Plugin Storage Persistence Engine ---
+    async function loadPluginStorage() {
       try {
         let stored = null;
-        if (window.OpenRevo && window.OpenRevo.storage && window.OpenRevo.storage.get) stored = await window.OpenRevo.storage.get();
-        else if (window.parent && window.parent.__OPENREVO_BRIDGE__ && window.parent.__OPENREVO_BRIDGE__.storage) stored = await window.parent.__OPENREVO_BRIDGE__.storage.get();
-        else { try { stored = await rpc("get_plugin_storage", { pluginId: PLUGIN_ID }); } catch (_) { const r = localStorage.getItem(LOCAL_KEY); if (r) stored = JSON.parse(r); } }
-        if (stored && typeof stored === "object") {
-          if (typeof stored.target_volt === "number") S.targetVolt = stored.target_volt;
-          if (typeof stored.target_freq === "number") S.targetFreq = stored.target_freq;
-          if (typeof stored.active_mode === "string") S.mode = stored.active_mode;
-          if (stored.schema === 2 && Array.isArray(stored.deltas)) S.deltas = stored.deltas.slice();
-          if (stored.schema === 2 && stored.saved_curve && Array.isArray(stored.saved_curve.deltas)) S.savedCurve = stored.saved_curve;
-          document.getElementById("inputTargetVolt").value = S.targetVolt;
-          document.getElementById("inputTargetFreq").value = S.targetFreq;
-          document.getElementById("modeText").textContent = S.mode;
-          log("[*] 已从 plugin_storage 恢复方案: " + S.mode);
-        }
-      } catch (e) { console.warn("storage load", e); }
-    }
-
-    async function saveStorage() {
-      const cfg = {
-        schema: 2,
-        target_volt: S.targetVolt,
-        target_freq: S.targetFreq,
-        core_offset: S.coreOffset,
-        mem_offset: S.memOffset,
-        active_mode: S.mode,
-        deltas: S.deltas,
-        saved_curve: S.savedCurve,
-        updated_at: new Date().toISOString()
-      };
-      try { localStorage.setItem(LOCAL_KEY, JSON.stringify(cfg)); } catch (_) {}
-      try {
-        if (window.OpenRevo && window.OpenRevo.storage && window.OpenRevo.storage.set) { await window.OpenRevo.storage.set(cfg); return; }
-        if (window.parent && window.parent.__OPENREVO_BRIDGE__ && window.parent.__OPENREVO_BRIDGE__.storage) { await window.parent.__OPENREVO_BRIDGE__.storage.set(cfg); return; }
-        await rpc("set_plugin_storage", { pluginId: PLUGIN_ID, data: cfg });
-      } catch (e) { console.warn("storage save", e); }
-    }
-
-    // ============================================================
-    //  硬件读回
-    // ============================================================
-    async function refreshHardwareInfo() {
-      try {
-        const info = await rpc("get_gpu_tuning_info");
-        if (!info) return;
-        S.gpu = info.gpu_name || S.gpu;
-        S.coreOffset = info.core_offset_mhz || 0;
-        S.memOffset = info.mem_offset_mhz || 0;
-        S.anchors = info.vf_points || [];
-
-        // 出厂基线 stock = 该锚点在「零偏移」时的频率。
-        // 关键：读回时如果所有偏移都是 0，说明这就是出厂态，直接拿 freq 当基线，
-        // 这一步同时会把被旧数据污染过的 stock 自愈回来（否则基线一旦算错就永远错，
-        // 图表里的出厂虚线、拖动基准、delta 换算全都会跟着偏）。
-        if (S.anchors.length) {
-          const allZero = S.anchors.every(p => !p.delta_mhz);
-          const lenChanged = S.stock.length !== S.anchors.length;
-          if (allZero) {
-            const fresh = S.anchors.map(p => p.freq_mhz);
-            if (lenChanged || fresh.some((f, i) => Math.abs(f - S.stock[i]) > 1)) {
-              log("[*] 硬件处于出厂态，已按读回值重建出厂基线");
-            }
-            S.stock = fresh;
-            S.deltas = S.anchors.map(() => 0);
-          } else if (lenChanged) {
-            S.stock = S.anchors.map(p => p.freq_mhz - p.delta_mhz);
-            if (S.deltas.length !== S.anchors.length) {
-              S.deltas = S.anchors.map(p => p.delta_mhz || 0);
-            }
+        if (window.OpenRevo && window.OpenRevo.storage && typeof window.OpenRevo.storage.get === 'function') {
+          stored = await window.OpenRevo.storage.get();
+        } else if (window.parent && window.parent.__OPENREVO_BRIDGE__ && window.parent.__OPENREVO_BRIDGE__.storage) {
+          stored = await window.parent.__OPENREVO_BRIDGE__.storage.get();
+        } else {
+          try {
+            stored = await rpc('get_plugin_storage', { pluginId: PLUGIN_ID });
+          } catch (_) {
+            const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
+            if (raw) stored = JSON.parse(raw);
           }
         }
 
-        document.getElementById("gpuTitle").textContent = S.gpu;
-        document.getElementById("coreOffset").textContent = fmtMhz(S.coreOffset);
-        document.getElementById("memOffset").textContent = fmtMhz(S.memOffset);
-        document.getElementById("anchorCount").textContent = S.anchors.length + " 点";
-        document.getElementById("coreSlider").value = S.coreOffset;
-        document.getElementById("coreBadge").textContent = fmtMhz(S.coreOffset);
-        document.getElementById("memSlider").value = S.memOffset;
-        document.getElementById("memBadge").textContent = fmtMhz(S.memOffset);
-        if (S.anchors.length) {
-          document.getElementById("voltRange").textContent = S.anchors[0].volt_mv + " ~ " + S.anchors[S.anchors.length - 1].volt_mv + " mV";
+        if (stored && typeof stored === 'object' && Object.keys(stored).length > 0) {
+          if (typeof stored.target_volt === 'number') STATE.targetVolt = stored.target_volt;
+          if (typeof stored.target_freq === 'number') STATE.targetFreq = stored.target_freq;
+          if (typeof stored.active_mode === 'string') STATE.activeMode = stored.active_mode;
+          
+          const rawDeltas = Array.isArray(stored.planned_deltas) ? stored.planned_deltas : (Array.isArray(stored.deltas) ? stored.deltas : null);
+          if (rawDeltas) STATE.plannedDeltas = rawDeltas.slice();
+
+          if (stored.saved_snapshot && Array.isArray(stored.saved_snapshot.deltas)) {
+            STATE.savedSnapshot = stored.saved_snapshot;
+          } else if (stored.saved_curve && Array.isArray(stored.saved_curve.deltas)) {
+            STATE.savedSnapshot = stored.saved_curve;
+          }
+
+          document.getElementById('inputTargetVolt').value = STATE.targetVolt;
+          document.getElementById('inputTargetFreq').value = STATE.targetFreq;
+          document.getElementById('statModeText').textContent = STATE.activeMode;
+          document.getElementById('statStorageHint').textContent = '已恢复 plugin_storage 方案';
+          refreshSnapshotButton();
+
+          log(`[*] 成功从 plugin_storage 恢复持久化方案: ${STATE.activeMode} (${STATE.targetVolt}mV @ ${STATE.targetFreq}MHz)`);
         }
-        log("[+] 已加载 " + S.anchors.length + " 个 V/F 锚点");
-        draw();
-      } catch (e) { log("[-] 刷新失败: " + (e.message || e)); }
-    }
-
-    function fmtMhz(v) { return (v >= 0 ? "+" : "") + v + " MHz"; }
-
-    // ============================================================
-    //  有效频率：stock[i] + deltas[i]
-    // ============================================================
-    function eff(i) { return S.stock[i] + (S.deltas[i] || 0); }
-
-    // ============================================================
-    //  几何 / 绘制
-    // ============================================================
-    function geom() {
-      const c = document.getElementById("vfCanvas");
-      if (!c) return null;
-      const r = c.getBoundingClientRect();
-      const w = r.width || 1, h = r.height || 1;
-      const padL = 45, padR = 20, padT = 18, padB = 30;
-      const plotW = Math.max(10, w - padL - padR);
-      const plotH = Math.max(10, h - padT - padB);
-
-      // 只把「可视窗内」的锚点纳入 Y 轴：450~700mV 那一段是待机 180MHz 的死区，
-      // 把它算进来会让纵轴拉到 -200~3500，一像素 19MHz，拖一下就跨 1000MHz。
-      let fMin = Infinity, fMax = -Infinity;
-      for (let i = 0; i < S.stock.length; i++) {
-        const v = S.anchors[i].volt_mv;
-        if (v < V_MIN || v > V_MAX) continue;
-        fMin = Math.min(fMin, S.stock[i], eff(i));
-        fMax = Math.max(fMax, S.stock[i], eff(i));
+      } catch (err) {
+        console.warn('[Storage] Load failed:', err);
       }
-      if (!isFinite(fMin) || fMax - fMin < 100) { fMin = 1600; fMax = 3200; }
-      const m = Math.max(60, (fMax - fMin) * 0.12);
-      // 下沿仍按数据自适应，上沿固定在 F_MAX：曲线始终贴着底部往上铺，
-      // 不会因为某个高压锚点或出厂尾部把整幅图拉扁。
-      let yMin = Math.floor((fMin - m) / 50) * 50;
-      const yMax = F_MAX;
-      if (yMin > yMax - 400) yMin = yMax - 400;
-
-      const toX = v => padL + (v - V_MIN) / (V_MAX - V_MIN) * plotW;
-      const toY = f => h - padB - (f - yMin) / (yMax - yMin) * plotH;
-      const yToF = y => yMin + (h - padB - y) / plotH * (yMax - yMin);
-
-      return { c, ctx: c.getContext("2d"), w, h, padL, padR, padT, padB, yMin, yMax, toX, toY, yToF };
     }
 
-    function draw() {
-      const g = geom();
-      if (!g) return;
-      S.geom = g;
-      const { ctx, w, h, padL, padR, padT, padB, yMin, yMax, toX, toY } = g;
-      const c = g.c;
-      const dpr = window.devicePixelRatio || 1;
-      c.width = Math.max(1, Math.round(w * dpr));
-      c.height = Math.max(1, Math.round(h * dpr));
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.clearRect(0, 0, w, h);
+    async function savePluginStorage() {
+      const config = {
+        schema: 2,
+        target_volt: STATE.targetVolt,
+        target_freq: STATE.targetFreq,
+        core_offset: STATE.coreOffset,
+        mem_offset: STATE.memOffset,
+        active_mode: STATE.activeMode,
+        planned_deltas: STATE.plannedDeltas,
+        deltas: STATE.plannedDeltas,
+        saved_snapshot: STATE.savedSnapshot,
+        updated_at: new Date().toISOString()
+      };
 
-      if (!S.anchors.length) {
-        ctx.fillStyle = "#64748b"; ctx.font = "12px sans-serif"; ctx.textAlign = "center";
-        ctx.fillText("暂无 V/F 曲线数据", w / 2, h / 2);
+      try {
+        localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(config));
+      } catch (_) {}
+
+      try {
+        if (window.OpenRevo && window.OpenRevo.storage && typeof window.OpenRevo.storage.set === 'function') {
+          await window.OpenRevo.storage.set(config);
+          await syncWatcherToHost();
+          return;
+        }
+        if (window.parent && window.parent.__OPENREVO_BRIDGE__ && window.parent.__OPENREVO_BRIDGE__.storage) {
+          await window.parent.__OPENREVO_BRIDGE__.storage.set(config);
+          await syncWatcherToHost();
+          return;
+        }
+        await rpc('set_plugin_storage', { pluginId: PLUGIN_ID, data: config });
+        await syncWatcherToHost();
+      } catch (e) {
+        console.warn('[Storage] Save failed:', e);
+      }
+    }
+
+    // --- Hardware Data Loading ---
+    async function refreshHardwareInfo() {
+      try {
+        log('正在查询物理显卡 NVAPI 状态...');
+        const info = await rpc('get_gpu_tuning_info');
+        if (!info) {
+          log('[-] 未能获取显卡调优状态');
+          return;
+        }
+
+        STATE.gpuName = info.gpu_name || 'NVIDIA GPU';
+        STATE.isAvailable = info.is_available;
+        STATE.supportsVfCurve = info.supports_vf_curve;
+        STATE.coreOffset = info.core_offset_mhz || 0;
+        STATE.memOffset = info.mem_offset_mhz || 0;
+        STATE.vfPoints = info.vf_points || [];
+
+        // 出厂基线 stock = 该锚点在「零偏移」时的频率。
+        // 读回时如果所有偏移都是 0，说明硬件就是出厂态，直接拿 freq 当基线 —— 这一步
+        // 同时把被旧数据污染过的基线自愈回来：基线一旦算错，出厂虚线、拖动基准、delta
+        // 换算会全部跟着偏，而且不会自己恢复。
+        const pts = STATE.vfPoints;
+        if (pts.length) {
+          const allZero = pts.every(p => !p.delta_mhz);
+          const lenChanged = STATE.stockBaseline.length !== pts.length;
+          if (allZero) {
+            const fresh = pts.map(p => p.freq_mhz);
+            if (lenChanged || fresh.some((f, i) => Math.abs(f - STATE.stockBaseline[i]) > 1)) {
+              log('[*] 硬件处于出厂态，已按读回值重建出厂基线');
+            }
+            STATE.stockBaseline = fresh;
+          } else if (lenChanged) {
+            STATE.stockBaseline = pts.map(p => p.freq_mhz - (p.delta_mhz || 0));
+          }
+
+          // 编辑缓冲区只在缺失或点数不符时初始化。已经存在的方案不会被一次刷新抹掉，
+          // 否则「写入后刷新」会把你刚画的曲线清成 0。
+          if (!STATE.plannedDeltas || STATE.plannedDeltas.length !== pts.length) {
+            STATE.plannedDeltas = pts.map(p => p.delta_mhz || 0);
+          }
+        }
+
+        document.getElementById('gpuTitle').textContent = STATE.gpuName;
+        document.getElementById('statCoreOffset').textContent = (STATE.coreOffset >= 0 ? '+' : '') + STATE.coreOffset + ' MHz';
+        document.getElementById('statMemOffset').textContent = (STATE.memOffset >= 0 ? '+' : '') + STATE.memOffset + ' MHz';
+        document.getElementById('statAnchorCount').textContent = STATE.vfPoints.length + ' 点';
+
+        document.getElementById('coreSlider').value = STATE.coreOffset;
+        document.getElementById('coreValBadge').textContent = (STATE.coreOffset >= 0 ? '+' : '') + STATE.coreOffset + ' MHz';
+        document.getElementById('memSlider').value = STATE.memOffset;
+        document.getElementById('memValBadge').textContent = (STATE.memOffset >= 0 ? '+' : '') + STATE.memOffset + ' MHz';
+
+        if (STATE.vfPoints.length > 0) {
+          const minV = STATE.vfPoints[0].volt_mv;
+          const maxV = STATE.vfPoints[STATE.vfPoints.length - 1].volt_mv;
+          document.getElementById('statVoltRange').textContent = `${minV} mV ~ ${maxV} mV`;
+        }
+
+        log(`[+] 成功识别 ${STATE.gpuName}，已加载 ${STATE.vfPoints.length} 个硬件 V/F 锚点。`);
+        drawCurve();
+      } catch (err) {
+        log(`[-] 刷新硬件失败: ${err.message || err}`);
+      }
+    }
+
+    // --- Slider Handlers ---
+    function onCoreSliderChange(val) {
+      STATE.coreOffset = parseInt(val, 10);
+      document.getElementById('coreValBadge').textContent = (STATE.coreOffset >= 0 ? '+' : '') + STATE.coreOffset + ' MHz';
+      document.getElementById('statCoreOffset').textContent = (STATE.coreOffset >= 0 ? '+' : '') + STATE.coreOffset + ' MHz';
+    }
+
+    function onMemSliderChange(val) {
+      STATE.memOffset = parseInt(val, 10);
+      document.getElementById('memValBadge').textContent = (STATE.memOffset >= 0 ? '+' : '') + STATE.memOffset + ' MHz';
+      document.getElementById('statMemOffset').textContent = (STATE.memOffset >= 0 ? '+' : '') + STATE.memOffset + ' MHz';
+    }
+
+    // --- Automatic Undervolt Calculation (Stock-Baseline Idempotent Algorithm) ---
+    function applyPreset(volt, freq, label) {
+      document.getElementById('inputTargetVolt').value = volt;
+      document.getElementById('inputTargetFreq').value = freq;
+      
+      document.querySelectorAll('.preset-btn').forEach(btn => btn.classList.remove('active'));
+      if (window.event && window.event.currentTarget) {
+        window.event.currentTarget.classList.add('active');
+      }
+
+      calculatePlannedCurve(volt, freq, label);
+    }
+
+    function applyCustomUndervoltInputs() {
+      const v = parseInt(document.getElementById('inputTargetVolt').value, 10);
+      const f = parseInt(document.getElementById('inputTargetFreq').value, 10);
+      if (isNaN(v) || isNaN(f)) {
+        log('[-] 请输入合法的目标电压与目标频率');
+        return;
+      }
+      document.querySelectorAll('.preset-btn').forEach(btn => btn.classList.remove('active'));
+      calculatePlannedCurve(v, f, `自定义 (${v}mV @ ${f}MHz)`);
+    }
+
+    // 锁压闭环必须以「驱动当前实际 delta」为基准，而不是编辑缓冲区：缓冲区可能因为
+    // 手动拖拽和驱动实际状态脱节，拿它当基准 shift 就算错，电压锁不住。所以先读回
+    // 硬件，再用读回值反推当前频率做闭环。
+    async function calculatePlannedCurve(targetVolt, targetFreq, label) {
+      STATE.targetVolt = targetVolt;
+      STATE.targetFreq = targetFreq;
+      STATE.activeMode = label;
+      document.getElementById('statModeText').textContent = label;
+
+      if (!STATE.vfPoints || STATE.vfPoints.length < 16) {
+        log('[-] 缺少 V/F 曲线锚点数据，无法计算');
         return;
       }
 
-      // 网格
-      ctx.strokeStyle = "rgba(255,255,255,0.05)"; ctx.lineWidth = 1;
-      ctx.font = "10px monospace"; ctx.fillStyle = "#64748b"; ctx.textAlign = "right";
-      const fStep = (yMax - yMin) > 2400 ? 500 : 200;
-      for (let f = Math.ceil(yMin / fStep) * fStep; f <= yMax; f += fStep) {
-        const y = toY(f);
-        ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke();
-        ctx.fillText(f + "M", padL - 6, y + 3);
-      }
-      ctx.textAlign = "center";
-      for (let v = Math.ceil(V_MIN / 100) * 100; v < V_MAX; v += 100) {
-        const x = toX(v);
-        ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, h - padB); ctx.stroke();
-        ctx.fillText(v + "mV", x, h - 12);
-      }
-
-      // 高于 F_MAX 的部分会画到绘图区之外，裁掉，别压到坐标标签
-      ctx.save();
-      ctx.beginPath(); ctx.rect(padL, padT, w - padL - padR, h - padT - padB); ctx.clip();
-
-      // 出厂曲线（虚线）
-      ctx.beginPath(); ctx.strokeStyle = "rgba(255,255,255,0.3)"; ctx.lineWidth = 1.5; ctx.setLineDash([4, 4]);
-      let st = false;
-      for (let i = 0; i < S.stock.length; i++) {
-        const v = S.anchors[i].volt_mv;
-        if (v < V_MIN || v > V_MAX) continue;
-        const x = toX(v), y = toY(S.stock[i]);
-        st ? ctx.lineTo(x, y) : (ctx.moveTo(x, y), st = true);
-      }
-      ctx.stroke(); ctx.setLineDash([]);
-
-      // 编辑曲线（青色发光）
-      ctx.beginPath(); ctx.strokeStyle = "#06b6d4"; ctx.lineWidth = 2.5;
-      ctx.shadowColor = "rgba(6,182,212,0.6)"; ctx.shadowBlur = 8;
-      st = false;
-      for (let i = 0; i < S.stock.length; i++) {
-        const v = S.anchors[i].volt_mv;
-        if (v < V_MIN || v > V_MAX) continue;
-        const x = toX(v), y = toY(eff(i));
-        st ? ctx.lineTo(x, y) : (ctx.moveTo(x, y), st = true);
-      }
-      ctx.stroke(); ctx.shadowBlur = 0;
-
-      // 驱动 running-max 预览：某点低于它左侧的最高点时，驱动写入后会把它抬回去。
-      // 橙色虚线 = 真正生效的形状，青色 = 编辑缓冲区，两者不一致时一眼就能看出。
-      let runMax = -Infinity, lifted = false;
-      const drv = new Array(S.stock.length);
-      for (let i = 0; i < S.stock.length; i++) {
-        const e = eff(i);
-        runMax = i === 0 ? e : Math.max(runMax, e);
-        drv[i] = runMax;
-        if (runMax > e + 1) lifted = true;
-      }
-      if (lifted) {
-        ctx.beginPath(); ctx.strokeStyle = "rgba(251,146,60,0.9)"; ctx.lineWidth = 2; ctx.setLineDash([7, 5]);
-        st = false;
-        for (let i = 0; i < S.stock.length; i++) {
-          const v = S.anchors[i].volt_mv;
-          if (v < V_MIN || v > V_MAX) continue;
-          const x = toX(v), y = toY(drv[i]);
-          st ? ctx.lineTo(x, y) : (ctx.moveTo(x, y), st = true);
+      // 1. 读回驱动当前曲线，作为闭环基准
+      try {
+        const info = await rpc('get_gpu_tuning_info');
+        if (info && Array.isArray(info.vf_points) && info.vf_points.length) {
+          STATE.vfPoints = info.vf_points;
         }
-        ctx.stroke(); ctx.setLineDash([]);
-        ctx.fillStyle = "rgba(251,146,60,0.95)"; ctx.font = "10px monospace"; ctx.textAlign = "right";
-        ctx.fillText("橙色虚线 = 驱动实际生效", w - padR, padT + 10);
+      } catch (_) { /* 读回失败则沿用现有锚点 */ }
+
+      pushUndo();
+
+      const points = STATE.vfPoints;
+      const cur = points.map(p => p.freq_mhz);
+
+      // 2. 找离目标电压最近的锚点
+      let targetIdx = 0, minDiff = Infinity;
+      for (let i = 0; i < points.length; i++) {
+        const diff = Math.abs(points[i].volt_mv - targetVolt);
+        if (diff < minDiff) { minDiff = diff; targetIdx = i; }
       }
 
-      ctx.restore();
-
-      // 锚点手柄（锚点 0 不可写）
-      const hot = drag.active ? drag.index : S.hover;
-      for (let i = 1; i < S.anchors.length; i++) {
-        const v = S.anchors[i].volt_mv;
-        if (v < V_MIN || v > V_MAX) continue;
-        const x = toX(v), y = toY(eff(i));
-        ctx.beginPath();
-        ctx.arc(x, y, i === hot ? 4.5 : 1.8, 0, Math.PI * 2);
-        ctx.fillStyle = i === hot ? "#10b981" : "rgba(6,182,212,0.55)";
-        ctx.fill();
-        if (i === hot) {
-          ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.5; ctx.stroke();
-          ctx.beginPath(); ctx.setLineDash([3, 3]); ctx.strokeStyle = "rgba(16,185,129,0.35)"; ctx.lineWidth = 1;
-          ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke(); ctx.setLineDash([]);
-        }
+      // 3. 低压段整段平移，让目标锚点正好落在目标频率；高压段削平到目标频率
+      const shift = targetFreq - cur[targetIdx];
+      const newDeltas = new Array(points.length).fill(0);
+      for (let i = 1; i < points.length; i++) {
+        const want = i <= targetIdx ? cur[i] + shift : targetFreq;
+        newDeltas[i] = deltaFor(i, want);
       }
-    }
 
-    // ============================================================
-    //  拖拽：核心。单点 = 只动一个；Shift = 右侧整段跟随。
-    //  用「绝对位移增量」累加，保证单点拖动绝不影响其他锚点。
-    // ============================================================
-    const drag = { active: false, index: -1, shift: false, moved: false, startY: 0, startDelta: 0, snapshot: null, mode: "single" };
-
-    function nearest(xPx) {
-      const g = S.geom;
-      if (!g || S.anchors.length < 2) return -1;
-      let best = -1, bd = Infinity;
-      for (let i = 1; i < S.anchors.length; i++) {
-        const dx = Math.abs(g.toX(S.anchors[i].volt_mv) - xPx);
-        if (dx < bd) { bd = dx; best = i; }
+      // 4. 单调守卫：驱动按 running-max 生效，低于左侧最高点的锚点会被抬回去，
+      //    这里提前抹平台阶，保证「画出来的形状」就是「写入后生效的形状」。
+      let prev = cur[0];
+      for (let i = 1; i < points.length; i++) {
+        const stock = getStockFreq(i);
+        if (stock + newDeltas[i] < prev - 25) newDeltas[i] = deltaFor(i, prev);
+        prev = stock + newDeltas[i];
       }
-      return bd <= HIT_PX ? best : -1;
+
+      STATE.plannedDeltas = newDeltas;
+      log(`[✓] 已计算曲线方案 [${label}]: ${targetVolt}mV 以下整段平移 ${shift >= 0 ? '+' : ''}${Math.round(shift)}MHz，${targetVolt}mV 以上削平锁频至 ${targetFreq}MHz。`);
+      drawCurve();
     }
 
-    function readout(idx) {
-      const el = document.getElementById("readout");
-      if (idx < 0 || idx >= S.anchors.length) { el.textContent = "未选中锚点"; return; }
-      const p = S.anchors[idx];
-      const d = S.deltas[idx] || 0;
-      let txt = "锚点 #" + idx + " · " + p.volt_mv + " mV · " + Math.round(eff(idx)) + " MHz (" + (d > 0 ? "+" : "") + d + ")";
-      if (snapInfo) txt += " · 已压过左邻 " + S.anchors[snapInfo.at].volt_mv + "mV 的 " + snapInfo.level + "MHz（驱动会抬回成平台）";
-      if (drag.active && drag.mode === "follow" && d !== undefined && d <= DELTA_MIN + 1) txt += " · 已到 -500MHz 硬下限，整段停住";
-      el.textContent = txt;
+    // --- Math & Frequency Helpers ---
+    function getStockFreq(idx) {
+      if (!STATE.vfPoints || !STATE.vfPoints[idx]) return 0;
+      const base = STATE.stockBaseline;
+      if (base && typeof base[idx] === 'number') return base[idx];
+      const p = STATE.vfPoints[idx];
+      return p.freq_mhz - (p.delta_mhz || 0);
     }
 
-    function pushUndo() { S.undo.push(S.deltas.slice()); if (S.undo.length > 40) S.undo.shift(); }
-    function undoEdit() {
-      const s = S.undo.pop();
-      if (!s) { log("[!] 没有可撤销的曲线修改"); return; }
-      S.deltas = s; draw(); log("[↶] 已撤销上一步");
+    function getEffFreq(idx) {
+      const stock = getStockFreq(idx);
+      const delta = (STATE.plannedDeltas && typeof STATE.plannedDeltas[idx] === 'number') 
+        ? STATE.plannedDeltas[idx] 
+        : (STATE.vfPoints[idx] ? (STATE.vfPoints[idx].delta_mhz || 0) : 0);
+      return stock + delta;
     }
 
-    function ensureDeltas() {
-      if (S.deltas.length !== S.anchors.length) S.deltas = S.anchors.map(p => p.delta_mhz || 0);
-    }
-
-    function markManual() { S.mode = "手动曲线"; document.getElementById("modeText").textContent = "手动曲线"; }
-
-    // 把「目标频率」换算成「绝对 delta」，并夹在硬限制内。
-    function deltaFor(i, wantFreq) {
-      const d = Math.round(S.stock[i] ? wantFreq - S.stock[i] : 0);
+    function deltaFor(idx, wantFreq) {
+      const stock = getStockFreq(idx);
+      const d = Math.round(wantFreq - stock);
       return Math.max(DELTA_MIN, Math.min(DELTA_MAX, d));
     }
 
-    // ---- 单点：只改 deltas[index]，其余一概不动 ----
-    function setSingle(index, targetFreq) {
-      S.deltas[index] = deltaFor(index, targetFreq);
+    function ensurePlannedDeltas() {
+      if (!STATE.plannedDeltas || STATE.plannedDeltas.length !== STATE.vfPoints.length) {
+        STATE.plannedDeltas = STATE.vfPoints.map(p => p.delta_mhz || 0);
+      }
+    }
+
+    // --- Undo Stack ---
+    function pushUndo() {
+      ensurePlannedDeltas();
+      STATE.undoStack.push(STATE.plannedDeltas.slice());
+      if (STATE.undoStack.length > 40) STATE.undoStack.shift();
+      document.getElementById('btnUndo').disabled = false;
+    }
+
+    function undoEdit() {
+      if (!STATE.undoStack || STATE.undoStack.length === 0) {
+        log('[!] 没有可撤销的历史步骤');
+        return;
+      }
+      const prev = STATE.undoStack.pop();
+      STATE.plannedDeltas = prev;
+      if (STATE.undoStack.length === 0) {
+        document.getElementById('btnUndo').disabled = true;
+      }
+      log('[↶] 已撤销上一步曲线修改');
+      readout(STATE.hoverIndex);
+      drawCurve();
+    }
+
+    // --- Manual Dragging Architecture ---
+    const drag = {
+      active: false,
+      index: -1,
+      shift: false,
+      moved: false,
+      startY: 0,
+      startFreq: 0,
+      snapshot: null
+    };
+
+    function getCanvasGeom() {
+      const canvas = document.getElementById('vfCanvas');
+      if (!canvas) return null;
+      const rect = canvas.getBoundingClientRect();
+      const w = rect.width || 1;
+      const h = rect.height || 1;
+      const padL = 45, padR = 20, padT = 20, padB = 30;
+      const plotW = Math.max(10, w - padL - padR);
+      const plotH = Math.max(10, h - padT - padB);
+
+      // Voltage Range
+      const minV = V_MIN;
+      const maxV = V_MAX;
+
+      // Frequency Range (adapt dynamically to the visible window)
+      // 只把「可视窗内」的锚点纳入 Y 轴：450~700mV 那一段是待机 180MHz 的死区，
+      // 算进来会把纵轴拉到 -200~3500，一像素 19MHz，拖一下就跨 1000MHz。
+      let fMin = Infinity, fMax = -Infinity;
+      if (STATE.vfPoints && STATE.vfPoints.length > 0) {
+        for (let i = 0; i < STATE.vfPoints.length; i++) {
+          const v = STATE.vfPoints[i].volt_mv;
+          if (v < minV || v > maxV) continue;
+          const sF = getStockFreq(i);
+          const eF = getEffFreq(i);
+          fMin = Math.min(fMin, sF, eF);
+          fMax = Math.max(fMax, sF, eF);
+        }
+      }
+      if (!isFinite(fMin) || fMax - fMin < 100) { fMin = 1600; fMax = 3200; }
+      const margin = Math.max(60, (fMax - fMin) * 0.12);
+      // 下沿按数据自适应，上沿固定在 F_MAX：曲线始终贴着底部往上铺，
+      // 不会因为某个高压锚点或出厂尾部把整幅图拉扁。
+      let yMin = Math.floor((fMin - margin) / 50) * 50;
+      const yMax = F_MAX;
+      if (yMin > yMax - 400) yMin = yMax - 400;
+
+      const toX = (volt) => padL + ((volt - minV) / (maxV - minV)) * plotW;
+      const toY = (freq) => h - padB - ((freq - yMin) / (yMax - yMin)) * plotH;
+      const yToF = (y) => yMin + ((h - padB - y) / plotH) * (yMax - yMin);
+
+      return { canvas, w, h, padL, padR, padT, padB, plotW, plotH, minV, maxV, yMin, yMax, toX, toY, yToF };
+    }
+
+    // 命中判定只看横向距离：127 个锚点摊在 450mV 里平均只隔 3px，再加 Y 约束反而抓不到
+    // （整段压平后大量锚点同高，Y 方向完全区分不开）。按列取最近的锚点最可预期。
+    function nearest(xPx) {
+      const g = getCanvasGeom();
+      if (!g || !STATE.vfPoints || STATE.vfPoints.length < 2) return -1;
+      let best = -1, bestDist = Infinity;
+      for (let i = 1; i < STATE.vfPoints.length; i++) {
+        const v = STATE.vfPoints[i].volt_mv;
+        if (v < g.minV || v > g.maxV) continue;
+        const dx = Math.abs(g.toX(v) - xPx);
+        if (dx < bestDist) {
+          bestDist = dx;
+          best = i;
+        }
+      }
+      return bestDist <= HIT_PX ? best : -1;
+    }
+
+    function readout(idx) {
+      const el = document.getElementById('readout');
+      if (idx < 1 || !STATE.vfPoints || idx >= STATE.vfPoints.length) {
+        el.innerHTML = `<span>🖱️ <b>拖动</b> 单点微调 · <b>Shift+拖动</b> 右侧整段同幅平移（压过左邻时按橙色虚线预览真实生效形状）· <b>双击</b> 归零</span>`;
+        return;
+      }
+      const p = STATE.vfPoints[idx];
+      const effF = Math.round(getEffFreq(idx));
+      const delta = (STATE.plannedDeltas ? STATE.plannedDeltas[idx] : p.delta_mhz) || 0;
+      const deltaStr = (delta >= 0 ? '+' : '') + delta + ' MHz';
+      let txt = `<span><b>锚点 #${idx}</b> · <b>${p.volt_mv} mV</b> · <b>${effF} MHz</b> (${deltaStr})`;
+      if (snapInfo) {
+        txt += ` · <span style="color:#f59e0b;">已压过左邻 ${STATE.vfPoints[snapInfo.at].volt_mv}mV 的 ${snapInfo.level}MHz（驱动会抬回成平台）</span>`;
+      }
+      if (drag.active && drag.shift && delta <= DELTA_MIN + 1) {
+        txt += ` · <span style="color:#ef4444;">已到 -500MHz 硬下限，整段停住</span>`;
+      } else if (drag.active && drag.shift) {
+        txt += ` · <span style="color:#10b981;">Shift 整段同幅平移中</span>`;
+      }
+      el.innerHTML = txt + '</span>';
+    }
+
+    // --- Interactive Drag Handlers ---
+    function setSinglePoint(idx, wantFreq) {
+      STATE.plannedDeltas[idx] = deltaFor(idx, wantFreq);
     }
 
     // ---- Shift：右侧整段同幅平移 ----
-    // 上拉 / 下拉都是「选中点及其右侧，delta 同时加上拖动量」，形状完全不变。
-    // 这里刻意不再用「左邻频率」截断：出厂曲线相邻两点只差几十 MHz，一截断拖动
-    // 就立刻停住，手感像整段下移失效。压过左邻的部分由驱动 running-max 抬回的
-    // 结果会用橙色虚线画出来（见 draw 末尾），所见即写入后的真实形状。
-    // 左侧一个点都不碰。唯一的硬约束是每个锚点自己的 -500/+1000。
-    let snapInfo = null;   // 保留变量：松手日志里用来描述「压过左邻」的台阶
+    // 上拉 / 下拉都是「选中点及其右侧，delta 同时加上同一个拖动量」，整段形状完全不变。
+    // 这里刻意不用「左邻频率」截断：出厂曲线相邻两点只差几十 MHz，一截断拖动立刻停住，
+    // 手感像整段下移失效。压过左邻的部分会被驱动 running-max 抬回，结果用橙色虚线画出来，
+    // 所以所见就是写入后的真实形状。左侧一个点都不碰，唯一硬约束是每个锚点自己的 -500/+1000。
+    let snapInfo = null;   // 松手日志里用来描述「压过左邻」的台阶
 
-    function setFollow(index, targetFreq) {
-      const start = eff(index);
-      const step = Math.round(targetFreq - start);
+    function setFollowShift(idx, wantFreq) {
+      const start = getEffFreq(idx);
+      const step = Math.round(wantFreq - start);
       snapInfo = null;
       if (step === 0) return 0;
 
-      // 同一 step 加到整段上：形状不变，每个点各自夹在 -500..+1000 内。
-      for (let i = index; i < S.deltas.length; i++) {
-        const d = Math.round((S.deltas[i] || 0) + step);
-        S.deltas[i] = Math.max(DELTA_MIN, Math.min(DELTA_MAX, d));
+      for (let i = idx; i < STATE.plannedDeltas.length; i++) {
+        const d = Math.round((STATE.plannedDeltas[i] || 0) + step);
+        STATE.plannedDeltas[i] = Math.max(DELTA_MIN, Math.min(DELTA_MAX, d));
       }
-      if (step < 0 && index > 0 && eff(index) < eff(index - 1)) {
-        snapInfo = { at: index - 1, level: Math.round(eff(index - 1)) };
+      if (step < 0 && idx > 0 && getEffFreq(idx) < getEffFreq(idx - 1)) {
+        snapInfo = { at: idx - 1, level: Math.round(getEffFreq(idx - 1)) };
       }
       return step;
     }
 
-    // 统计右侧有多少锚点因为 -500MHz 单点下限而压不到目标（触底后曲线会重新上翘）。
+    // 统计右侧有多少锚点因为 -500MHz 单点下限压不到目标（触底后曲线会重新上翘）。
     function countFloored(fromIdx, level) {
       let n = 0, first = -1;
-      for (let i = fromIdx; i < S.deltas.length; i++) {
-        if (S.deltas[i] <= DELTA_MIN + 1 && eff(i) > level + 2) { n++; if (first < 0) first = i; }
+      for (let i = fromIdx; i < STATE.plannedDeltas.length; i++) {
+        if (STATE.plannedDeltas[i] <= DELTA_MIN + 1 && getEffFreq(i) > level + 2) {
+          n++;
+          if (first < 0) first = i;
+        }
       }
       return { n, first };
     }
 
-    function ptrPos(ev) {
-      const r = S.geom.c.getBoundingClientRect();
-      return { x: ev.clientX - r.left, y: ev.clientY - r.top };
-    }
+    function onPointerDown(ev) {
+      if (!STATE.vfPoints || STATE.vfPoints.length < 16) return;
+      const g = getCanvasGeom();
+      if (!g) return;
+      const rect = g.canvas.getBoundingClientRect();
+      const x = ev.clientX - rect.left;
+      const y = ev.clientY - rect.top;
 
-    function onDown(ev) {
-      if (S.anchors.length < 16) return;
-      const g = geom(); if (!g) return; S.geom = g;
-      const pos = ptrPos(ev);
-      const idx = nearest(pos.x);
-      if (idx < 0) return;
+      const idx = nearest(x);
+      if (idx < 1) return;
 
-      ensureDeltas();
+      ensurePlannedDeltas();
       pushUndo();
+
       snapInfo = null;
       drag.active = true;
       drag.index = idx;
       drag.shift = ev.shiftKey;   // 按下时锁定，不随拖动切换
       drag.moved = false;
-      drag.startY = pos.y;
-      drag.startDelta = S.deltas[idx];
-      drag.snapshot = S.deltas.slice();
-      g.c.classList.add("dragging");
-      try { g.c.setPointerCapture(ev.pointerId); } catch (_) {}
+      drag.startY = y;
+      drag.startFreq = getEffFreq(idx);
+      drag.snapshot = STATE.plannedDeltas.slice();
+
+      g.canvas.classList.add('dragging');
+      try { g.canvas.setPointerCapture(ev.pointerId); } catch (_) {}
+
       readout(idx);
-      draw();
+      drawCurve();
       ev.preventDefault();
     }
 
-    function onMove(ev) {
-      if (!S.anchors.length) return;
-      const g = geom(); if (!g) return; S.geom = g;
-      const pos = ptrPos(ev);
+    function onPointerMove(ev) {
+      if (!STATE.vfPoints || STATE.vfPoints.length === 0) return;
+      const g = getCanvasGeom();
+      if (!g) return;
+      const rect = g.canvas.getBoundingClientRect();
+      const x = ev.clientX - rect.left;
+      const y = ev.clientY - rect.top;
 
       if (!drag.active) {
-        const idx = nearest(pos.x);
-        if (idx !== S.hover) { S.hover = idx; readout(idx); draw(); }
+        const idx = nearest(x);
+        if (idx !== STATE.hoverIndex) {
+          STATE.hoverIndex = idx;
+          readout(idx);
+          drawCurve();
+        }
         return;
       }
 
-      // 从按下时的快照重建，再按位移量修改选中点。
-      S.deltas = drag.snapshot.slice();
-      const dy = pos.y - drag.startY;           // 向下为正 → 频率降低
-      // 画布只有 240px 高，纵轴跨度 2000MHz 时一像素就是 10MHz，直接用几何比例
-      // 拖起来太跳；上限 8MHz/px 保证一次下拉能停在想要的点上。
-      const mhzPerPx = Math.min((S.geom.yMax - S.geom.yMin) / (S.geom.h - S.geom.padT - S.geom.padB), 8);
-      const dFreq = -dy * mhzPerPx;
-      const startFreq = S.stock[drag.index] + drag.startDelta;
-      const targetFreq = startFreq + dFreq;
+      // Restore snapshot from drag start to calculate relative offset cleanly
+      STATE.plannedDeltas = drag.snapshot.slice();
+      const dy = y - drag.startY; // Downward is positive (lower frequency)
+      const mhzPerPx = Math.min((g.yMax - g.yMin) / g.plotH, 8);
+      const targetFreq = drag.startFreq - dy * mhzPerPx;
 
       if (drag.shift) {
-        drag.mode = "follow";
-        setFollow(drag.index, targetFreq);
+        setFollowShift(drag.index, targetFreq);
       } else {
-        drag.mode = "single";
-        setSingle(drag.index, targetFreq);
+        setSinglePoint(drag.index, targetFreq);
       }
+
       drag.moved = true;
       readout(drag.index);
-      draw();
+      drawCurve();
     }
 
-    function onUp() {
+    function onPointerUp(ev) {
       if (!drag.active) return;
       const idx = drag.index;
       drag.active = false;
-      if (S.geom && S.geom.c) S.geom.c.classList.remove("dragging");
+      const g = getCanvasGeom();
+      if (g && g.canvas) g.canvas.classList.remove('dragging');
 
-      if (drag.moved && idx >= 0) {
-        const p = S.anchors[idx];
-        const knee = Math.round(eff(idx));
-        const tail = Math.round(eff(S.anchors.length - 1));
-        const how = drag.mode === "follow" ? "Shift 右侧整段跟随" : "单点调整";
-        log("[✎] " + how + "：锚点 #" + idx + " (" + p.volt_mv + "mV) → " + knee + "MHz，右侧末端 " + tail + "MHz（缓冲已更新，点「一键写入」下发）");
-        if (drag.mode === "single") {
-          const left = idx > 0 ? Math.round(eff(idx - 1)) : null;
+      if (drag.moved && idx >= 1) {
+        STATE.activeMode = '手动微调方案';
+        document.getElementById('statModeText').textContent = STATE.activeMode;
+        const p = STATE.vfPoints[idx];
+        const knee = Math.round(getEffFreq(idx));
+        const tail = Math.round(getEffFreq(STATE.vfPoints.length - 1));
+        const how = drag.shift ? 'Shift 右侧整段同幅平移' : '单点微调';
+        log(`[✎] ${how}：锚点 #${idx} (${p.volt_mv}mV) → ${knee}MHz，右侧末端 ${tail}MHz（缓冲已更新，点「一键写入」下发）`);
+
+        if (!drag.shift) {
+          const left = idx > 0 ? Math.round(getEffFreq(idx - 1)) : null;
           if (left !== null && knee < left - 1) {
-            log("[!] 该点比左侧 " + left + "MHz 低 " + (left - knee) + "MHz，驱动 running-max 会把它抬回；要连右侧一起压低请用 Shift+拖动");
+            log(`[!] 该点比左侧 ${left}MHz 低 ${left - knee}MHz，驱动 running-max 会把它抬回；要连右侧一起压低请用 Shift+拖动`);
           }
-        } else if (drag.mode === "follow") {
-          // 整段同幅平移不再按左邻截断；压过左邻时提示写入后的真实形状。
+        } else {
+          // 整段同幅平移不按左邻截断；压过左邻时提示写入后的真实形状
           if (snapInfo) {
-            const a = S.anchors[snapInfo.at];
-            log("[⇥] 已压过左邻 " + a.volt_mv + "mV 的 " + snapInfo.level + "MHz：缓冲里是台阶，写入后驱动 running-max 会把这一段抬成 " + snapInfo.level + "MHz 平台（见橙色虚线）");
+            const a = STATE.vfPoints[snapInfo.at];
+            log(`[⇥] 已压过左邻 ${a.volt_mv}mV 的 ${snapInfo.level}MHz：缓冲里是台阶，写入后驱动 running-max 会把这一段抬成 ${snapInfo.level}MHz 平台（见橙色虚线）`);
           }
-          // -500MHz 单点下限：尾部触底的锚点会停住，其余继续跟随。
-          const fl = countFloored(idx, Math.round(eff(idx)));
+          // -500MHz 单点下限：尾部触底的锚点会停住，其余继续跟随
+          const fl = countFloored(idx, knee);
           if (fl.n > 0) {
-            log("[!] 从 " + S.anchors[fl.first].volt_mv + "mV 起有 " + fl.n + " 个锚点已到 -500MHz 单点下限，只跟到 -500 就停（出厂该段约 " + Math.round(S.stock[fl.first]) + "MHz）");
+            log(`[!] 从 ${STATE.vfPoints[fl.first].volt_mv}mV 起有 ${fl.n} 个锚点已到 -500MHz 单点下限，只跟到 -500 就停（出厂该段约 ${Math.round(getStockFreq(fl.first))}MHz）`);
           }
-          // 左邻仍高于选中点时，驱动的 running-max 会把整段抬回该高度。
+          // 左邻仍高于选中点时，驱动的 running-max 会把整段抬回该高度
           let leftHigher = -1;
           for (let i = idx - 1; i >= 1; i--) {
-            if (eff(i) > knee + 1) { leftHigher = i; break; }
+            if (getEffFreq(i) > knee + 1) { leftHigher = i; break; }
           }
           if (leftHigher >= 0) {
-            log("[!] 左侧 " + S.anchors[leftHigher].volt_mv + "mV 仍高于 " + knee + "MHz，写入后驱动会把这一段抬回该高度；如需整体压低请先压低左侧锚点");
+            log(`[!] 左侧 ${STATE.vfPoints[leftHigher].volt_mv}mV 仍高于 ${knee}MHz，写入后驱动会把这一段抬回该高度；如需整体压低请先压低左侧锚点`);
           }
         }
+        savePluginStorage();
       } else {
-        S.undo.pop(); // 没实际移动
+        // Did not actually move, pop redundant undo snapshot
+        STATE.undoStack.pop();
+        if (STATE.undoStack.length === 0) {
+          document.getElementById('btnUndo').disabled = true;
+        }
       }
+
       drag.index = -1;
       drag.snapshot = null;
-      snapInfo = null;
-      readout(S.hover);
+      snapInfo = null;          // 松手后不再保留「压过左邻」的提示
+      readout(STATE.hoverIndex);
+      drawCurve();
     }
 
-    function onDbl(ev) {
-      const g = S.geom || geom(); if (!g) return; S.geom = g;
-      const idx = nearest(ptrPos(ev).x);
-      if (idx < 0) return;
-      ensureDeltas(); pushUndo();
-      S.deltas[idx] = 0;
-      markManual(); readout(idx); draw();
-      log("[⟲] 锚点 #" + idx + " 已归零");
+    function onDblClick(ev) {
+      const g = getCanvasGeom();
+      if (!g) return;
+      const rect = g.canvas.getBoundingClientRect();
+      const idx = nearest(ev.clientX - rect.left);
+      if (idx < 1) return;
+
+      ensurePlannedDeltas();
+      pushUndo();
+      STATE.plannedDeltas[idx] = 0;
+      STATE.activeMode = '手动微调方案';
+      document.getElementById('statModeText').textContent = STATE.activeMode;
+      readout(idx);
+      drawCurve();
+      log(`[⟲] 锚点 #${idx} (${STATE.vfPoints[idx].volt_mv}mV) 偏移已归零`);
+      savePluginStorage();
     }
 
-    // ============================================================
-    //  预设 / 自定义锁压（闭环：以「驱动当前实际 delta」为基准）
-    // ============================================================
-    // 锁压闭环必须以驱动为准，而不是编辑缓冲区。编辑缓冲区 S.deltas 可能
-    // 因为手动拖拽而和驱动实际状态脱节；如果拿它当基准，shift 就算错，电压
-    // 锁不住。所以这里强制先读回硬件，再用「驱动 delta」反推当前频率做闭环。
-    async function calcLock(targetVolt, targetFreq, label) {
-      S.targetVolt = targetVolt;
-      S.targetFreq = targetFreq;
-      S.mode = label;
-      document.getElementById("modeText").textContent = label;
-      if (S.anchors.length < 16) { log("[-] 缺少锚点数据"); return; }
+    // --- Manual Snapshot Archive & Hardware Reload ---
+    function refreshSnapshotButton() {
+      const btn = document.getElementById('btnLoadSnapshot');
+      const hasSnap = STATE.savedSnapshot && Array.isArray(STATE.savedSnapshot.deltas);
+      btn.disabled = !hasSnap;
+    }
 
-      // 1. 先读回驱动当前曲线，作为闭环基准（保证 delta 语义正确）。
-      try {
-        const info = await rpc("get_gpu_tuning_info");
-        if (info && info.vf_points && info.vf_points.length) {
-          S.anchors = info.vf_points;
-          // 驱动实际 delta 才是闭环的「当前值」。
-          S.deltas = S.anchors.map(p => p.delta_mhz || 0);
-        }
-      } catch (_) { /* 读回失败则用现有 anchors 兜底 */ }
-
-      // 2. 找目标锚点
-      let ti = 0, md = 1e9;
-      for (let i = 0; i < S.anchors.length; i++) {
-        const d = Math.abs(S.anchors[i].volt_mv - targetVolt);
-        if (d < md) { md = d; ti = i; }
+    function saveManualSnapshot() {
+      if (!STATE.vfPoints || STATE.vfPoints.length < 16) {
+        log('[!] 硬件曲线未就绪，无法暂存快照');
+        return;
       }
-
-      // 3. 闭环：以驱动当前 delta 为基准，stock 从读回值反推。
-      //    curFreq[i] = anchors[i].freq_mhz（读回值已含 delta）
-      const cur = S.anchors.map(p => p.freq_mhz);
-      const shift = targetFreq - cur[ti];
-      const nd = new Array(S.anchors.length).fill(0);
-      for (let i = 1; i < S.anchors.length; i++) {
-        const want = i <= ti ? cur[i] + shift : targetFreq;
-        // delta = want - stock = want - (cur[i] - cur_delta[i])
-        const stock_i = S.anchors[i].freq_mhz - (S.anchors[i].delta_mhz || 0);
-        nd[i] = Math.max(DELTA_MIN, Math.min(DELTA_MAX, Math.round(want - stock_i)));
-      }
-
-      // 4. 单调守卫：只抬不降。
-      let prev = cur[0];
-      for (let i = 1; i < S.anchors.length; i++) {
-        const stock_i = S.anchors[i].freq_mhz - (S.anchors[i].delta_mhz || 0);
-        const e = stock_i + nd[i];
-        if (e < prev - 25) nd[i] = Math.max(DELTA_MIN, Math.min(DELTA_MAX, Math.round(prev - stock_i)));
-        prev = stock_i + nd[i];
-      }
-
-      S.deltas = nd;
-      log("[✓] 已计算 [" + label + "]: " + targetVolt + "mV 以上锁频 " + targetFreq + "MHz");
-      draw();
-    }
-
-    function applyPreset(v, f, label) {
-      document.getElementById("inputTargetVolt").value = v;
-      document.getElementById("inputTargetFreq").value = f;
-      document.querySelectorAll(".preset").forEach(b => b.classList.remove("active"));
-      // 简单激活态切换
-      event.target.classList.add("active");
-      calcLock(v, f, label);
-    }
-    function applyCustom() {
-      const v = parseInt(document.getElementById("inputTargetVolt").value, 10);
-      const f = parseInt(document.getElementById("inputTargetFreq").value, 10);
-      calcLock(v, f, "自定义 (" + v + "mV @ " + f + "MHz)");
-    }
-
-    // ============================================================
-    //  保存 / 读取 / 读回
-    // ============================================================
-    function refreshLoadBtn() {
-      const b = document.getElementById("btnLoad");
-      const ok = !!(S.savedCurve && Array.isArray(S.savedCurve.deltas));
-      b.disabled = !ok;
-      b.title = ok ? "存档：" + S.savedCurve.deltas.length + " 锚点" + (S.savedCurve.saved_at ? "，" + new Date(S.savedCurve.saved_at).toLocaleString() : "") : "还没有保存过手动曲线";
-    }
-
-    async function saveCurve() {
-      if (S.anchors.length < 16) { log("[!] 还没读到硬件曲线"); return; }
-      ensureDeltas();
-      S.savedCurve = {
-        schema: 2,
-        deltas: S.deltas.slice(),
-        target_volt: S.targetVolt,
-        target_freq: S.targetFreq,
+      ensurePlannedDeltas();
+      STATE.savedSnapshot = {
+        deltas: STATE.plannedDeltas.slice(),
+        target_volt: STATE.targetVolt,
+        target_freq: STATE.targetFreq,
         saved_at: new Date().toISOString()
       };
-      await saveStorage();
-      refreshLoadBtn();
-      log("[💾] 已保存手动曲线：" + S.deltas.length + " 个锚点，末端 " + Math.round(eff(S.anchors.length - 1)) + "MHz");
+      savePluginStorage();
+      refreshSnapshotButton();
+      log(`[💾] 已将当前 ${STATE.plannedDeltas.length} 锚点曲线存入本地独立快照！`);
     }
 
-    function loadCurve() {
-      const snap = S.savedCurve;
-      if (!snap || !Array.isArray(snap.deltas)) { log("[!] 没有保存过的手动曲线"); return; }
-      if (S.anchors.length < 16) { log("[!] 硬件曲线未加载"); return; }
-      if (snap.deltas.length !== S.anchors.length) { log("[!] 存档锚点数 (" + snap.deltas.length + ") 与硬件 (" + S.anchors.length + ") 不一致，拒绝加载"); return; }
+    function loadManualSnapshot() {
+      if (!STATE.savedSnapshot || !Array.isArray(STATE.savedSnapshot.deltas)) {
+        log('[!] 暂无保存过的手动曲线快照');
+        return;
+      }
+      if (STATE.savedSnapshot.deltas.length !== STATE.vfPoints.length) {
+        log(`[!] 快照点数 (${STATE.savedSnapshot.deltas.length}) 与硬件点数 (${STATE.vfPoints.length}) 不符，无法载入`);
+        return;
+      }
       pushUndo();
-      S.deltas = snap.deltas.slice();
-      if (typeof snap.target_volt === "number") S.targetVolt = snap.target_volt;
-      if (typeof snap.target_freq === "number") S.targetFreq = snap.target_freq;
-      document.getElementById("inputTargetVolt").value = S.targetVolt;
-      document.getElementById("inputTargetFreq").value = S.targetFreq;
-      markManual(); draw();
-      log("[📂] 已读回手动曲线，末端 " + Math.round(eff(S.anchors.length - 1)) + "MHz");
+      STATE.plannedDeltas = STATE.savedSnapshot.deltas.slice();
+      if (typeof STATE.savedSnapshot.target_volt === 'number') STATE.targetVolt = STATE.savedSnapshot.target_volt;
+      if (typeof STATE.savedSnapshot.target_freq === 'number') STATE.targetFreq = STATE.savedSnapshot.target_freq;
+      document.getElementById('inputTargetVolt').value = STATE.targetVolt;
+      document.getElementById('inputTargetFreq').value = STATE.targetFreq;
+      STATE.activeMode = '快照方案';
+      document.getElementById('statModeText').textContent = STATE.activeMode;
+      drawCurve();
+      log('[📂] 已成功从独立快照载入曲线方案！');
     }
 
-    async function reloadCurve() {
+    async function reloadCurveFromHardware() {
       await refreshHardwareInfo();
-      if (S.anchors.length) { S.deltas = S.anchors.map(p => p.delta_mhz || 0); draw(); log("[⟳] 已从显卡读回当前曲线"); }
+      if (STATE.vfPoints && STATE.vfPoints.length > 0) {
+        pushUndo();
+        STATE.plannedDeltas = STATE.vfPoints.map(p => p.delta_mhz || 0);
+        STATE.activeMode = '硬件实时曲线';
+        document.getElementById('statModeText').textContent = STATE.activeMode;
+        drawCurve();
+        log('[⟳] 已从物理显卡读取当前硬件生效的 V/F 曲线');
+      }
     }
 
-    // ============================================================
-    //  滑块 / 硬件动作
-    // ============================================================
-    function onCore(v) {
-      S.coreOffset = parseInt(v, 10);
-      document.getElementById("coreBadge").textContent = fmtMhz(S.coreOffset);
-      document.getElementById("coreOffset").textContent = fmtMhz(S.coreOffset);
-    }
-    function onMem(v) {
-      S.memOffset = parseInt(v, 10);
-      document.getElementById("memBadge").textContent = fmtMhz(S.memOffset);
-      document.getElementById("memOffset").textContent = fmtMhz(S.memOffset);
-    }
+    // --- Drawing the V/F Curve on Canvas ---
+    function drawCurve() {
+      const g = getCanvasGeom();
+      if (!g) return;
+      const { canvas, w, h, padL, padR, padT, padB, minV, maxV, yMin, yMax, toX, toY } = g;
+      const ctx = canvas.getContext('2d');
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.max(1, Math.round(w * dpr));
+      canvas.height = Math.max(1, Math.round(h * dpr));
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, w, h);
 
-    async function applyClockOnly() {
-      try {
-        await rpc("set_gpu_clock_offsets", { coreOffsetMhz: S.coreOffset, memOffsetMhz: S.memOffset });
-        log("[✓] 时钟偏移已应用");
-        await saveStorage(); refreshHardwareInfo();
-      } catch (e) { log("[-] " + (e.message || e)); }
-    }
+      if (!STATE.vfPoints || STATE.vfPoints.length === 0) {
+        ctx.fillStyle = '#64748b';
+        ctx.font = '12px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('暂无 V/F 曲线数据', w / 2, h / 2);
+        return;
+      }
 
-    async function applyAll() {
-      try {
-        if (S.memOffset !== 0) await rpc("set_gpu_clock_offsets", { coreOffsetMhz: S.coreOffset, memOffsetMhz: S.memOffset });
-        ensureDeltas();
-        if (S.deltas.length >= 16) {
-          await rpc("set_gpu_vf_curve_deltas", { deltasMhz: S.deltas });
-        } else {
-          await rpc("set_gpu_undervolt_curve", { targetVoltMv: S.targetVolt, maxBoostMhz: S.targetFreq });
+      const points = STATE.vfPoints;
+
+      // 1. Draw Grid Lines
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+      ctx.lineWidth = 1;
+      ctx.fillStyle = '#64748b';
+      ctx.font = '10px monospace';
+      ctx.textAlign = 'right';
+
+      const fStep = (yMax - yMin) > 2000 ? 500 : 200;
+      for (let f = Math.ceil(yMin / fStep) * fStep; f <= yMax; f += fStep) {
+        const y = toY(f);
+        ctx.beginPath();
+        ctx.moveTo(padL, y);
+        ctx.lineTo(w - padR, y);
+        ctx.stroke();
+        ctx.fillText(f + 'M', padL - 6, y + 3);
+      }
+
+      ctx.textAlign = 'center';
+      for (let v = Math.ceil(minV / 100) * 100; v <= maxV; v += 100) {
+        const x = toX(v);
+        ctx.beginPath();
+        ctx.moveTo(x, padT);
+        ctx.lineTo(x, h - padB);
+        ctx.stroke();
+        ctx.fillText(v + 'mV', x, h - 12);
+      }
+
+      // Clip drawing area to avoid lines drawing over axis labels
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(padL, padT, w - padL - padR, h - padT - padB);
+      ctx.clip();
+
+      // 2. Draw Stock Curve (White Dashed line)
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 4]);
+      let started = false;
+      for (let i = 0; i < points.length; i++) {
+        const v = points[i].volt_mv;
+        if (v < minV || v > maxV) continue;
+        const sF = getStockFreq(i);
+        const x = toX(v);
+        const y = toY(sF);
+        if (!started) { ctx.moveTo(x, y); started = true; }
+        else { ctx.lineTo(x, y); }
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // 3. Draw Active / Planned Undervolt Curve (Cyan Solid Line with Glow)
+      ctx.beginPath();
+      ctx.strokeStyle = '#06b6d4';
+      ctx.lineWidth = 2.5;
+      ctx.shadowColor = 'rgba(6, 182, 212, 0.6)';
+      ctx.shadowBlur = 8;
+      started = false;
+
+      for (let i = 0; i < points.length; i++) {
+        const v = points[i].volt_mv;
+        if (v < minV || v > maxV) continue;
+        const eF = getEffFreq(i);
+        const x = toX(v);
+        const y = toY(eF);
+        if (!started) { ctx.moveTo(x, y); started = true; }
+        else { ctx.lineTo(x, y); }
+      }
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+
+      // 4. Driver Running-Max Monotonicity Preview (Orange Dashed Line)
+      let runMax = -Infinity, hasLifted = false;
+      const drv = new Array(points.length);
+      for (let i = 0; i < points.length; i++) {
+        const eF = getEffFreq(i);
+        runMax = (i === 0) ? eF : Math.max(runMax, eF);
+        drv[i] = runMax;
+        if (runMax > eF + 1) hasLifted = true;
+      }
+
+      const legendPreviewEl = document.getElementById('legendDriverPreview');
+      if (hasLifted) {
+        if (legendPreviewEl) legendPreviewEl.style.display = 'flex';
+        ctx.beginPath();
+        ctx.strokeStyle = 'rgba(251, 146, 60, 0.9)';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 4]);
+        started = false;
+        for (let i = 0; i < points.length; i++) {
+          const v = points[i].volt_mv;
+          if (v < minV || v > maxV) continue;
+          const x = toX(v);
+          const y = toY(drv[i]);
+          if (!started) { ctx.moveTo(x, y); started = true; }
+          else { ctx.lineTo(x, y); }
         }
-        log("🎉 降压曲线已下发至显卡驱动生效");
-        await saveStorage(); refreshHardwareInfo();
-      } catch (e) { log("[-] 写入失败: " + (e.message || e)); }
+        ctx.stroke();
+        ctx.setLineDash([]);
+      } else {
+        if (legendPreviewEl) legendPreviewEl.style.display = 'none';
+      }
+
+      ctx.restore();
+
+      // 5. Draw Interactive Anchor Point Handles
+      const hot = drag.active ? drag.index : STATE.hoverIndex;
+      for (let i = 1; i < points.length; i++) {
+        const v = points[i].volt_mv;
+        if (v < minV || v > maxV) continue;
+        const x = toX(v);
+        const y = toY(getEffFreq(i));
+        const isHot = (i === hot);
+
+        ctx.beginPath();
+        ctx.arc(x, y, isHot ? 5 : 2, 0, Math.PI * 2);
+        ctx.fillStyle = isHot ? '#10b981' : 'rgba(6, 182, 212, 0.65)';
+        ctx.fill();
+
+        if (isHot) {
+          ctx.strokeStyle = '#fff';
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+
+          // Horizontal alignment guide
+          ctx.beginPath();
+          ctx.setLineDash([3, 3]);
+          ctx.strokeStyle = 'rgba(16, 185, 129, 0.4)';
+          ctx.lineWidth = 1;
+          ctx.moveTo(padL, y);
+          ctx.lineTo(w - padR, y);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+      }
+
+      // 6. Highlight Target Anchor Point Indicator
+      if (STATE.targetVolt && STATE.targetFreq) {
+        const targetX = toX(STATE.targetVolt);
+        const targetY = toY(STATE.targetFreq);
+        if (targetX >= padL && targetX <= w - padR) {
+          ctx.fillStyle = '#10b981';
+          ctx.beginPath();
+          ctx.arc(targetX, targetY, 4, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = '#fff';
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+
+          ctx.fillStyle = '#10b981';
+          ctx.font = 'bold 10px monospace';
+          ctx.textAlign = 'center';
+          ctx.fillText(`[${STATE.targetVolt}mV, ${STATE.targetFreq}MHz]`, targetX, targetY - 10);
+        }
+      }
     }
 
-    async function resetStock() {
+    // --- Hardware Application Handlers ---
+    async function applyClockOffsetsOnly() {
       try {
-        await rpc("reset_gpu_tuning");
-        S.deltas = S.anchors.map(p => 0);
-        S.coreOffset = 0; S.memOffset = 0;
-        S.mode = "出厂默认";
-        document.getElementById("modeText").textContent = "出厂默认";
-        log("[✓] 已恢复出厂状态");
-        await saveStorage(); refreshHardwareInfo();
-      } catch (e) { log("[-] " + (e.message || e)); }
+        log(`正在应用基础时钟偏移: Core ${STATE.coreOffset >= 0 ? '+' : ''}${STATE.coreOffset} MHz, Mem ${STATE.memOffset >= 0 ? '+' : ''}${STATE.memOffset} MHz...`);
+        await rpc('set_gpu_clock_offsets', {
+          coreOffsetMhz: STATE.coreOffset,
+          memOffsetMhz: STATE.memOffset
+        });
+        log('[✓] 基础频率偏移已成功写入物理显卡生效！');
+        await savePluginStorage();
+        refreshHardwareInfo();
+      } catch (err) {
+        log(`[-] 写入时钟偏移失败: ${err.message || err}`);
+      }
     }
 
-    // ============================================================
-    //  挂载
-    // ============================================================
-    window.addEventListener("load", async () => {
-      await loadStorage();
-      refreshLoadBtn();
-      await refreshHardwareInfo();
+    async function applyFullUndervoltToHardware() {
+      try {
+        if (STATE.memOffset !== 0 || STATE.coreOffset !== 0) {
+          log(`正在向显卡写入基础频率偏移 (Core: ${STATE.coreOffset >= 0 ? '+' : ''}${STATE.coreOffset} MHz, Mem: ${STATE.memOffset >= 0 ? '+' : ''}${STATE.memOffset} MHz)...`);
+          await rpc('set_gpu_clock_offsets', {
+            coreOffsetMhz: STATE.coreOffset,
+            memOffsetMhz: STATE.memOffset
+          });
+        }
 
-      const c = document.getElementById("vfCanvas");
-      if (c) {
-        c.addEventListener("pointerdown", onDown);
-        c.addEventListener("pointermove", onMove);
-        c.addEventListener("pointerup", onUp);
-        c.addEventListener("pointercancel", onUp);
-        c.addEventListener("pointerleave", () => {
-          if (drag.active) return;
-          if (S.hover !== -1) { S.hover = -1; readout(-1); draw(); }
-        });
-        c.addEventListener("dblclick", onDbl);
-        log("[✓] 曲线编辑器就绪：拖动锚点可手动调整");
+        if (STATE.plannedDeltas && STATE.plannedDeltas.length >= 16) {
+          log(`正在向 NVIDIA 驱动写入 ${STATE.plannedDeltas.length} 锚点平移降压曲线...`);
+          await rpc('set_gpu_vf_curve_deltas', { deltasMhz: STATE.plannedDeltas });
+        } else {
+          log(`正在生成并下发目标降压曲线 (${STATE.targetVolt}mV @ ${STATE.targetFreq}MHz)...`);
+          await rpc('set_gpu_undervolt_curve', {
+            targetVoltMv: STATE.targetVolt,
+            maxBoostMhz: STATE.targetFreq
+          });
+        }
+
+        log('🎉 恭喜！免小飞机降压曲线已全量下发至显卡驱动生效！');
+        await savePluginStorage();
+        refreshHardwareInfo();
+      } catch (err) {
+        log(`[-] 写入显卡调优失败: ${err.message || err}`);
+      }
+    }
+
+    async function resetToStock() {
+      try {
+        log('正在还原显卡出厂设置 (清空核心/显存偏移与 V/F 曲线)...');
+        await rpc('reset_gpu_tuning');
+        STATE.plannedDeltas = null;
+        STATE.coreOffset = 0;
+        STATE.memOffset = 0;
+        STATE.activeMode = '出厂默认';
+        document.getElementById('statModeText').textContent = '出厂默认';
+        log('[✓] 显卡已成功恢复出厂 stock 状态！');
+        await savePluginStorage();
+        refreshHardwareInfo();
+      } catch (err) {
+        log(`[-] 恢复出厂设置失败: ${err.message || err}`);
+      }
+    }
+
+    // --- Host Synchronization Handlers ---
+    function onExternalOffsetsChanged(coreMhz, memMhz) {
+      if (STATE.coreOffset === coreMhz && STATE.memOffset === memMhz) return;
+      STATE.coreOffset = coreMhz;
+      STATE.memOffset = memMhz;
+
+      document.getElementById('statCoreOffset').textContent = (coreMhz >= 0 ? '+' : '') + coreMhz + ' MHz';
+      document.getElementById('statMemOffset').textContent = (memMhz >= 0 ? '+' : '') + memMhz + ' MHz';
+      document.getElementById('coreSlider').value = coreMhz;
+      document.getElementById('coreValBadge').textContent = (coreMhz >= 0 ? '+' : '') + coreMhz + ' MHz';
+      document.getElementById('memSlider').value = memMhz;
+      document.getElementById('memValBadge').textContent = (memMhz >= 0 ? '+' : '') + memMhz + ' MHz';
+
+      log(`[⟳] 接收到宿主时钟变更广播: Core=${coreMhz >= 0 ? '+' : ''}${coreMhz}MHz, Mem=${memMhz >= 0 ? '+' : ''}${memMhz}MHz，界面已自动镜像同步。`);
+      savePluginStorage();
+    }
+
+    // --- Host Telemetry Listener ---
+    window.addEventListener('message', (e) => {
+      if (!e.data || typeof e.data !== 'object') return;
+      if (e.data.type === 'OPENREVO_TELEMETRY' && e.data.payload) {
+        const s = e.data.payload;
+        STATE.hostPowerMode = s.power_mode;
+
+        if (typeof s.gpu_temp === 'number' && s.gpu_temp > 0) {
+          document.getElementById('statTelemetryTemp').textContent = `${s.gpu_temp}°C`;
+        }
+        if (typeof s.gpu_power_w === 'number') {
+          document.getElementById('statTelemetryPower').textContent = `实时功耗: ${s.gpu_power_w.toFixed(1)} W`;
+        }
+        if (typeof s.gpu_usage === 'number') {
+          document.getElementById('statTelemetryUsage').textContent = `负载: ${s.gpu_usage}%`;
+        }
+        if (s.gpu_vram_used_mb && s.gpu_vram_mb) {
+          document.getElementById('statTelemetryVram').textContent = `显存: ${s.gpu_vram_used_mb} / ${s.gpu_vram_mb} MB`;
+        }
+
+        const modeSyncPill = document.getElementById('modeSyncPill');
+        if (s.power_mode === 4) {
+          modeSyncPill.style.display = 'inline-flex';
+        } else {
+          modeSyncPill.style.display = 'none';
+        }
       }
     });
-    window.addEventListener("resize", draw);
+
+    // --- Keydown Listener for Ctrl+Z Undo ---
+    window.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {
+        e.preventDefault();
+        undoEdit();
+      }
+    });
+
+    // --- Mount Listeners on Load ---
+    window.addEventListener('resize', drawCurve);
+    window.addEventListener('load', async () => {
+      // 1. Load sandboxed plugin storage
+      await loadPluginStorage();
+
+      // 2. Refresh physical hardware state
+      await refreshHardwareInfo();
+
+      // 3. Register Canvas pointer dragging listeners
+      const canvas = document.getElementById('vfCanvas');
+      if (canvas) {
+        canvas.addEventListener('pointerdown', onPointerDown);
+        canvas.addEventListener('pointermove', onPointerMove);
+        canvas.addEventListener('pointerup', onPointerUp);
+        canvas.addEventListener('pointercancel', onPointerUp);
+        canvas.addEventListener('pointerleave', () => {
+          if (drag.active) return;
+          if (STATE.hoverIndex !== -1) {
+            STATE.hoverIndex = -1;
+            readout(-1);
+            drawCurve();
+          }
+        });
+        canvas.addEventListener('dblclick', onDblClick);
+      }
+
+      // 4. Register Tauri Event Listener for host-wide clock offset sync
+      try {
+        if (window.OpenRevo && typeof window.OpenRevo.listen === 'function') {
+          window.OpenRevo.listen('gpu-clock-offsets-changed', (event) => {
+            if (event.payload) {
+              onExternalOffsetsChanged(event.payload.core_offset_mhz, event.payload.mem_offset_mhz);
+            }
+          });
+        } else if (window.__TAURI__ && window.__TAURI__.event && typeof window.__TAURI__.event.listen === 'function') {
+          window.__TAURI__.event.listen('gpu-clock-offsets-changed', (event) => {
+            if (event.payload) {
+              onExternalOffsetsChanged(event.payload.core_offset_mhz, event.payload.mem_offset_mhz);
+            }
+          });
+        }
+      } catch (err) {
+        console.warn('Failed to attach gpu-clock-offsets-changed listener:', err);
+      }
+    });
+
   </script>
 </body>
 

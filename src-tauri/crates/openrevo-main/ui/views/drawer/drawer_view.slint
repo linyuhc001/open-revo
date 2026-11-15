@@ -16,18 +16,23 @@ export component DrawerView inherits Rectangle {
     border-color: AppTheme.border_subtle;
     clip: true;
 
-    if AppTheme.bg_image.width > 0: Image {
-        source: AppTheme.bg_image;
+    property <bool> has_drawer_image: AppTheme.drawer_bg_image.width > 0;
+    property <image> effective_drawer_image: has_drawer_image ? AppTheme.drawer_bg_image : AppTheme.bg_image;
+    property <float> effective_drawer_opacity: has_drawer_image ? AppTheme.drawer_bg_image_opacity : AppTheme.bg_image_opacity;
+
+    if effective_drawer_image.width > 0: Image {
+        source: effective_drawer_image;
         width: 100%;
         height: 100%;
         image-fit: cover;
-        opacity: AppTheme.bg_image_opacity;
+        opacity: effective_drawer_opacity;
     }
 
     // --- State properties ---
     in-out property <string> app_version: "v0.9.7";
     in-out property <int> power_mode: 4;
     in-out property <string> gpu_mode: "dgpu";
+    in-out property <bool> is_tri_mode: true;
     in-out property <int> refresh_rate: 240;
     in-out property <bool> auto_min_hz: true;
     in-out property <string> monitor_name: "京东方";
@@ -49,6 +54,7 @@ export component DrawerView inherits Rectangle {
     in-out property <bool> is_thin_and_light: false;
     in-out property <bool> turbo_submode_supported: false;
     in-out property <bool> turbo_silent: false;
+    in-out property <bool> gpu_oc_on: false;
 
     // Telemetry
     in-out property <int> cpu_temp: 62;
@@ -70,6 +76,8 @@ export component DrawerView inherits Rectangle {
 
     // --- Callbacks ---
     callback power_mode_clicked(int);
+    callback apply_turbo_silent(bool);
+    callback toggle_gpu_oc();
     callback gpu_mode_clicked(string, bool);
     callback refresh_rate_switched(int);
     callback auto_min_hz_toggled();
@@ -119,12 +127,16 @@ export component DrawerView inherits Rectangle {
             is_restricted: root.is_power_mode_restricted;
             turbo_submode_supported: root.turbo_submode_supported;
             turbo_silent: root.turbo_silent;
+            gpu_oc_on: root.gpu_oc_on;
             set_mode(mode) => { root.power_mode_clicked(mode); }
+            apply_turbo_silent(silent) => { root.apply_turbo_silent(silent); }
+            toggle_gpu_oc => { root.toggle_gpu_oc(); }
         }
 
         // 3. GPU Mode Card
         DrawerGpuCard {
             gpu_mode: root.gpu_mode;
+            is_tri_mode: root.is_tri_mode;
             gpu_temp: root.gpu_temp;
             gpu_rpm: root.gpu_rpm;
             is_thin_and_light: root.is_thin_and_light;

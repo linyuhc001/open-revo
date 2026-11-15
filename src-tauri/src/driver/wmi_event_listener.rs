@@ -74,6 +74,8 @@ fn dispatch_acpi_event(
     last_switch_time: &mut Instant,
     last_brightness_time: &mut Instant,
     last_fan_boost_time: &mut Instant,
+    last_wifi_time: &mut Instant,
+    last_flip_time: &mut Instant,
 ) {
     match code {
         176 | 192 | 201 => {
@@ -236,6 +238,84 @@ fn dispatch_acpi_event(
                 crate::log_debug!("WMI_LISTENER", "Fn+1 hotkey event {} debounced (elapsed < 500ms)", code);
             }
         }
+        164 | 26 | 27 | 14 | 15 => {
+            // Fn+F4 / Chassis Radio & Airplane Mode Hotkey
+            // 164 = OSD_AIRPLANEMODE, 26 = OSD_RADIOON, 27 = OSD_RADIOOFF, 14 = OSD_RFON, 15 = OSD_RFOFF
+            if last_wifi_time.elapsed() >= Duration::from_millis(400) {
+                *last_wifi_time = Instant::now();
+                let current_wifi = crate::system::switches::radio::get_realtime_wifi_state()
+                    .unwrap_or_else(|| crate::system::config::load_config().wifi_enabled);
+                let next_wifi = match code {
+                    26 | 14 => true,
+                    27 | 15 => false,
+                    _ => !current_wifi,
+                };
+                crate::log_info!(
+                    "WMI_LISTENER",
+                    "Fn+F4 / Radio ACPI event ({}) received! Toggling Wi-Fi: {} -> {}",
+                    code,
+                    current_wifi,
+                    next_wifi
+                );
+                let _ = crate::system::device_switches::set_switch("wifi", next_wifi);
+                crate::system::osd_window::show_device_switch("wifi", next_wifi);
+                crate::system::slint_window::send_slint_ipc_message(serde_json::json!({
+                    "action": "sync_state",
+                    "wifi_enabled": next_wifi
+                }));
+
+                if let Some(app) = app_handle {
+                    crate::system::osd_window::wake_osd_if_enabled(app);
+                    let _ = app.emit("wifi-state-changed", next_wifi);
+                    let _ = app.emit_to("main", "wifi-state-changed", next_wifi);
+                    let _ = app.emit_to("osd", "wifi-state-changed", next_wifi);
+                    crate::system::native_wry::broadcast_event("wifi-state-changed", &serde_json::json!(next_wifi));
+                }
+            } else {
+                crate::log_debug!("WMI_LISTENER", "Wi-Fi hotkey event {} debounced (elapsed < 400ms)", code);
+            }
+        }
+        208 => {
+            // Fn+Sc: TimAP_NotifyFlipScreen (Screen 180° inversion toggle)
+            if last_flip_time.elapsed() >= Duration::from_millis(500) {
+                *last_flip_time = Instant::now();
+                match crate::system::display::toggle_primary_display_orientation() {
+                    Ok(is_flipped) => {
+                        crate::log_info!(
+                            "WMI_LISTENER",
+                            "Fn+Sc / FlipScreen ACPI event 208 received! Toggled display orientation (flipped: {})",
+                            is_flipped
+                        );
+                        crate::system::osd_window::show_device_switch("screen_flip", is_flipped);
+                        if let Some(app) = app_handle {
+                            crate::system::osd_window::wake_osd_if_enabled(app);
+                            let _ = app.emit("screen-flip-changed", is_flipped);
+                            let _ = app.emit_to("main", "screen-flip-changed", is_flipped);
+                            let _ = app.emit_to("osd", "screen-flip-changed", is_flipped);
+                        }
+                    }
+                    Err(e) => {
+                        crate::log_warn!("WMI_LISTENER", "Fn+Sc display toggle failed: {}", e);
+                    }
+                }
+            } else {
+                crate::log_debug!("WMI_LISTENER", "FlipScreen event 208 debounced (< 500ms)");
+            }
+        }
+        207 => {
+            // TimAP_NotifyEShutter (Camera electronic privacy shutter toggle)
+            let has_ec_switches = crate::system::switches::has_ec_device_switches();
+            let cur_cam = crate::system::switches::camera::get_realtime_camera_state(
+                has_ec_switches,
+                crate::system::config::load_config().camera_enabled,
+            );
+            crate::log_info!("WMI_LISTENER", "Fn+Camera / E-Shutter event 207 received! Current camera: {}", cur_cam);
+            crate::system::osd_window::show_device_switch("camera", cur_cam);
+            if let Some(app) = app_handle {
+                crate::system::osd_window::wake_osd_if_enabled(app);
+                let _ = app.emit("camera-state-changed", cur_cam);
+            }
+        }
         240 => {
             // EC_RGBKBBKL_LEVEL_UPDATE echo notification
             crate::log_info!("WMI_LISTENER", "ACPI Keyboard brightness status update echo: 240");
@@ -271,6 +351,8 @@ pub fn start_wmi_event_listener(app_handle: Option<AppHandle>, ec_bridge: Shared
             let mut last_switch_time = Instant::now() - Duration::from_secs(10);
             let mut last_brightness_time = Instant::now() - Duration::from_secs(10);
             let mut last_fan_boost_time = Instant::now() - Duration::from_secs(10);
+            let mut last_wifi_time = Instant::now() - Duration::from_secs(10);
+            let mut last_flip_time = Instant::now() - Duration::from_secs(10);
             let mut consecutive_failures = 0u32;
 
             loop {
@@ -359,6 +441,8 @@ pub fn start_wmi_event_listener(app_handle: Option<AppHandle>, ec_bridge: Shared
                                             &mut last_switch_time,
                                             &mut last_brightness_time,
                                             &mut last_fan_boost_time,
+                                            &mut last_wifi_time,
+                                            &mut last_flip_time,
                                         );
                                     }
                                 }

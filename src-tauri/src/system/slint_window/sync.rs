@@ -299,8 +299,22 @@ pub fn sync_slint_display_state() {
         profiles_ids.push(p.id.clone());
     }
 
+    let caps = crate::driver::uefi_nvram::probe_gpu_capabilities();
+    let is_tri_mode = if caps.is_safety_locked {
+        caps.user_unlocked
+    } else {
+        caps.supports_igpu_only
+    };
+    let is_intel = caps.platform != "amd";
+    let cfg = crate::system::config::load_config();
+
     send_slint_ipc_message(serde_json::json!({
         "action": "sync_display_state",
+        "gpu_mode": cfg.gpu_mode,
+        "is_tri_mode": is_tri_mode,
+        "is_safety_locked": caps.is_safety_locked,
+        "is_intel": is_intel,
+        "igpu_lock_reason": caps.reason_igpu_unsupported.unwrap_or_default(),
         "tuning_enabled": tuning_state.enabled,
         "active_preset_id": tuning_state.active_preset.id,
         "active_preset_name": tuning_state.active_preset.name,
@@ -335,6 +349,12 @@ pub fn sync_slint_power_state() {
     let cfg = crate::system::config::load_config();
     sync_slint_power_targets(cfg.power_mode);
 
+    // GPU OC 实时状态：来自驱动的 core/mem 偏移（与 React get_gpu_oc_state 同源），
+    // 无 NVAPI / 读取失败时按关闭处理。
+    let gpu_oc_on = crate::driver::nvapi::get_gpu_clock_offsets()
+        .map(|(core, mem)| core != 0 || mem != 0)
+        .unwrap_or(false);
+
     let app_opt = SLINT_APP_HANDLE.lock().ok().and_then(|g| g.clone());
     if let Some(app) = app_opt {
         let ec_state: tauri::State<crate::driver::ec_bridge::SharedEcBridge> = app.state();
@@ -361,6 +381,7 @@ pub fn sync_slint_power_state() {
             "sleep_auto_office": info.sleep_auto_office,
             "turbo_submode_supported": crate::system::power::turbo_submode::is_supported(),
             "turbo_silent": cfg.turbo_silent,
+            "gpu_oc_on": gpu_oc_on,
         }));
     } else {
         let cfg = crate::system::config::load_config();
@@ -392,6 +413,9 @@ pub fn sync_slint_power_state() {
             "sleep_deep_sleep": cfg.sleep_deep_sleep,
             "sleep_hibernate_30m": cfg.sleep_hibernate_30m,
             "sleep_auto_office": cfg.sleep_auto_office,
+            "turbo_submode_supported": crate::system::power::turbo_submode::is_supported(),
+            "turbo_silent": cfg.turbo_silent,
+            "gpu_oc_on": gpu_oc_on,
         }));
     }
 }

@@ -55,6 +55,9 @@ export component FullDashboard inherits Rectangle {
     in-out property <int> oc_core_mhz: 105;
     in-out property <int> oc_mem_mhz: 500;
     in-out property <string> oc_save_hint: "";
+    in-out property <bool> turbo_submode_supported: false;
+    in-out property <bool> turbo_silent: false;
+    in-out property <bool> gpu_oc_on: false;
 
     callback toggle_balanced_db(bool);
     callback change_oc_core(int);
@@ -152,6 +155,10 @@ export component FullDashboard inherits Rectangle {
     in-out property <int> gpu_usage: 15;
     in-out property <string> gpu_name: "RTX 4090 Laptop GPU";
     in-out property <string> gpu_mode: "dgpu";
+    in-out property <bool> is_tri_mode: true;
+    in-out property <bool> is_safety_locked: false;
+    in-out property <bool> is_intel: true;
+    in-out property <string> igpu_lock_reason: "";
     in-out property <int> brightness: 76;
     callback gpu_mode_clicked(string, bool);
     callback brightness_changed(int);
@@ -318,6 +325,8 @@ export component FullDashboard inherits Rectangle {
     in-out property <string> power_target_text: "";
     in-out property <bool> is_power_mode_restricted: false;
     callback set_power_mode(int);
+    callback apply_turbo_silent(bool);
+    callback toggle_gpu_oc();
     callback open_custom_tuning();
 
     // Power & Battery Management Props & Callbacks
@@ -506,6 +515,7 @@ export component FullDashboard inherits Rectangle {
 
     callback tuning_toggle_smooth();
     callback tuning_toggle_isolated();
+    callback tuning_change_smooth_time(string);
     callback tuning_toggle_link();
     callback tuning_select_fan_tab(int);
     callback tuning_adjust_point(int, int);
@@ -608,7 +618,7 @@ export component FullDashboard inherits Rectangle {
         // 2. Right Main Work Area (Width: 920px)
         Rectangle {
             horizontal-stretch: 1;
-            background: (Math.mod(root.redraw_tick, 2) == 0) ? AppTheme.bg_root : @linear-gradient(180deg, AppTheme.bg_root 0%, AppTheme.bg_root 100%);
+            background: AppTheme.bg_image.width > 0 ? transparent : ((Math.mod(root.redraw_tick, 2) == 0) ? AppTheme.bg_root : @linear-gradient(180deg, AppTheme.bg_root 0%, AppTheme.bg_root 100%));
             clip: true;
 
             VerticalLayout {
@@ -672,7 +682,12 @@ export component FullDashboard inherits Rectangle {
                 tgp_target: root.tgp_target;
                 power_target_text: root.power_target_text;
                 is_power_mode_restricted: root.is_power_mode_restricted;
+                turbo_submode_supported: root.turbo_submode_supported;
+                turbo_silent: root.turbo_silent;
+                gpu_oc_on: root.gpu_oc_on;
                 set_power_mode(mode) => { root.set_power_mode(mode); }
+                apply_turbo_silent(silent) => { root.apply_turbo_silent(silent); }
+                toggle_gpu_oc => { root.toggle_gpu_oc(); }
                 open_custom_tuning => {
                     root.is_in_tuning_view = true;
                     root.open_custom_tuning();
@@ -869,6 +884,10 @@ export component FullDashboard inherits Rectangle {
                     root.smooth_transition = !root.smooth_transition;
                     root.tuning_toggle_smooth();
                 }
+                change_smooth_time(st) => {
+                    root.smooth_time = st;
+                    root.tuning_change_smooth_time(st);
+                }
                 toggle_isolated => {
                     root.fan_isolated_output = !root.fan_isolated_output;
                     root.tuning_toggle_isolated();
@@ -905,6 +924,10 @@ export component FullDashboard inherits Rectangle {
             if root.active_tab == 1 && root.active_plugin_id == "": DashboardGpuView {
                 vertical-stretch: 1;
                 gpu_mode: root.gpu_mode;
+                is_tri_mode: root.is_tri_mode;
+                is_safety_locked: root.is_safety_locked;
+                is_intel: root.is_intel;
+                igpu_lock_reason: root.igpu_lock_reason;
                 gpu_name: root.gpu_name;
                 cpu_name: root.cpu_name;
                 gpu_temp: root.gpu_temp;
@@ -996,6 +1019,7 @@ export component FullDashboard inherits Rectangle {
                 oc_core_mhz <=> root.oc_core_mhz;
                 oc_mem_mhz <=> root.oc_mem_mhz;
                 oc_save_hint: root.oc_save_hint;
+                turbo_submode_supported: root.turbo_submode_supported;
 
                 toggle_balanced_db(en) => { root.toggle_balanced_db(en); }
                 change_oc_core(val) => { root.change_oc_core(val); }

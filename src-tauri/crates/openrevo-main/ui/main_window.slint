@@ -31,6 +31,10 @@ export component MainWindow inherits Window {
     in-out property <int> theme_mode <=> AppTheme.theme_mode;
     in-out property <int> power_mode: 2;        // 1: 办公, 2: 均衡, 3: 狂暴, 4: 极客调校
     in-out property <string> gpu_mode: "dgpu";  // "igpu" | "hybrid" | "dgpu"
+    in-out property <bool> is_tri_mode: true;
+    in-out property <bool> is_safety_locked: false;
+    in-out property <bool> is_intel: true;
+    in-out property <string> igpu_lock_reason: "";
     in-out property <int> refresh_rate: 240;    // 60, 144, 240
     in-out property <bool> auto_min_hz: true;
     in-out property <int> brightness: 76;       // 0 - 100
@@ -56,6 +60,8 @@ export component MainWindow inherits Window {
     in-out property <bool> sleep_auto_office: false;
     in-out property <bool> turbo_submode_supported: false;
     in-out property <bool> turbo_silent: false;
+    // 狂暴档右上角 GPU OC 胶囊的实时状态（core/mem 任一非零为开）
+    in-out property <bool> gpu_oc_on: false;
     in-out property <bool> has_fan_boost: true;
     in-out property <bool> is_bld_fan_lock: false;
     in-out property <int> bld_fan_rpm: 5800;
@@ -234,6 +240,7 @@ export component MainWindow inherits Window {
 
     callback tuning_toggle_smooth();
     callback tuning_toggle_isolated();
+    callback tuning_change_smooth_time(string);
     callback tuning_toggle_link();
     callback tuning_select_fan_tab(int);
     callback tuning_adjust_point(int, int);
@@ -244,6 +251,8 @@ export component MainWindow inherits Window {
 
     // --- Callbacks to Rust host ---
     callback power_mode_clicked(int);
+    callback apply_turbo_silent(bool);
+    callback toggle_gpu_oc();
     callback gpu_mode_clicked(string, bool);
     callback refresh_rate_switched(int);
     callback auto_min_hz_toggled();
@@ -586,6 +595,7 @@ export component MainWindow inherits Window {
         app_version: root.app_version;
         power_mode: root.power_mode;
         gpu_mode: root.gpu_mode;
+        is_tri_mode: root.is_tri_mode;
         refresh_rate: root.refresh_rate;
         auto_min_hz: root.auto_min_hz;
         monitor_name: root.monitor_name;
@@ -607,6 +617,7 @@ export component MainWindow inherits Window {
         is_thin_and_light: root.is_thin_and_light;
         turbo_submode_supported: root.turbo_submode_supported;
         turbo_silent: root.turbo_silent;
+        gpu_oc_on: root.gpu_oc_on;
         has_fan_boost: root.has_fan_boost;
 
         cpu_temp: root.cpu_temp;
@@ -625,6 +636,8 @@ export component MainWindow inherits Window {
         custom_status_text: root.custom_status_text;
 
         power_mode_clicked(m) => { root.power_mode_clicked(m); }
+        apply_turbo_silent(silent) => { root.apply_turbo_silent(silent); }
+        toggle_gpu_oc => { root.toggle_gpu_oc(); }
         gpu_mode_clicked(m, r) => { root.gpu_mode_clicked(m, r); }
         refresh_rate_switched(hz) => { root.refresh_rate_switched(hz); }
         auto_min_hz_toggled => { root.auto_min_hz_toggled(); }
@@ -716,6 +729,10 @@ export component MainWindow inherits Window {
         gpu_usage: root.gpu_usage;
         gpu_name: root.gpu_name;
         gpu_mode <=> root.gpu_mode;
+        is_tri_mode: root.is_tri_mode;
+        is_safety_locked: root.is_safety_locked;
+        is_intel: root.is_intel;
+        igpu_lock_reason: root.igpu_lock_reason;
         brightness <=> root.brightness;
         gpu_mode_clicked(m, r) => { root.gpu_mode_clicked(m, r); }
         brightness_changed(b) => { root.brightness_changed(b); }
@@ -778,6 +795,9 @@ export component MainWindow inherits Window {
         oc_core_mhz <=> root.oc_core_mhz;
         oc_mem_mhz <=> root.oc_mem_mhz;
         oc_save_hint: root.oc_save_hint;
+        turbo_submode_supported: root.turbo_submode_supported;
+        turbo_silent: root.turbo_silent;
+        gpu_oc_on: root.gpu_oc_on;
 
         toggle_balanced_db(en) => { root.toggle_balanced_db(en); }
         change_oc_core(val) => { root.change_oc_core(val); }
@@ -799,6 +819,8 @@ export component MainWindow inherits Window {
         power_target_text: root.power_target_text;
         is_power_mode_restricted: root.is_power_mode_restricted;
         set_power_mode(m) => { root.power_mode_clicked(m); }
+        apply_turbo_silent(silent) => { root.apply_turbo_silent(silent); }
+        toggle_gpu_oc => { root.toggle_gpu_oc(); }
         open_custom_tuning => { root.open_custom_tuning(); }
 
         battery_percent: root.battery_percent;
@@ -864,7 +886,8 @@ export component MainWindow inherits Window {
         turn_off_screen => { root.turn_off_screen_clicked(); }
 
         // Tuning Props
-                preset_ids <=> root.preset_ids;
+        active_preset_name <=> root.active_preset_name;
+        preset_ids <=> root.preset_ids;
         preset_names <=> root.preset_names;
         temp_wall <=> root.temp_wall;
         temp_wall_enabled <=> root.temp_wall_enabled;
@@ -990,6 +1013,10 @@ export component MainWindow inherits Window {
         tuning_toggle_smooth => {
             root.smooth_transition = !root.smooth_transition;
             root.tuning_toggle_smooth();
+        }
+        tuning_change_smooth_time(st) => {
+            root.smooth_time = st;
+            root.tuning_change_smooth_time(st);
         }
         tuning_toggle_isolated => {
             root.fan_isolated_output = !root.fan_isolated_output;
