@@ -1106,7 +1106,7 @@ pub fn get_core_layout() -> Vec<CorePlacement> {
                     })
                     .collect();
                 apply_co_slot_remap(&mut placements);
-                placements
+                return placements;
             }
             None => {
                 crate::log(&format!(
