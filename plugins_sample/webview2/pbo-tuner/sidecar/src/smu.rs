@@ -1557,19 +1557,96 @@ pub struct PmCoreLayout {
 }
 
 /// Layout registry: pm_table_version -> per-core field bases.
+///
+/// Two shapes are known in the Zen4 `0x54` family, and ZenMaster keys them on
+/// the low `sub_id` byte exactly the same way: `0x00/0x02/0x08` are the 16-slot
+/// tables (2 CCDs x 8, arrays padded), everything else the 8-slot table (one
+/// CCD, no padding). Both are self-consistent — each array is `stride` floats
+/// wide and the frequency array ends precisely where the next array group on
+/// that table begins.
 pub fn pm_core_layout(version: u32) -> Option<PmCoreLayout> {
     match version {
         // Zen5 Granite Ridge / Fire Range family — offsets verified by
         // LibreHardwareMonitor against pm table 0x00621202 (size 0x994).
         0x00621202 => Some(PmCoreLayout { voltage: 317, temperature: 333, stride: 16 }),
-        // Zen4 Raphael / Dragon Range (7845HX & co), size 0x8D0. Offsets from
-        // ZenMaster's sensors.py 0x54 branch (power 0x494, voltage 0x4D4,
-        // temperature 0x514, clock 0x554), which is self-consistent: the clock
-        // array ends at 0x554 + 16*4 = 0x594, exactly where that table's next
-        // array group starts. Until 1.7.1 this version had no entry, so the
-        // blind detector had to guess and the 7845HX ended up on the MSR mirror.
+        // Zen4 Raphael / Dragon Range 16-slot shape, e.g. 7845HX (12 cores,
+        // arrays padded to 2 CCDs x 8). Power 0x494 / voltage 0x4D4 /
+        // temperature 0x514 / clock 0x554; clock + 16*4 = 0x594 is that table's
+        // next array group. Until 1.7.1 this version had no entry, so the blind
+        // detector had to guess and the 7845HX ended up on the MSR mirror.
         0x00540208 => Some(PmCoreLayout { voltage: 308, temperature: 325, stride: 16 }),
+        // Zen4 Dragon Range 8-slot shape, e.g. 7745HX (8 cores, single CCD).
+        // Power 0x494 / voltage 0x4B4 / temperature 0x4D4 / clock 0x4F4, each
+        // array 8 floats wide; clock + 8*4 = 0x514, where the next group starts.
+        0x00540105 => Some(PmCoreLayout { voltage: 301, temperature: 309, stride: 8 }),
+        // Rest of the 0x54 family: same split ZenMaster makes.
+        v if (v >> 16) & 0xFF == 0x54 => {
+            let sub = (v >> 8) & 0xFF;
+            if matches!(sub, 0x00 | 0x02 | 0x08) {
+                Some(PmCoreLayout { voltage: 308, temperature: 325, stride: 16 })
+            } else {
+                Some(PmCoreLayout { voltage: 301, temperature: 309, stride: 8 })
+            }
+        }
         _ => None,
+    }
+}
+
+/// Versions whose offsets were checked against a real table by hand. Anything
+/// else that `pm_core_layout` answers with is a family guess and has to prove
+/// itself against the data before we trust it.
+fn pm_core_layout_exact(version: u32) -> bool {
+    matches!(version, 0x00621202 | 0x00540208 | 0x00540105)
+}
+
+/// A family-guessed layout must read plausible voltages and temperatures for at
+/// least half the cores. Failing that the offsets are wrong for this table and
+/// the blind detector gets the job instead of us painting garbage.
+fn pm_layout_plausible(values: &[f32], l: &PmCoreLayout, cores: usize) -> bool {
+    if cores == 0 {
+        return false;
+    }
+    let count = |base: usize, lo: f32, hi: f32| {
+        (0..cores)
+            .filter(|i| matches!(values.get(base + i), Some(v) if v.is_finite() && *v >= lo && *v <= hi))
+            .count()
+    };
+    count(l.voltage, 0.1, 3.0) * 2 >= cores && count(l.temperature, 1.0, 125.0) * 2 >= cores
+}
+
+/// Pick a layout for this table: hand-checked entry, family guess that passes
+/// the sanity check, or the blind detector. Also says where the answer came
+/// from, which the UI surfaces in the tooltip and the log.
+fn resolve_pm_layout(
+    values: &[f32],
+    cores: usize,
+    version: u32,
+) -> (Option<PmCoreLayout>, &'static str) {
+    if let Some(l) = pm_core_layout(version) {
+        if pm_core_layout_exact(version) {
+            return (Some(l), "registry");
+        }
+        if pm_layout_plausible(values, &l, cores) {
+            crate::log(&format!(
+                "[voltage] PM 0x{version:08X} matched by family rule: voltage float[{}], temperature float[{}], stride {}",
+                l.voltage, l.temperature, l.stride
+            ));
+            return (Some(l), "family");
+        }
+        crate::log(&format!(
+            "[voltage] PM 0x{version:08X} family layout (voltage float[{}]) reads implausible — trying auto-detect",
+            l.voltage
+        ));
+    }
+    match detect_pm_layout(values, cores) {
+        Some(l) => {
+            crate::log(&format!(
+                "[voltage] PM 0x{version:08X} layout auto-detected: voltage float[{}], temperature float[{}]",
+                l.voltage, l.temperature
+            ));
+            (Some(l), "auto")
+        }
+        None => (None, "none"),
     }
 }
 
@@ -1726,13 +1803,7 @@ pub fn pmtable_live(dump: bool) -> Result<Value, String> {
     if dump {
         let snap = read_pm_table_raw()?;
         let cores = detect_physical_core_count() as usize;
-        let (layout, layout_source) = match pm_core_layout(snap.version) {
-            Some(l) => (Some(l), "registry"),
-            None => match detect_pm_layout(&snap.values, cores) {
-                Some(l) => (Some(l), "auto"),
-                None => (None, "none"),
-            },
-        };
+        let (layout, layout_source) = resolve_pm_layout(&snap.values, cores, snap.version);
         if let Some(l) = layout {
             crate::log(&format!(
                 "[voltage] PM 0x{:08X} ({}) per-core voltage float[{}], temperature float[{}]",
@@ -1768,19 +1839,7 @@ pub fn pmtable_live(dump: bool) -> Result<Value, String> {
         }
     };
     let cores = detect_physical_core_count() as usize;
-    let (layout, layout_source) = match pm_core_layout(snap.version) {
-        Some(l) => (Some(l), "registry"),
-        None => match detect_pm_layout(&snap.values, cores) {
-            Some(l) => {
-                crate::log(&format!(
-                    "[voltage] PM 0x{:08X} layout auto-detected: voltage float[{}], temperature float[{}]",
-                    snap.version, l.voltage, l.temperature
-                ));
-                (Some(l), "auto")
-            }
-            None => (None, "none"),
-        },
-    };
+    let (layout, layout_source) = resolve_pm_layout(&snap.values, cores, snap.version);
     let Some(l) = layout else {
         // Unmapped table version: the whole-package MSR mirror is still better
         // than an empty UI, as long as its numbers are labelled as such.

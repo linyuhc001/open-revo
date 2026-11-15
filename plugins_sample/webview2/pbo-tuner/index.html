@@ -720,7 +720,9 @@
       const codes = d.vid || [];
       const pmSource = d.source === 'vid'
         ? '整包镜像（MSR C001_0293，本表版本未映射，各核同一工作点）'
-        : 'PM 表 · 每核 VID';
+        : (d.layout === 'auto'
+          ? 'PM 表 · 每核 VID（偏移自动识别）'
+          : 'PM 表 · 每核 VID');
       document.querySelectorAll('[data-vcore]').forEach(el => {
         const core = Number(el.dataset.vcore);
         const val = volt[core];

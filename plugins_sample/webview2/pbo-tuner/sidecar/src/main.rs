@@ -20,7 +20,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 
-const VERSION: &str = "1.7.2";
+const VERSION: &str = "1.7.3";
 const DEFAULT_PORT: u16 = 18955;
 
 /// Port this instance is actually listening on; reported by /api/health and
