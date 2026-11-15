@@ -824,6 +824,113 @@ fn uses_chiplet_co_mask() -> bool {
         .unwrap_or(true)
 }
 
+/// Probed per-CCD enabled physical CO slots, ascending (ccd index -> slots).
+/// Set once per process, and only when a probe is *complete*: the enabled
+/// slots summed over all CCDs must equal the core count, otherwise the map
+/// stays unset (a later call retries) and the identity mapping is used.
+static CO_SLOT_MAP: OnceLock<std::collections::HashMap<u32, Vec<u32>>> = OnceLock::new();
+
+/// Find which physical core slots actually exist inside each CCD.
+///
+/// A fused part enumerates its enabled cores as ranks 0..N-1 — CPUID CoreId
+/// counts only enabled cores — but the SMU CO commands address PHYSICAL slots
+/// 0..7, and which slots are fused off is silicon lottery. A captured 7845HX
+/// log proves it: CCD0 answers on {0,1,2,4,5,6}, CCD1 on {0,1,2,5,6,7}, while
+/// CPUID reports CoreIds 0..5 + 8..13. Writing rank 3 targeted the dead slot
+/// 3, the margin vanished, and the SMU still reported OK.
+///
+/// `GetDldoPsmMargin` is rejected for dead slots, which makes the mapping
+/// directly discoverable: probe slots 0..7 per CCD — the slot exists iff the
+/// get succeeds and answers a plausible margin. Ranks then map to the probed
+/// slots in ascending order (APIC/CPUID enumerate enabled cores in ascending
+/// physical order). On full CCDs the probe finds 0..7 and the map is identity.
+fn probe_enabled_co_slots() -> std::collections::HashMap<u32, Vec<u32>> {
+    let mut map = std::collections::HashMap::new();
+    for ccd in 0u32..4 {
+        let mut slots = Vec::new();
+        for slot in 0u32..8 {
+            let mask = (ccd << 28) | (slot << 20);
+            let alive = with_bridge(|b| {
+                if b.commands.get_dldo_psm_margin == 0 {
+                    return Err("no get-margin command in this SMU dialect".into());
+                }
+                let args = [mask, 0, 0, 0, 0, 0];
+                let out = b.send_rsmu_command(b.commands.get_dldo_psm_margin, &args)?;
+                let margin = (out[0] & 0xFFFF) as u16 as i16 as i32;
+                if (-50..=50).contains(&margin) {
+                    Ok(())
+                } else {
+                    Err(format!("probe: margin out of range ({margin})"))
+                }
+            })
+            .is_ok();
+            if alive {
+                slots.push(slot);
+            }
+        }
+        map.insert(ccd, slots);
+    }
+    crate::log(&format!(
+        "[layout] CO slot probe: ccd0 {:?} ccd1 {:?} ccd2 {:?} ccd3 {:?}",
+        map[&0],
+        map[&1],
+        map[&2],
+        map[&3]
+    ));
+    map
+}
+
+/// Translate every placement's enabled-rank into the real physical CO slot.
+///
+/// `placements.physical_core` carries the rank here (CPUID CoreId & 7). The
+/// remap only applies when the probe is complete and per-CCD slot counts
+/// match the rank counts; otherwise ranks are left untouched.
+fn apply_co_slot_remap(placements: &mut [CorePlacement]) {
+    if placements.is_empty() {
+        return;
+    }
+    let total = placements.len();
+    let map = match CO_SLOT_MAP.get() {
+        Some(m) => Some(m),
+        None => {
+            let probed = probe_enabled_co_slots();
+            let sum: usize = probed.values().map(|v| v.len()).sum();
+            if sum == total {
+                let _ = CO_SLOT_MAP.set(probed);
+                CO_SLOT_MAP.get()
+            } else {
+                crate::log(&format!(
+                    "[layout] CO slot probe incomplete ({sum} enabled slots vs {total} cores), keeping rank-as-slot"
+                ));
+                None
+            }
+        }
+    };
+    let Some(map) = map else { return };
+    let mut per_ccd: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+    for p in placements.iter() {
+        *per_ccd.entry(p.ccd).or_insert(0) += 1;
+    }
+    for p in placements.iter_mut() {
+        let ranks = per_ccd[&p.ccd];
+        if let Some(slots) = map.get(&p.ccd) {
+            if slots.len() == ranks as usize {
+                let rank = p.physical_core;
+                if (rank as usize) < slots.len() && slots[rank as usize] != rank {
+                    p.physical_core = slots[rank as usize];
+                }
+            } else {
+                crate::log(&format!(
+                    "[layout] ccd {}: {} probed slots vs {} ranks, keeping rank-as-slot",
+                    p.ccd,
+                    slots.len(),
+                    ranks
+                ));
+            }
+        }
+    }
+}
+
 /// Build the per-core (core, ccd, ccx) placement table.
 ///
 /// Preferred source: CPUID Fn8000001E executed on every core's first thread —
@@ -902,16 +1009,16 @@ pub fn get_core_layout() -> Vec<CorePlacement> {
                 // Dragon Range case: NodeId is flat like Fire Range, but its
                 // two L3 slices are both 32 MB and may arrive as fewer
                 // distinct cache entries than there are CCDs, so the L3
-                // grouping below can miss. ccd = CoreId >> 3, slot =
-                // CoreId & 7.
-                //   7845HX log: CoreIds 0..5 then 8..13 (slots 6-7 fused on
-                //   CCD0) -> ccd 0 x6, ccd 1 x6, per-CCD slots 0..5 on both.
+                // grouping below can miss. ccd = CoreId >> 3, slot rank =
+                // CoreId & 7 (CoreId counts only enabled cores — the physical
+                // slot comes from the CO slot probe below).
+                //   7845HX log: CoreIds 0..5 then 8..13 -> ccd 0 x6, ccd 1 x6.
                 let max_core_id = cpuid_cores.iter().map(|c| c.core_id).max().unwrap_or(0);
                 if cpu_flat && max_core_id >= 8 {
                     crate::log(&format!(
-                        "[layout] CPUID NodeId flat, global CoreId up to {max_core_id} -> ccd = CoreId >> 3, slot = CoreId & 7"
+                        "[layout] CPUID NodeId flat, global CoreId up to {max_core_id} -> ccd = CoreId >> 3, slot rank = CoreId & 7"
                     ));
-                    let placements: Vec<CorePlacement> = cpuid_cores
+                    let mut placements: Vec<CorePlacement> = cpuid_cores
                         .iter()
                         .enumerate()
                         .map(|(i, c)| CorePlacement {
@@ -922,6 +1029,7 @@ pub fn get_core_layout() -> Vec<CorePlacement> {
                             l3_kb: cores.get(i).map(|w| w.l3_kb).unwrap_or(0),
                         })
                         .collect();
+                    apply_co_slot_remap(&mut placements);
                     for p in &placements {
                         crate::log(&format!(
                             "[layout] core {} (OS): coreid {} -> ccd {} phys {} (L3 {} KB)",
@@ -940,7 +1048,7 @@ pub fn get_core_layout() -> Vec<CorePlacement> {
                         "[layout] CPUID NodeId flat but L3 shows {} slices -> ccd from L3, slot = CoreId & 7",
                         slice_order.len()
                     ));
-                    let placements: Vec<CorePlacement> = cpuid_cores
+                    let mut placements: Vec<CorePlacement> = cpuid_cores
                         .iter()
                         .enumerate()
                         .map(|(i, c)| {
@@ -962,6 +1070,7 @@ pub fn get_core_layout() -> Vec<CorePlacement> {
                             }
                         })
                         .collect();
+                    apply_co_slot_remap(&mut placements);
                     for p in &placements {
                         crate::log(&format!(
                             "[layout] core {} (OS): coreid {} -> ccd {} phys {} (L3 {} KB)",
@@ -982,17 +1091,22 @@ pub fn get_core_layout() -> Vec<CorePlacement> {
                         c.apic_id, c.node_id, c.core_id, ccd_of[i], c.core_id
                     ));
                 }
-                return cpuid_cores
+                let mut placements: Vec<CorePlacement> = cpuid_cores
                     .iter()
                     .enumerate()
                     .map(|(i, c)| CorePlacement {
                         core: i as u32,
                         ccd: ccd_of[i],
                         ccx: ccd_of[i],
-                        physical_core: c.core_id,
+                        // CPUID CoreId counts enabled cores: keep the CCD-local
+                        // rank here, the probe below translates it into the
+                        // real physical slot.
+                        physical_core: c.core_id & 7,
                         l3_kb: cores.get(i).map(|w| w.l3_kb).unwrap_or(0),
                     })
                     .collect();
+                apply_co_slot_remap(&mut placements);
+                placements
             }
             None => {
                 crate::log(&format!(
@@ -1017,7 +1131,7 @@ pub fn get_core_layout() -> Vec<CorePlacement> {
         cores.len() as u32
     };
 
-    let layout: Vec<CorePlacement> = (0..core_count)
+    let mut layout: Vec<CorePlacement> = (0..core_count)
         .map(|core| {
             let info = cores.get(core as usize);
             let ccd = match info {
@@ -1037,6 +1151,11 @@ pub fn get_core_layout() -> Vec<CorePlacement> {
             }
         })
         .collect();
+    // core % 8 is an enabled-rank guess; the probe turns it into the real
+    // physical slot when the SMU dialect uses the chiplet CO mask.
+    if chiplet_mask {
+        apply_co_slot_remap(&mut layout);
+    }
 
     crate::log(&format!(
         "[layout] fallback topology ({} cores): {:?}",
