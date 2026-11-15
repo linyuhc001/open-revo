@@ -1755,7 +1755,7 @@ pub fn pmtable_live(dump: bool) -> Result<Value, String> {
         let values: Vec<Value> = vids
             .iter()
             .map(|v| match v {
-                Some((_, volt)) => json!(((*volt) * 1000.0).round() / 1000.0),
+                Some((_, volt)) => json!(((*volt as f64) * 1000.0).round() / 1000.0),
                 None => Value::Null,
             })
             .collect();
