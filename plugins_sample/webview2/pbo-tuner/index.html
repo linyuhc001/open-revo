@@ -404,7 +404,7 @@
       <button id="btnAllZero" class="secondary">All Zero</button>
       <button id="btnApplyCO">Apply</button>
       <span class="spacer"></span>
-      <button id="btnVolt" class="secondary" title="切换每核心电压显示（默认关闭）">电压</button>
+      <button id="btnVolt" class="secondary" title="切换每核心 VID 显示（默认关闭）">VID</button>
       <button id="btnRefresh" class="secondary">Refresh</button>
     </div>
 
@@ -706,12 +706,12 @@
         }
         const btnVolt = document.getElementById('btnVolt');
         btnVolt.disabled = true;
-        btnVolt.title = '该 CPU 暂不支持每核心电压读取';
-        log('[!] 电压读取不可用: 该 CPU 未提供每核心电压源');
+        btnVolt.title = '该 CPU 暂不支持每核心 VID 读取';
+        log('[!] VID 读取不可用: 该 CPU 未提供每核心 VID 源');
         document.querySelectorAll('[data-vcore]').forEach(el => {
           el.textContent = '';
           el.classList.add('empty');
-          el.title = '该 CPU 暂不支持电压读取';
+          el.title = '该 CPU 暂不支持 VID 读取';
         });
         return;
       }
@@ -720,7 +720,7 @@
       const codes = d.vid || [];
       const pmSource = d.source === 'vid'
         ? '整包镜像（MSR C001_0293，本表版本未映射，各核同一工作点）'
-        : 'PM 表 · 每核工作电压';
+        : 'PM 表 · 每核 VID';
       document.querySelectorAll('[data-vcore]').forEach(el => {
         const core = Number(el.dataset.vcore);
         const val = volt[core];
@@ -728,7 +728,7 @@
         if (val == null) {
           el.title = pmSource + '：该核心本次未读到数值';
         } else if (code != null) {
-          el.title = `核心 ${core} · ${val.toFixed(4)} V（VID ${code}，${pmSource}）`;
+          el.title = `核心 ${core} · VID ${code} → ${val.toFixed(4)} V（${pmSource}）`;
         } else {
           el.title = `核心 ${core} · ${val.toFixed(4)} V（${pmSource}）`;
         }
@@ -875,7 +875,7 @@
             <span class="core-name" title="OS 核心 ${c.core} · CCD ${c.ccd} 物理槽位 ${c.physical_core}">C${c.core}</span>
             <input type="number" data-core="${c.core}" value="0"
                    min="${CO_MIN}" max="${CO_MAX}" step="1" ${STATE.canWrite ? '' : 'disabled'} />
-            <span class="core-v" data-vcore="${c.core}" title="该核心实时电压">—</span>`;
+            <span class="core-v" data-vcore="${c.core}" title="该核心 VID（PM 表）">—</span>`;
           grid.appendChild(row);
         });
 
