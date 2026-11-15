@@ -234,8 +234,8 @@
     .core-row input.positive { color: #f87171; border-color: rgba(248,113,113,0.35); }
     .core-row input:disabled { opacity: 0.45; cursor: not-allowed; }
     .core-row input.dirty { box-shadow: inset 0 0 0 1px rgba(245,158,11,0.55); }
-    /* Per-core live voltage readout (from the SMU PM table) — boxed like
-       the 3D V-Cache badge, in the same amber instead of purple. */
+    /* Per-core live VID readout (MSR C001_0293) — boxed like the 3D V-Cache
+       badge, in the same amber instead of purple. */
     .core-v {
       flex: 0 0 64px;
       font-size: 11px;
@@ -250,7 +250,7 @@
       white-space: nowrap;
     }
     .core-v.empty { visibility: hidden; }
-    /* The 电压 toolbar switch hides the readouts entirely so the rows keep
+    /* The VID toolbar switch hides the readouts entirely so the rows keep
        the same width as before the feature existed. */
     .core-v.vhidden { display: none; }
 
@@ -306,7 +306,7 @@
     }
     button:hover { opacity: 0.9; }
     button:disabled { opacity: 0.4; cursor: not-allowed; }
-    /* Press feedback for every button except the 电压 toggle — its own
+    /* Press feedback for every button except the VID toggle — its own
        on/off highlight is the feedback, a squeeze on top looks broken. */
     button:not(#btnVolt):active {
       transform: scale(0.94);
@@ -404,7 +404,7 @@
       <button id="btnAllZero" class="secondary">All Zero</button>
       <button id="btnApplyCO">Apply</button>
       <span class="spacer"></span>
-      <button id="btnVolt" class="secondary" title="切换每核心实时电压显示（默认关闭）">电压</button>
+      <button id="btnVolt" class="secondary" title="切换每核心 VID 显示（默认关闭）">VID</button>
       <button id="btnRefresh" class="secondary">Refresh</button>
     </div>
 
@@ -648,7 +648,7 @@
       buildCcdPanels();
       await refreshValues({ initial: true });
       await refreshFmaxScalar();
-      applyVoltToggle(); // voltage readouts default OFF — 电压 button opts in
+      applyVoltToggle(); // VID readouts default OFF — the VID button opts in
 
       // Auto-apply is a host-side setting; reflect whatever the saved profile says.
       try {
@@ -680,11 +680,12 @@
       return set.size;
     }
 
-    // ---- Per-core live voltage (SMU PM table) ----
-    // The sidecar refreshes and reads the whole PM table (~2.4 KB) and parses
-    // per-core voltage/temperature by pm_table_version; the registry there is
-    // adapted per CPU like every other SMU table, so unsupported versions
-    // blank the readouts instead of showing garbage.
+    // ---- Per-core VID (MSR C001_0293) ----
+    // Every CPU, this machine included, reports per-core VID: the sidecar pins
+    // a thread to each core, reads CurCpuVid (bits 21:14) and converts it with
+    // V = 1.550 - 0.00625 * VID. One package operating point means all cores
+    // answer with the same code, which is the hardware's answer, not a bug.
+    // The PM table is only a fallback for machines where the MSR read fails.
     let pmTimer = null;
     let pmSupported = null; // null = not probed yet
 
@@ -706,24 +707,28 @@
         }
         const btnVolt = document.getElementById('btnVolt');
         btnVolt.disabled = true;
-        btnVolt.title = '该 CPU 暂不支持实时电压（PM 表无布局适配且 MSR 读取不可用）';
-        log('[!] 实时电压不可用: PM 表版本 ' + (d && d.pm_version || '?') + ' 无适配且 MSR 读取失败');
+        btnVolt.title = '该 CPU 暂不支持 VID 读取（MSR C001_0293 不可用）';
+        log('[!] VID 读取不可用: MSR C001_0293 读取失败');
         document.querySelectorAll('[data-vcore]').forEach(el => {
           el.textContent = '';
           el.classList.add('empty');
-          el.title = '该 CPU 暂不支持实时电压';
+          el.title = '该 CPU 暂不支持 VID 读取';
         });
         return;
       }
       pmSupported = true;
       const volt = d.voltage || [];
-      const voltHint = d.source === 'msr'
-        ? '整包 VID 请求值：同一 P 状态下各核相同，非逐核实测'
-        : (d.layout === 'auto' ? '逐核电压：PM 表自动定位（该版本未登记）' : '逐核电压：PM 表实测');
+      const codes = d.vid || [];
+      const voltHint = d.source === 'vid'
+        ? '每核心 VID（MSR C001_0293）：整包同一 P 状态共用一个工作点，各核数值相同'
+        : '每核心电压：PM 表实测（MSR 读取不可用时的兜底）';
       document.querySelectorAll('[data-vcore]').forEach(el => {
         const core = Number(el.dataset.vcore);
         const val = volt[core];
-        el.title = voltHint;
+        const code = codes[core];
+        el.title = code != null && val != null
+          ? `核心 ${core} · VID ${code} → ${val.toFixed(4)} V`
+          : voltHint;
         if (val != null) {
           el.textContent = val.toFixed(3) + 'V';
           el.classList.remove('empty');
@@ -747,9 +752,9 @@
       }
     }
 
-    // ---- 电压显示开关 (voltage display toggle) ----
+    // ---- VID 显示开关 (per-core VID toggle) ----
     // Default OFF: the readouts are hidden and no polling happens until the
-    // user turns the 电压 button on (it lights up like Apply while active).
+    // user turns the VID button on (it lights up like Apply while active).
     let voltShown = false;
 
     function applyVoltToggle() {
@@ -867,7 +872,7 @@
             <span class="core-name" title="OS 核心 ${c.core} · CCD ${c.ccd} 物理槽位 ${c.physical_core}">C${c.core}</span>
             <input type="number" data-core="${c.core}" value="0"
                    min="${CO_MIN}" max="${CO_MAX}" step="1" ${STATE.canWrite ? '' : 'disabled'} />
-            <span class="core-v" data-vcore="${c.core}" title="该核心实时电压（来自 SMU PM 表）">—</span>`;
+            <span class="core-v" data-vcore="${c.core}" title="该核心 VID（MSR C001_0293）">—</span>`;
           grid.appendChild(row);
         });
 

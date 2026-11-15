@@ -734,7 +734,7 @@ static CPUID_CACHE: OnceLock<Vec<CpuidCore>> = OnceLock::new();
 /// Returns one slot per physical core (None where the read or the sanity
 /// window failed).
 #[cfg(target_arch = "x86_64")]
-fn msr_core_vids() -> Option<Vec<Option<f32>>> {
+fn msr_core_vids() -> Option<Vec<Option<(u32, f32)>>> {
     #[link(name = "kernel32")]
     extern "system" {
         fn GetCurrentThread() -> isize;
@@ -781,10 +781,10 @@ fn msr_core_vids() -> Option<Vec<Option<f32>>> {
                 tries += 1;
             }
             let slot = read_msr(0xC001_0293).ok().and_then(|raw| {
-                let vid = ((raw >> 14) & 0xFF) as f32;
-                let volt = 1.550f32 - 0.00625f32 * vid;
+                let vid = ((raw >> 14) & 0xFF) as u32;
+                let volt = 1.550f32 - 0.00625f32 * vid as f32;
                 if (0.2..=1.6).contains(&volt) {
-                    Some(volt)
+                    Some((vid, volt))
                 } else {
                     None
                 }
@@ -856,7 +856,7 @@ pub fn msr_vids_diag() -> serde_json::Value {
 }
 
 #[cfg(not(target_arch = "x86_64"))]
-fn msr_core_vids() -> Option<Vec<Option<f32>>> {
+fn msr_core_vids() -> Option<Vec<Option<(u32, f32)>>> {
     None
 }
 
@@ -1703,30 +1703,29 @@ fn pm_slot_map(stride: usize) -> Vec<usize> {
 }
 
 /// GET-ish live telemetry endpoint body. `dump=true` returns the raw f32
-/// array for offset calibration on machines whose pm_table_version is not in
-/// the registry yet; otherwise returns per-core voltage/temperature arrays
-/// (null when a slot is outside its sane range) when the layout is known.
+/// Live per-core VID endpoint. The name is historical: every CPU now reports
+/// per-core VID read from MSR C001_0293 (`CurCpuVid`, bits 21:14), which is
+/// what the UI calls VID. One package operating point means every core answers
+/// with the same VID at that instant — that is the hardware's answer, not a
+/// readout bug. The PM table is only used when the MSR route is dead, and
+/// `dump=true` still dumps it raw for offset calibration.
 pub fn pmtable_live(dump: bool) -> Result<Value, String> {
-    let snap = read_pm_table_raw()?;
-    let cores = detect_physical_core_count() as usize;
-
-    // Registry first (hand-verified offsets), then the blind scan for versions
-    // nobody has mapped yet (Raphael 0x540208 and friends), then MSR.
-    let (layout, layout_source) = match pm_core_layout(snap.version) {
-        Some(l) => (Some(l), "registry"),
-        None => match detect_pm_layout(&snap.values, cores) {
-            Some(l) => {
-                crate::log(&format!(
-                    "[voltage] PM 0x{:08X} layout auto-detected: voltage float[{}], temperature float[{}]",
-                    snap.version, l.voltage, l.temperature
-                ));
-                (Some(l), "auto")
-            }
-            None => (None, "none"),
-        },
-    };
-
     if dump {
+        let snap = read_pm_table_raw()?;
+        let cores = detect_physical_core_count() as usize;
+        let (layout, layout_source) = match pm_core_layout(snap.version) {
+            Some(l) => (Some(l), "registry"),
+            None => match detect_pm_layout(&snap.values, cores) {
+                Some(l) => (Some(l), "auto"),
+                None => (None, "none"),
+            },
+        };
+        if let Some(l) = layout {
+            crate::log(&format!(
+                "[voltage] PM 0x{:08X} ({}) per-core voltage float[{}], temperature float[{}]",
+                snap.version, layout_source, l.voltage, l.temperature
+            ));
+        }
         let values: Vec<Value> = snap
             .values
             .iter()
@@ -1741,29 +1740,58 @@ pub fn pmtable_live(dump: bool) -> Result<Value, String> {
         }));
     }
 
+    // VID for every CPU, first and unconditionally: the per-core VID is the
+    // number the user asked for, and it does not depend on a PM table version
+    // being mapped.
+    #[cfg(target_arch = "x86_64")]
+    if let Some(vids) = msr_core_vids() {
+        let codes: Vec<Value> = vids
+            .iter()
+            .map(|v| match v {
+                Some((code, _)) => json!(*code),
+                None => Value::Null,
+            })
+            .collect();
+        let values: Vec<Value> = vids
+            .iter()
+            .map(|v| match v {
+                Some((_, volt)) => json!(((*volt) * 1000.0).round() / 1000.0),
+                None => Value::Null,
+            })
+            .collect();
+        let n = values.len();
+        return Ok(json!({
+            "supported": true,
+            "source": "vid",
+            "layout": "msr",
+            "cores": n,
+            "vid": codes,
+            "voltage": values,
+            "temperature": Value::Null,
+        }));
+    }
+
+    // MSR dead (no PawnIO module, affinity refused): last resort is the PM
+    // table, when this version has a known or auto-detected layout.
+    let snap = match read_pm_table_raw() {
+        Ok(s) => s,
+        Err(e) => return Ok(json!({ "supported": false, "reason": e })),
+    };
+    let cores = detect_physical_core_count() as usize;
+    let (layout, layout_source) = match pm_core_layout(snap.version) {
+        Some(l) => (Some(l), "registry"),
+        None => match detect_pm_layout(&snap.values, cores) {
+            Some(l) => {
+                crate::log(&format!(
+                    "[voltage] PM 0x{:08X} layout auto-detected: voltage float[{}], temperature float[{}]",
+                    snap.version, l.voltage, l.temperature
+                ));
+                (Some(l), "auto")
+            }
+            None => (None, "none"),
+        },
+    };
     let Some(l) = layout else {
-        // No PM-table layout for this pm_table_version — fall back to per-core
-        // MSR reads (the same route LibreHardwareMonitor uses for this case).
-        // Covers Zen2-Zen5, i.e. everything the CO feature supports.
-        #[cfg(target_arch = "x86_64")]
-        if let Some(vids) = msr_core_vids() {
-            crate::log("[voltage] PM layout missing; MSR C0010293 fallback active");
-            let values: Vec<Value> = vids
-                .into_iter()
-                .map(|v| v.map(|x| json!((x * 1000.0).round() / 1000.0)).unwrap_or(Value::Null))
-                .collect();
-            let n = values.len();
-            return Ok(json!({
-                "supported": true,
-                "source": "msr",
-                "layout": "msr",
-                "pm_version": format!("0x{:08X}", snap.version),
-                "size": snap.size,
-                "cores": n,
-                "voltage": values,
-                "temperature": Value::Null,
-            }));
-        }
         return Ok(json!({
             "supported": false,
             "pm_version": format!("0x{:08X}", snap.version),
