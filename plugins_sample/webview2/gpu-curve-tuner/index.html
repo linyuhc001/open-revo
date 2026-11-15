@@ -605,7 +605,7 @@
       <div class="curve-canvas-wrap">
         <div class="canvas-toolbar">
           <div class="canvas-readout" id="readout">
-            <span>🖱️ <b>拖动</b> 单点微调 · <b>Shift+拖动</b> 右侧整段同幅平移（压过左邻时按橙色虚线预览真实生效形状）· <b>双击</b> 归零</span>
+            <span>🖱️ <b>拖动</b> 单点微调 · <b>Shift+拖动</b> 右侧整段平移（压过左邻见橙色虚线）· <b>双击</b> 归零</span>
           </div>
           <div class="canvas-btn-group">
             <button class="canvas-micro-btn" id="btnUndo" onclick="undoEdit()" title="撤销上次曲线改动 (快捷键 Ctrl+Z)" disabled>↶ 撤销</button>
@@ -1132,7 +1132,7 @@
     function readout(idx) {
       const el = document.getElementById('readout');
       if (idx < 1 || !STATE.vfPoints || idx >= STATE.vfPoints.length) {
-        el.innerHTML = `<span>🖱️ <b>拖动</b> 单点微调 · <b>Shift+拖动</b> 右侧整段同幅平移（压过左邻时按橙色虚线预览真实生效形状）· <b>双击</b> 归零</span>`;
+        el.innerHTML = `<span>🖱️ <b>拖动</b> 单点微调 · <b>Shift+拖动</b> 右侧整段平移（压过左邻见橙色虚线）· <b>双击</b> 归零</span>`;
         return;
       }
       const p = STATE.vfPoints[idx];
