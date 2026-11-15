@@ -716,6 +716,15 @@ fn read_cpuid_topology() -> Option<Vec<CpuidCore>> {
     None
 }
 
+/// Last successful CPUID topology (raw Fn8000001E values per OS core).
+/// The read switches thread affinity once per core and can transiently fail
+/// under load, but the topology itself is a hardware constant on a running
+/// system. Caching it keeps consecutive calls consistent: on the captured
+/// 7845HX machine one call succeeded (CPUID branch, flat NodeId → every core
+/// ccd 0 → CO writes aliased onto CCD0) while another failed (L3 fallback →
+/// two CCDs shown) — the mixed answer is precisely the reported bug.
+static CPUID_CACHE: OnceLock<Vec<CpuidCore>> = OnceLock::new();
+
 /// Per-core live voltage via MSR `C001_0293` (Hardware P-state Status) — the
 /// route LibreHardwareMonitor takes on parts whose PM table layout it does not
 /// know: pin the thread to each core's first logical processor, RDMSR, then
@@ -848,27 +857,83 @@ pub fn get_core_layout() -> Vec<CorePlacement> {
 
     // ---- CPUID path (Zen3 / Zen4 / Zen5) ----
     if chiplet_mask {
-        if let Some(cpuid_cores) = read_cpuid_topology() {
-            if cpuid_cores.len() == cores.len() {
+        // Prefer a live CPUID read; on transient failure (or a core-count
+        // mismatch) reuse the last successful topology instead of falling
+        // through to the L3/arithmetic fallbacks. Two different answers on
+        // consecutive calls is what made the 7845HX UI show two CCDs while
+        // Apply aliased CCD1 onto CCD0.
+        let live = read_cpuid_topology();
+        let (cpuid_cores, from_cache) = match live {
+            Some(v) if v.len() == cores.len() => (Some(v), false),
+            _ => (
+                CPUID_CACHE
+                    .get()
+                    .filter(|v| v.len() == cores.len())
+                    .cloned(),
+                true,
+            ),
+        };
+        match cpuid_cores {
+            Some(cpuid_cores) => {
+                if !from_cache {
+                    let _ = CPUID_CACHE.set(cpuid_cores.clone());
+                }
                 let (ccd_of, raw_contiguous) = normalize_ccd_indexes(&cpuid_cores);
                 crate::log(&format!(
-                    "[layout] CPUID topology: {} cores, {} thread(s)/core, raw NodeIds {:?} (contiguous from 0: {})",
+                    "[layout] CPUID topology{}: {} cores, {} thread(s)/core, raw NodeIds {:?} (contiguous from 0: {})",
+                    if from_cache { " (cached)" } else { "" },
                     cpuid_cores.len(),
                     cpuid_cores.first().map(|c| c.threads_per_core).unwrap_or(0),
                     cpuid_cores.iter().map(|c| c.node_id).collect::<Vec<_>>(),
                     raw_contiguous
                 ));
 
-                // Zen5 chiplets (Fire Range / Granite Ridge) quirk: Fn8000001E
+                // Zen4/Zen5 chiplet quirk (Fire Range 9955HX3D AND Dragon
+                // Range 7845HX, both confirmed by captured logs): Fn8000001E
                 // reports a flat NodeId (every core in "node 0") and a
-                // package-global CoreId (0..N-1), so CPUID alone cannot see
-                // the second CCD. The L3 slice grouping can (96 MB vs 32 MB
-                // on X3D parts). When CPUID is flat but L3 disagrees, take
-                // the CCD from L3 and the SMU slot from CoreId & 7 (per-CCD
-                // slots are 8 wide, so the global id wraps onto the right
-                // slot). NodeId-based parts (e.g. Dragon Range) keep the
-                // CPUID mapping untouched.
+                // package-global CoreId, so NodeId alone cannot see the
+                // second CCD. Two signals can recover it: the L3 slice
+                // grouping (96 MB vs 32 MB on X3D parts) and the global
+                // CoreId itself (a value >= 8 can only exist on a multi-CCD
+                // package, since a chiplet CCD has 8 slots).
                 let cpu_flat = ccd_of.iter().all(|&c| c == ccd_of[0]);
+
+                // Dragon Range case: NodeId is flat like Fire Range, but its
+                // two L3 slices are both 32 MB and may arrive as fewer
+                // distinct cache entries than there are CCDs, so the L3
+                // grouping below can miss. ccd = CoreId >> 3, slot =
+                // CoreId & 7.
+                //   7845HX log: CoreIds 0..5 then 8..13 (slots 6-7 fused on
+                //   CCD0) -> ccd 0 x6, ccd 1 x6, per-CCD slots 0..5 on both.
+                let max_core_id = cpuid_cores.iter().map(|c| c.core_id).max().unwrap_or(0);
+                if cpu_flat && max_core_id >= 8 {
+                    crate::log(&format!(
+                        "[layout] CPUID NodeId flat, global CoreId up to {max_core_id} -> ccd = CoreId >> 3, slot = CoreId & 7"
+                    ));
+                    let placements: Vec<CorePlacement> = cpuid_cores
+                        .iter()
+                        .enumerate()
+                        .map(|(i, c)| CorePlacement {
+                            core: i as u32,
+                            ccd: c.core_id >> 3,
+                            ccx: c.core_id >> 3,
+                            physical_core: c.core_id & 7,
+                            l3_kb: cores.get(i).map(|w| w.l3_kb).unwrap_or(0),
+                        })
+                        .collect();
+                    for p in &placements {
+                        crate::log(&format!(
+                            "[layout] core {} (OS): coreid {} -> ccd {} phys {} (L3 {} KB)",
+                            p.core,
+                            cpuid_cores[p.core as usize].core_id,
+                            p.ccd,
+                            p.physical_core,
+                            p.l3_kb
+                        ));
+                    }
+                    return placements;
+                }
+
                 if cpu_flat && slice_order.len() > 1 {
                     crate::log(&format!(
                         "[layout] CPUID NodeId flat but L3 shows {} slices -> ccd from L3, slot = CoreId & 7",
@@ -928,13 +993,14 @@ pub fn get_core_layout() -> Vec<CorePlacement> {
                     })
                     .collect();
             }
-            crate::log(&format!(
-                "[layout] CPUID topology core count {} != OS core count {}, falling back",
-                cpuid_cores.len(),
-                cores.len()
-            ));
-        } else {
-            crate::log("[layout] CPUID Fn8000001E topology unavailable, falling back to L3 grouping");
+            None => {
+                crate::log(&format!(
+                    "[layout] CPUID Fn8000001E topology unavailable{} (live read: {:?}, OS cores: {}), falling back to L3 grouping",
+                    if from_cache { " and no cached copy" } else { "" },
+                    live.as_ref().map(|v| v.len()),
+                    cores.len()
+                ));
+            }
         }
     }
 
