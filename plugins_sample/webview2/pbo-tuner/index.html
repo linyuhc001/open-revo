@@ -717,9 +717,13 @@
       }
       pmSupported = true;
       const volt = d.voltage || [];
+      const voltHint = d.source === 'msr'
+        ? '整包 VID 请求值：同一 P 状态下各核相同，非逐核实测'
+        : (d.layout === 'auto' ? '逐核电压：PM 表自动定位（该版本未登记）' : '逐核电压：PM 表实测');
       document.querySelectorAll('[data-vcore]').forEach(el => {
         const core = Number(el.dataset.vcore);
         const val = volt[core];
+        el.title = voltHint;
         if (val != null) {
           el.textContent = val.toFixed(3) + 'V';
           el.classList.remove('empty');

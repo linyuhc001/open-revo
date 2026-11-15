@@ -1561,6 +1561,87 @@ pub fn pm_core_layout(version: u32) -> Option<PmCoreLayout> {
     }
 }
 
+/// Blindly locate the per-core voltage array on a PM table whose version is not
+/// in the registry above.
+///
+/// Every Zen power table lays its per-core arrays out back to back, one array
+/// per metric, each `stride` floats wide: core power, core voltage, core
+/// temperature, core frequency (GHz). Searching for that
+/// `[voltage][temperature][frequency]` triple reproduces the hand-written
+/// offsets where a version is already known (0x00621202 -> float[317],
+/// temperature 333), so an unknown version can still be read instead of
+/// falling back to the package-wide MSR value.
+///
+/// Refuses to answer when two positions fit equally well: reading the wrong
+/// array would put frequencies on screen labelled as voltages.
+fn detect_pm_layout(values: &[f32], cores: usize) -> Option<PmCoreLayout> {
+    if cores == 0 {
+        return None;
+    }
+    let in_range = |v: f32, lo: f32, hi: f32| v.is_finite() && v >= lo && v <= hi;
+    let mut hits: Vec<(PmCoreLayout, u8)> = Vec::new();
+    // One entry per physical core, but firmware pads the arrays to 16 on parts
+    // whose CCDs hold fewer cores, so both widths are worth a look. Only the
+    // first `cores` slots carry data — the padding reads back as zeros.
+    for stride in [16usize, cores] {
+        if stride < cores || values.len() < stride * 3 {
+            continue;
+        }
+        for base in 0..=values.len() - stride * 3 {
+            let volt = &values[base..base + cores];
+            let temp = &values[base + stride..base + stride + cores];
+            let freq = &values[base + 2 * stride..base + 2 * stride + cores];
+            // Parked cores report 0 GHz, so the frequency array only has to be
+            // mostly alive instead of entirely so.
+            if !volt.iter().all(|v| in_range(*v, 0.30, 1.45))
+                || !temp.iter().all(|t| in_range(*t, 20.0, 110.0))
+                || !freq.iter().all(|f| in_range(*f, 0.0, 6.5))
+                || freq.iter().filter(|f| **f >= 0.5).count() * 2 < cores
+            {
+                continue;
+            }
+            let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+            for v in volt {
+                lo = lo.min(*v);
+                hi = hi.max(*v);
+            }
+            if hi - lo <= 0.01 {
+                // Every core identical is the shape of a limit register, not a
+                // per-core telemetry array.
+                continue;
+            }
+            // The core power array sits directly in front of the voltage array
+            // on every known table; use it to break ties between candidates.
+            let mut score = 0u8;
+            if base >= stride
+                && values[base - stride..base - stride + cores]
+                    .iter()
+                    .all(|p| in_range(*p, 0.0, 400.0))
+            {
+                score = 1;
+            }
+            let candidate = PmCoreLayout {
+                voltage: base,
+                temperature: base + stride,
+            };
+            match hits.iter().position(|(l, _)| l.voltage == candidate.voltage) {
+                Some(i) => hits[i].1 = hits[i].1.max(score),
+                None => hits.push((candidate, score)),
+            }
+        }
+    }
+    let best = hits.iter().map(|(_, s)| *s).max()?;
+    let winners: Vec<&(PmCoreLayout, u8)> = hits.iter().filter(|(_, s)| *s == best).collect();
+    if winners.len() > 1 {
+        crate::log(&format!(
+            "[voltage] PM layout auto-detect ambiguous ({} candidates at best score), keeping MSR fallback",
+            winners.len()
+        ));
+        return None;
+    }
+    Some(winners.first()?.0)
+}
+
 /// A refreshed PM table snapshot, exposed as f32 slots.
 pub struct PmTableSnapshot {
     pub version: u32,
@@ -1601,7 +1682,23 @@ fn read_pm_table_raw() -> Result<PmTableSnapshot, String> {
 /// (null when a slot is outside its sane range) when the layout is known.
 pub fn pmtable_live(dump: bool) -> Result<Value, String> {
     let snap = read_pm_table_raw()?;
-    let layout = pm_core_layout(snap.version);
+    let cores = detect_physical_core_count() as usize;
+
+    // Registry first (hand-verified offsets), then the blind scan for versions
+    // nobody has mapped yet (Raphael 0x540208 and friends), then MSR.
+    let (layout, layout_source) = match pm_core_layout(snap.version) {
+        Some(l) => (Some(l), "registry"),
+        None => match detect_pm_layout(&snap.values, cores) {
+            Some(l) => {
+                crate::log(&format!(
+                    "[voltage] PM 0x{:08X} layout auto-detected: voltage float[{}], temperature float[{}]",
+                    snap.version, l.voltage, l.temperature
+                ));
+                (Some(l), "auto")
+            }
+            None => (None, "none"),
+        },
+    };
 
     if dump {
         let values: Vec<Value> = snap
@@ -1611,6 +1708,7 @@ pub fn pmtable_live(dump: bool) -> Result<Value, String> {
             .collect();
         return Ok(json!({
             "supported": layout.is_some(),
+            "layout": layout_source,
             "pm_version": format!("0x{:08X}", snap.version),
             "size": snap.size,
             "values": values,
@@ -1632,6 +1730,7 @@ pub fn pmtable_live(dump: bool) -> Result<Value, String> {
             return Ok(json!({
                 "supported": true,
                 "source": "msr",
+                "layout": "msr",
                 "pm_version": format!("0x{:08X}", snap.version),
                 "size": snap.size,
                 "cores": n,
@@ -1653,7 +1752,7 @@ pub fn pmtable_live(dump: bool) -> Result<Value, String> {
             None
         }
     };
-    let n = detect_physical_core_count() as usize;
+    let n = cores;
     let voltage: Vec<Option<f64>> = (0..n)
         .map(|i| snap.values.get(l.voltage + i).copied())
         .map(|v| v.and_then(|x| sane(x, 0.1, 3.0)))
@@ -1666,6 +1765,7 @@ pub fn pmtable_live(dump: bool) -> Result<Value, String> {
     Ok(json!({
         "supported": true,
         "source": "pmtable",
+        "layout": layout_source,
         "pm_version": format!("0x{:08X}", snap.version),
         "size": snap.size,
         "cores": n,
