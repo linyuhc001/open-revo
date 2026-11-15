@@ -1549,6 +1549,11 @@ pub struct PmCoreLayout {
     pub voltage: usize,
     /// f32 index of core 0 temperature; core N at `temperature + N`.
     pub temperature: usize,
+    /// Width of one per-core array in f32 slots. Equal to the core count on
+    /// fully populated tables; firmware pads to 16 (2 CCDs x 8 slots) on parts
+    /// with fewer cores, in which case the arrays are CCD-major and the index
+    /// of a core is `8 * ccd + slot_in_ccd` rather than its OS number.
+    pub stride: usize,
 }
 
 /// Layout registry: pm_table_version -> per-core field bases.
@@ -1556,7 +1561,7 @@ pub fn pm_core_layout(version: u32) -> Option<PmCoreLayout> {
     match version {
         // Zen5 Granite Ridge / Fire Range family — offsets verified by
         // LibreHardwareMonitor against pm table 0x00621202 (size 0x994).
-        0x00621202 => Some(PmCoreLayout { voltage: 317, temperature: 333 }),
+        0x00621202 => Some(PmCoreLayout { voltage: 317, temperature: 333, stride: 16 }),
         _ => None,
     }
 }
@@ -1623,6 +1628,7 @@ fn detect_pm_layout(values: &[f32], cores: usize) -> Option<PmCoreLayout> {
             let candidate = PmCoreLayout {
                 voltage: base,
                 temperature: base + stride,
+                stride,
             };
             match hits.iter().position(|(l, _)| l.voltage == candidate.voltage) {
                 Some(i) => hits[i].1 = hits[i].1.max(score),
@@ -1674,6 +1680,26 @@ fn read_pm_table_raw() -> Result<PmTableSnapshot, String> {
             values,
         })
     })
+}
+
+/// Map OS core index -> slot inside the padded (CCD-major) per-core arrays.
+/// Computed once from the core layout: a 7845HX (6 cores per CCD, slots 0-5
+/// of each) reads core 6 from array slot 8, not slot 6.
+fn pm_slot_map(stride: usize) -> Vec<usize> {
+    static SLOT_MAP: OnceLock<Vec<usize>> = OnceLock::new();
+    SLOT_MAP
+        .get_or_init(|| {
+            let layout = get_core_layout();
+            let map: Vec<usize> = layout
+                .iter()
+                .map(|p| (p.ccd as usize) * 8 + (p.physical_core as usize & 7))
+                .collect();
+            crate::log(&format!(
+                "[voltage] per-core arrays are padded to {stride} slots; core -> slot map {map:?}"
+            ));
+            map
+        })
+        .clone()
 }
 
 /// GET-ish live telemetry endpoint body. `dump=true` returns the raw f32
@@ -1753,12 +1779,22 @@ pub fn pmtable_live(dump: bool) -> Result<Value, String> {
         }
     };
     let n = cores;
+    // Where each core's reading lives inside the per-core array. Firmware pads
+    // the arrays to 16 slots on parts whose CCDs are only partially populated
+    // (12-core / 6-core chiplets), and lays them out CCD-major: slot
+    // `8 * ccd + slot_in_ccd`. On fully populated tables (stride == core count,
+    // e.g. 16-core Zen5) that arithmetic collapses to the OS index.
+    let slots: Vec<usize> = if n == 0 || l.stride == n || l.stride % 8 != 0 {
+        (0..n).collect()
+    } else {
+        pm_slot_map(l.stride)
+    };
     let voltage: Vec<Option<f64>> = (0..n)
-        .map(|i| snap.values.get(l.voltage + i).copied())
+        .map(|i| slots.get(i).and_then(|s| snap.values.get(l.voltage + *s)).copied())
         .map(|v| v.and_then(|x| sane(x, 0.1, 3.0)))
         .collect();
     let temperature: Vec<Option<f64>> = (0..n)
-        .map(|i| snap.values.get(l.temperature + i).copied())
+        .map(|i| slots.get(i).and_then(|s| snap.values.get(l.temperature + *s)).copied())
         .map(|v| v.and_then(|x| sane(x, 1.0, 125.0)))
         .collect();
 
