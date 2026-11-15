@@ -466,6 +466,20 @@
   </div>
 
   <div class="section">
+    <h2>服务日志 <span class="tag">Service Log</span></h2>
+    <div class="row">
+      <label for="chkLogEnable">写入日志文件</label>
+      <input type="checkbox" id="chkLogEnable" />
+      <span class="hint" id="logCfgHint">默认关闭</span>
+    </div>
+    <div class="row">
+      <span class="hint" style="line-height:1.7">
+        开启后 sidecar 将 SMU 调用记录写入 pbo_service.log（位于 pbo-service.exe 同目录，上限 1MB，超出自动轮换为 .log.old）。开关状态保存在 manifest.json 中。
+      </span>
+    </div>
+  </div>
+
+  <div class="section">
     <h2>操作日志</h2>
     <div class="console" id="consoleBox">[系统] 初始化中…</div>
   </div>
@@ -1249,8 +1263,9 @@
         const d = await rpc('debug_log');
         document.getElementById('debugLogPath').textContent =
           `${d.path || ''}（共 ${d.total ?? '?'} 行，显示末尾）`;
-        document.getElementById('debugLogPre').textContent =
-          (d.lines && d.lines.length ? d.lines.join('\n') : '(空)').trimEnd() + '\n';
+        document.getElementById('debugLogPre').textContent = d.enabled === false
+          ? '（日志开关未开启，文件为空或不存在。可在下方「服务日志」卡片开启）\n'
+          : ((d.lines && d.lines.length ? d.lines.join('\n') : '(空)').trimEnd() + '\n');
       } catch (e) {
         document.getElementById('debugLogPre').textContent = '读取失败: ' + e;
       }
@@ -1266,6 +1281,34 @@
       try { await navigator.clipboard.writeText(text); log('[+] 调试日志已复制到剪贴板'); }
       catch (_) { log('[-] 复制失败，请手动选择文本复制'); }
     });
+
+    // ---- 服务日志开关 (persisted in manifest service.log_enabled) ----
+    function logCfgHintText(d) {
+      return d.enabled
+        ? `已开启：写入 ${d.path || 'pbo_service.log'}（上限 1MB，超出自动轮换）`
+        : '默认关闭：不写日志文件；排查 CO 问题时再打开';
+    }
+    async function loadLogCfg() {
+      try {
+        const d = await rpc('log_config', {});
+        document.getElementById('chkLogEnable').checked = !!d.enabled;
+        document.getElementById('logCfgHint').textContent = logCfgHintText(d);
+      } catch (e) {
+        document.getElementById('logCfgHint').textContent = '日志配置读取失败: ' + e.message;
+      }
+    }
+    document.getElementById('chkLogEnable').addEventListener('change', async (ev) => {
+      const on = ev.target.checked;
+      try {
+        const d = await rpc('log_config', { enabled: on });
+        document.getElementById('logCfgHint').textContent = logCfgHintText(d);
+        log(`[i] 服务日志已${d.enabled ? '开启' : '关闭'}`);
+      } catch (e) {
+        ev.target.checked = !on;
+        document.getElementById('logCfgHint').textContent = '设置失败: ' + e.message;
+      }
+    });
+    loadLogCfg();
 
     // ---- 服务端口 (custom listening port) ----
     let portState = null;

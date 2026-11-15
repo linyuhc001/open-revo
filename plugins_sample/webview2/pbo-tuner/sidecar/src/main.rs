@@ -20,7 +20,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU16, Ordering};
 
-const VERSION: &str = "1.4.0";
+const VERSION: &str = "1.4.1";
 const DEFAULT_PORT: u16 = 18955;
 
 /// Port this instance is actually listening on; reported by /api/health and
@@ -28,6 +28,7 @@ const DEFAULT_PORT: u16 = 18955;
 static CURRENT_PORT: AtomicU16 = AtomicU16::new(DEFAULT_PORT);
 
 fn main() {
+    load_log_flag();
     let port = parse_port();
     log(&format!("pbo-service {VERSION} starting on 127.0.0.1:{port}"));
 
@@ -193,6 +194,24 @@ fn route(method: &str, path: &str, body: &[u8]) -> Result<Value, String> {
 
     match path {
         "/api/port_check" => port_check(&req),
+        "/api/log_config" => {
+            // No `enabled` in the body = status query (the page's rpc() always POSTs).
+            match params(&req).get("enabled").and_then(|v| v.as_bool()) {
+                Some(on) => {
+                    set_log_enabled(on)?;
+                    Ok(json!({
+                        "enabled": on,
+                        "path": log_path().display().to_string(),
+                        "max_bytes": LOG_MAX_BYTES,
+                    }))
+                }
+                None => Ok(json!({
+                    "enabled": LOG_ENABLED.load(Ordering::Relaxed),
+                    "path": log_path().display().to_string(),
+                    "max_bytes": LOG_MAX_BYTES,
+                })),
+            }
+        }
         "/api/config_port" => config_port(&req),
         "/api/smu_init" => Ok(serde_json::to_value(smu::init_smu()?).unwrap_or(Value::Null)),
         "/api/smu_get_core_layout" => {
@@ -715,13 +734,92 @@ fn auto_apply_profile() -> Result<String, String> {
 
 // ---- Logging ----
 
+/// File logging is opt-in (default OFF): the page has a switch in the
+/// 服务日志 card. The flag persists in the plugin manifest as
+/// `service.log_enabled`, so the service remembers it across restarts.
+static LOG_ENABLED: AtomicBool = AtomicBool::new(false);
+/// Log file size cap; exceeding it rotates the current file to `.log.old`.
+const LOG_MAX_BYTES: u64 = 1024 * 1024;
+
+/// The log lives next to pbo-service.exe (portable, easy to grab when a
+/// remote user reports a problem), falling back to the config dir if the
+/// exe path cannot be resolved.
+fn data_dir_for_log() -> PathBuf {
+    if let Some(d) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+    {
+        if !d.as_os_str().is_empty() {
+            return d;
+        }
+    }
+    config_dir()
+}
+
+fn log_path() -> PathBuf {
+    data_dir_for_log().join("pbo_service.log")
+}
+
+/// <plugin>/sidecar/pbo-service.exe -> <plugin>/manifest.json
+fn manifest_path_for_log() -> Result<PathBuf, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+    exe.parent()
+        .and_then(|d| d.parent())
+        .map(|d| d.join("manifest.json"))
+        .ok_or_else(|| "cannot resolve plugin dir".to_string())
+}
+
+fn load_log_flag() {
+    let on = manifest_path_for_log()
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .and_then(|v| {
+            v.get("service")?
+                .get("log_enabled")?
+                .as_bool()
+        })
+        .unwrap_or(false);
+    LOG_ENABLED.store(on, Ordering::Relaxed);
+}
+
+fn set_log_enabled(on: bool) -> Result<(), String> {
+    let path = manifest_path_for_log()?;
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|e| format!("read {}: {e}", path.display()))?;
+    let mut v: Value =
+        serde_json::from_str(&raw).map_err(|e| format!("parse manifest: {e}"))?;
+    let svc = v
+        .get_mut("service")
+        .and_then(|s| s.as_object_mut())
+        .ok_or("manifest has no service object")?;
+    svc.insert("log_enabled".into(), json!(on));
+    let out =
+        serde_json::to_string_pretty(&v).map_err(|e| format!("serialize manifest: {e}"))?;
+    std::fs::write(&path, out).map_err(|e| format!("write {}: {e}", path.display()))?;
+    LOG_ENABLED.store(on, Ordering::Relaxed);
+    Ok(())
+}
+
 pub(crate) fn log(msg: &str) {
+    if !LOG_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let line = format!("[{ts}] {msg}\n");
-    let path = config_dir().join("pbo_service.log");
+    let path = log_path();
+    // 1 MB cap: rotate the current file to .log.old once, keeping the newest
+    // window on disk while total usage stays bounded (~2 MB).
+    if let Ok(meta) = std::fs::metadata(&path) {
+        if meta.len() >= LOG_MAX_BYTES {
+            let old = path.with_extension("log.old");
+            let _ = std::fs::remove_file(&old);
+            let _ = std::fs::rename(&path, &old);
+        }
+    }
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
