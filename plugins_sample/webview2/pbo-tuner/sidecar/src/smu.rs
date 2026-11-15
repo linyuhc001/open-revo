@@ -739,6 +739,8 @@ fn msr_core_vids() -> Option<Vec<Option<f32>>> {
     extern "system" {
         fn GetCurrentThread() -> isize;
         fn SetThreadAffinityMask(thread: isize, mask: usize) -> usize;
+        fn GetCurrentProcessorNumber() -> u32;
+        fn SwitchToThread() -> i32;
     }
 
     let Some(entries) = read_topology() else {
@@ -767,6 +769,17 @@ fn msr_core_vids() -> Option<Vec<Option<f32>>> {
                 SetThreadAffinityMask(thread, original);
                 return None;
             }
+            // The MSR is core-scoped, so the read must execute on the target
+            // core. Setting affinity alone does NOT migrate the thread — the
+            // scheduler only moves it at the next opportunity, and a tight
+            // loop of RDMSR IOCTLs kept landing on the first core (12 reads,
+            // one voltage). Spin until the OS confirms the move.
+            let target = first_thread.trailing_zeros();
+            let mut tries = 0;
+            while GetCurrentProcessorNumber() != target && tries < 500 {
+                SwitchToThread();
+                tries += 1;
+            }
             let slot = read_msr(0xC001_0293).ok().and_then(|raw| {
                 let vid = ((raw >> 14) & 0xFF) as f32;
                 let volt = 1.550f32 - 0.00625f32 * vid;
@@ -781,6 +794,65 @@ fn msr_core_vids() -> Option<Vec<Option<f32>>> {
         SetThreadAffinityMask(thread, original);
     }
     Some(out)
+}
+
+/// Per-core MSR diagnostic: pins to each core, reads `C001_0293` and reports
+/// the raw value plus the logical CPU the read actually executed on. Used to
+/// validate the voltage fallback against a machine whose PM layout is known.
+#[cfg(target_arch = "x86_64")]
+pub fn msr_vids_diag() -> serde_json::Value {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetCurrentThread() -> isize;
+        fn SetThreadAffinityMask(thread: isize, mask: usize) -> usize;
+        fn GetCurrentProcessorNumber() -> u32;
+        fn SwitchToThread() -> i32;
+    }
+
+    let mut rows = Vec::new();
+    let Some(entries) = read_topology() else {
+        return serde_json::json!([]);
+    };
+    let mut core_masks: Vec<usize> = entries
+        .iter()
+        .filter(|e| e.relationship == RELATION_PROCESSOR_CORE)
+        .map(|e| e.processor_mask)
+        .collect();
+    core_masks.sort_unstable();
+    unsafe {
+        let thread = GetCurrentThread();
+        let original = SetThreadAffinityMask(thread, core_masks.first().copied().unwrap_or(1));
+        for (i, mask) in core_masks.iter().enumerate() {
+            let first_thread = mask & mask.wrapping_neg();
+            SetThreadAffinityMask(thread, first_thread);
+            let target = first_thread.trailing_zeros();
+            let mut tries = 0;
+            while GetCurrentProcessorNumber() != target && tries < 500 {
+                SwitchToThread();
+                tries += 1;
+            }
+            let landed = GetCurrentProcessorNumber();
+            let raw = read_msr(0xC001_0293).unwrap_or(0);
+            let vid = (raw >> 14) & 0xFF;
+            rows.push(serde_json::json!({
+                "core": i,
+                "target_cpu": target,
+                "landed_cpu": landed,
+                "raw": format!("0x{:016X}", raw),
+                "vid": vid,
+                "volt": 1.550f32 - 0.00625f32 * vid as f32,
+            }));
+        }
+        if original != 0 {
+            SetThreadAffinityMask(thread, original);
+        }
+    }
+    serde_json::json!(rows)
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub fn msr_vids_diag() -> serde_json::Value {
+    serde_json::json!([])
 }
 
 #[cfg(not(target_arch = "x86_64"))]
