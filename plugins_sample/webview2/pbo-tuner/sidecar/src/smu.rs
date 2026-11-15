@@ -834,6 +834,18 @@ pub fn get_core_layout() -> Vec<CorePlacement> {
 
     let chiplet_mask = uses_chiplet_co_mask();
 
+    // Order the L3 slices by the smallest core index inside them so CCD 0 is
+    // always the one containing core 0, matching what Ryzen Master reports.
+    let mut slice_order: Vec<usize> = Vec::new();
+    if l3_grouping_usable {
+        let mut seen = std::collections::BTreeSet::new();
+        for c in &cores {
+            if seen.insert(c.l3_mask) {
+                slice_order.push(c.l3_mask);
+            }
+        }
+    }
+
     // ---- CPUID path (Zen3 / Zen4 / Zen5) ----
     if chiplet_mask {
         if let Some(cpuid_cores) = read_cpuid_topology() {
@@ -846,6 +858,57 @@ pub fn get_core_layout() -> Vec<CorePlacement> {
                     cpuid_cores.iter().map(|c| c.node_id).collect::<Vec<_>>(),
                     raw_contiguous
                 ));
+
+                // Zen5 chiplets (Fire Range / Granite Ridge) quirk: Fn8000001E
+                // reports a flat NodeId (every core in "node 0") and a
+                // package-global CoreId (0..N-1), so CPUID alone cannot see
+                // the second CCD. The L3 slice grouping can (96 MB vs 32 MB
+                // on X3D parts). When CPUID is flat but L3 disagrees, take
+                // the CCD from L3 and the SMU slot from CoreId & 7 (per-CCD
+                // slots are 8 wide, so the global id wraps onto the right
+                // slot). NodeId-based parts (e.g. Dragon Range) keep the
+                // CPUID mapping untouched.
+                let cpu_flat = ccd_of.iter().all(|&c| c == ccd_of[0]);
+                if cpu_flat && slice_order.len() > 1 {
+                    crate::log(&format!(
+                        "[layout] CPUID NodeId flat but L3 shows {} slices -> ccd from L3, slot = CoreId & 7",
+                        slice_order.len()
+                    ));
+                    let placements: Vec<CorePlacement> = cpuid_cores
+                        .iter()
+                        .enumerate()
+                        .map(|(i, c)| {
+                            let w = cores.get(i);
+                            let ccd = w
+                                .map(|w| {
+                                    slice_order
+                                        .iter()
+                                        .position(|m| *m == w.l3_mask)
+                                        .unwrap_or(0)
+                                })
+                                .unwrap_or(0) as u32;
+                            CorePlacement {
+                                core: i as u32,
+                                ccd,
+                                ccx: ccd,
+                                physical_core: c.core_id & 7,
+                                l3_kb: w.map(|w| w.l3_kb).unwrap_or(0),
+                            }
+                        })
+                        .collect();
+                    for p in &placements {
+                        crate::log(&format!(
+                            "[layout] core {} (OS): coreid {} -> ccd {} phys {} (L3 {} KB)",
+                            p.core,
+                            cpuid_cores[p.core as usize].core_id,
+                            p.ccd,
+                            p.physical_core,
+                            p.l3_kb
+                        ));
+                    }
+                    return placements;
+                }
+
                 for (i, c) in cpuid_cores.iter().enumerate() {
                     let l3 = cores.get(i).map(|w| w.l3_kb).unwrap_or(0);
                     crate::log(&format!(
@@ -872,18 +935,6 @@ pub fn get_core_layout() -> Vec<CorePlacement> {
             ));
         } else {
             crate::log("[layout] CPUID Fn8000001E topology unavailable, falling back to L3 grouping");
-        }
-    }
-
-    // Order the L3 slices by the smallest core index inside them so CCD 0 is
-    // always the one containing core 0, matching what Ryzen Master reports.
-    let mut slice_order: Vec<usize> = Vec::new();
-    if l3_grouping_usable {
-        let mut seen = std::collections::BTreeSet::new();
-        for c in &cores {
-            if seen.insert(c.l3_mask) {
-                slice_order.push(c.l3_mask);
-            }
         }
     }
 
