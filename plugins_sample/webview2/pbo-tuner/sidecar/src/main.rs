@@ -20,7 +20,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 
-const VERSION: &str = "1.7.3";
+const VERSION: &str = "2.0.0";
 const DEFAULT_PORT: u16 = 18955;
 
 /// Port this instance is actually listening on; reported by /api/health and
@@ -217,11 +217,6 @@ fn route(method: &str, path: &str, body: &[u8]) -> Result<Value, String> {
         "/api/smu_get_core_layout" => {
             Ok(serde_json::to_value(smu::get_core_layout()).unwrap_or(Value::Null))
         }
-        "/api/smu_pmtable" => {
-            let dump = req.get("dump").and_then(|v| v.as_bool()).unwrap_or(false);
-            Ok(smu::pmtable_live(dump)?)
-        }
-        "/api/debug_msr_vids" => Ok(smu::msr_vids_diag()),
         "/api/smu_get_co_single_core" => {
             let (core, ccd, ccx, phys) = placement(&req)?;
             Ok(json!(smu::get_co_single_core(core, ccd, ccx, phys)?))
