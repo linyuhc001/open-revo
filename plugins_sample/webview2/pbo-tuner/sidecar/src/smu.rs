@@ -863,6 +863,7 @@ pub fn get_core_layout() -> Vec<CorePlacement> {
         // consecutive calls is what made the 7845HX UI show two CCDs while
         // Apply aliased CCD1 onto CCD0.
         let live = read_cpuid_topology();
+        let live_len = live.as_ref().map(|v| v.len());
         let (cpuid_cores, from_cache) = match live {
             Some(v) if v.len() == cores.len() => (Some(v), false),
             _ => (
@@ -997,7 +998,7 @@ pub fn get_core_layout() -> Vec<CorePlacement> {
                 crate::log(&format!(
                     "[layout] CPUID Fn8000001E topology unavailable{} (live read: {:?}, OS cores: {}), falling back to L3 grouping",
                     if from_cache { " and no cached copy" } else { "" },
-                    live.as_ref().map(|v| v.len()),
+                    live_len,
                     cores.len()
                 ));
             }
