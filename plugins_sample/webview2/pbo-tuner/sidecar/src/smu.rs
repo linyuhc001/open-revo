@@ -224,6 +224,60 @@ fn resolve_commands(code: CpuCodeName) -> (SmuType, RsmuCommands) {
         }
         // Bristol Ridge / Carrizo / Stoney Ridge (pre-Ryzen)
         BristolRidge | Carrizo | StoneyRidge => SmuType::Cpu9,
+        // ---- Monolithic APU families (all CO commands on the RSMU mailbox;
+        // IDs from ZenStates-Core APUSettings1*.cs) ----
+        // Renoir / Lucienne: set 0x52 / all 0xB1, no get-margin command.
+        Renoir | Lucienne => {
+            c.set_dldo_psm_margin = 0x52;
+            c.set_all_dldo_psm_margin = 0xB1;
+            c.set_pbo_scalar = 0x3F;
+            c.get_pbo_scalar = 0xF;
+            c.get_boost_limit_frequency = 0x42;
+            c.set_overclock_cpu_vid = 0x1B;
+            SmuType::Cpu3
+        }
+        // Cezanne (5300/5600H/5800H/5900HX…): APU1 + get 0xC3.
+        Cezanne => {
+            c.set_dldo_psm_margin = 0x52;
+            c.set_all_dldo_psm_margin = 0xB1;
+            c.get_dldo_psm_margin = 0xC3;
+            c.set_pbo_scalar = 0x3F;
+            c.get_pbo_scalar = 0xF;
+            c.get_boost_limit_frequency = 0x42;
+            c.set_overclock_cpu_vid = 0x1B;
+            SmuType::Cpu3
+        }
+        // Rembrandt / Mendocino inherit the Phoenix table (set 0x53 / all 0x5D)
+        // and override get-margin to 0x2F. 7535H / 7735H land here.
+        Rembrandt | Mendocino => {
+            c.set_dldo_psm_margin = 0x53;
+            c.set_all_dldo_psm_margin = 0x5D;
+            c.get_dldo_psm_margin = 0x2F;
+            c.set_pbo_scalar = 0x3E;
+            c.set_boost_limit_all_core = 0x47;
+            c.set_overclock_cpu_vid = 0x1B;
+            SmuType::Cpu3
+        }
+        // Phoenix / Hawk Point (7840H/HS, 7940HS, 8745HS, 8845H/HS, 8945HS…).
+        Phoenix | Phoenix2 | HawkPoint => {
+            c.set_dldo_psm_margin = 0x53;
+            c.set_all_dldo_psm_margin = 0x5D;
+            c.get_dldo_psm_margin = 0xE1;
+            c.set_pbo_scalar = 0x3E;
+            c.set_boost_limit_all_core = 0x47;
+            c.set_overclock_cpu_vid = 0x1B;
+            SmuType::Cpu3
+        }
+        // Strix Point / Halo / Krackan (Zen5 APU): Phoenix table, get 0xAF.
+        StrixPoint | StrixHalo | KrackanPoint | KrackanPoint2 => {
+            c.set_dldo_psm_margin = 0x53;
+            c.set_all_dldo_psm_margin = 0x5D;
+            c.get_dldo_psm_margin = 0xAF;
+            c.set_pbo_scalar = 0x3E;
+            c.set_boost_limit_all_core = 0x47;
+            c.set_overclock_cpu_vid = 0x1B;
+            SmuType::Cpu3
+        }
         _ => SmuType::Unsupported,
     };
     (t, c)
@@ -913,9 +967,11 @@ pub fn init_smu() -> Result<SmuInfo, String> {
 
     // Still nothing? Probe the RSMU directly rather than refusing to start.
     let (mut smu_type, mut commands) = resolve_commands(code_name);
-    if smu_type == SmuType::Unsupported {
+    if smu_type == SmuType::Unsupported && code_name == CpuCodeName::Undefined {
         // Last resort: family 19h/1Ah all speak the same RSMU dialect, so try the
         // Zen4/Zen5 table rather than refusing to start on an unrecognised SKU.
+        // Only for parts we could not identify at all — known APUs above must
+        // never be forced onto the wrong command table by this fallback.
         if let Some((family, model, _)) = cpuid_identity() {
             if family == 0x19 || family == 0x1A {
                 eprintln!(
@@ -972,7 +1028,81 @@ pub fn init_smu() -> Result<SmuInfo, String> {
     Ok(summary)
 }
 
+/// PM table size per `pm_table_version`, sourced from ZenStates-Core's
+/// PowerTable.cs (marked "size should be correct" upstream). Version match
+/// wins; per-CPU fallbacks only apply when the version is not listed.
+fn pm_table_size_for_version(version: u32) -> Option<u32> {
+    let v = match version {
+        // Zen2 Matisse / Rome era
+        0x240802 => 0x7E0,
+        0x240902 => 0x514,
+        0x240003 => 0x18AC,
+        0x240503 => 0xD7C,
+        0x240603 => 0xAB0,
+        0x240703 | 0x240803 => 0x7E4,
+        0x240903 => 0x518,
+        // Zen3 Vermeer
+        0x2D0008 => 0x1AB0,
+        0x2D0803 => 0x894,
+        0x2D0903 => 0x7E4,
+        0x380005 => 0x1BB0,
+        0x380505 => 0xF30,
+        0x380605 => 0xC10,
+        0x380705 | 0x380805 => 0x8F0,
+        0x380804 => 0x8A4,
+        0x380904 => 0x5A4,
+        0x380905 => 0x5D0,
+        0x000300 => 0x948,
+        // Zen4 desktop / Dragon Range (7745HX / 7845HX / 7945HX)
+        0x540000 => 0x828,
+        0x540001 => 0x82C,
+        0x540002 => 0x87C,
+        0x540003 => 0x89C,
+        0x540004 => 0x8BC,
+        0x540005 => 0x8C8,
+        0x540100 => 0x618,
+        0x540101 => 0x61C,
+        0x540102 => 0x66C,
+        0x540103 => 0x68C,
+        0x540104 => 0x6A8,
+        0x540105 => 0x6B4,
+        0x540108 => 0x6BC,
+        0x540208 => 0x8D0,
+        // Zen4 Storm Peak (Threadripper)
+        0x5C0002 => 0x1E3C,
+        0x5C0003 => 0x1E48,
+        0x5C0102 => 0x1A14,
+        0x5C0103 => 0x1A20,
+        0x5C0202 => 0x15EC,
+        0x5C0203 => 0x15F8,
+        0x5C0302 => 0xD9C,
+        0x5C0303 => 0xDA8,
+        0x5C0402 => 0x974,
+        0x5C0403 => 0x980,
+        0x0005C0 => 0xD9C,
+        // Zen4 Phoenix / Hawk Point APUs
+        0x4C0001 | 0x4C0003 => 0xB18,
+        0x4C0004 => 0xB1C,
+        0x4C0005 => 0xAF8,
+        0x4C0006 => 0xAFC,
+        0x4C0007 => 0xB00,
+        0x4C0008 => 0xAF0,
+        0x4C0009 => 0xB00,
+        0x0004C0 => 0xAFC,
+        // Zen5 Granite Ridge / Fire Range
+        0x621102 => 0x724,
+        0x621202 => 0x994,
+        // Generic Zen4 desktop
+        0x000400 => 0x948,
+        _ => return None,
+    };
+    Some(v)
+}
+
 fn default_pm_table_size(code: CpuCodeName, version: u32) -> u32 {
+    if let Some(v) = pm_table_size_for_version(version) {
+        return v;
+    }
     use CpuCodeName::*;
     match code {
         Matisse => match version {
@@ -983,7 +1113,6 @@ fn default_pm_table_size(code: CpuCodeName, version: u32) -> u32 {
             _ => 0x994,
         },
         Vermeer => match version {
-            0x2D0903 => 0x594,
             0x380904 => 0x5A4,
             0x380905 => 0x5D0,
             0x2D0803 => 0x894,
