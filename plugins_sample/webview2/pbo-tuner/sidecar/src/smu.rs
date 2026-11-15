@@ -1562,6 +1562,13 @@ pub fn pm_core_layout(version: u32) -> Option<PmCoreLayout> {
         // Zen5 Granite Ridge / Fire Range family — offsets verified by
         // LibreHardwareMonitor against pm table 0x00621202 (size 0x994).
         0x00621202 => Some(PmCoreLayout { voltage: 317, temperature: 333, stride: 16 }),
+        // Zen4 Raphael / Dragon Range (7845HX & co), size 0x8D0. Offsets from
+        // ZenMaster's sensors.py 0x54 branch (power 0x494, voltage 0x4D4,
+        // temperature 0x514, clock 0x554), which is self-consistent: the clock
+        // array ends at 0x554 + 16*4 = 0x594, exactly where that table's next
+        // array group starts. Until 1.7.1 this version had no entry, so the
+        // blind detector had to guess and the 7845HX ended up on the MSR mirror.
+        0x00540208 => Some(PmCoreLayout { voltage: 308, temperature: 325, stride: 16 }),
         _ => None,
     }
 }
@@ -1702,13 +1709,19 @@ fn pm_slot_map(stride: usize) -> Vec<usize> {
         .clone()
 }
 
-/// GET-ish live telemetry endpoint body. `dump=true` returns the raw f32
-/// Live per-core VID endpoint. The name is historical: every CPU now reports
-/// per-core VID read from MSR C001_0293 (`CurCpuVid`, bits 21:14), which is
-/// what the UI calls VID. One package operating point means every core answers
-/// with the same VID at that instant — that is the hardware's answer, not a
-/// readout bug. The PM table is only used when the MSR route is dead, and
-/// `dump=true` still dumps it raw for offset calibration.
+/// GET-ish live telemetry endpoint body: per-core live voltage and temperature.
+/// `dump=true` returns the raw f32 PM table instead, for offset calibration.
+///
+/// Source order as of 1.7.1:
+///   1. SMU PM table — the only per-core source. Every core has its own entry,
+///      so a 16-core part answers with 16 distinct floats. `layout` says whether
+///      the offsets came from the registry or were auto-detected.
+///   2. MSR C001_0293 (`CurCpuVid`) — a whole-package P-state mirror, tried only
+///      when this table version has neither a registry entry nor a detectable
+///      layout. It answers with one identical code for every core, which is a
+///      property of the register, not a readout bug.
+///
+/// `dump=true` still dumps the PM table raw for offset calibration.
 pub fn pmtable_live(dump: bool) -> Result<Value, String> {
     if dump {
         let snap = read_pm_table_raw()?;
@@ -1740,42 +1753,19 @@ pub fn pmtable_live(dump: bool) -> Result<Value, String> {
         }));
     }
 
-    // VID for every CPU, first and unconditionally: the per-core VID is the
-    // number the user asked for, and it does not depend on a PM table version
-    // being mapped.
-    #[cfg(target_arch = "x86_64")]
-    if let Some(vids) = msr_core_vids() {
-        let codes: Vec<Value> = vids
-            .iter()
-            .map(|v| match v {
-                Some((code, _)) => json!(*code),
-                None => Value::Null,
-            })
-            .collect();
-        let values: Vec<Value> = vids
-            .iter()
-            .map(|v| match v {
-                Some((_, volt)) => json!(((*volt as f64) * 1000.0).round() / 1000.0),
-                None => Value::Null,
-            })
-            .collect();
-        let n = values.len();
-        return Ok(json!({
-            "supported": true,
-            "source": "vid",
-            "layout": "msr",
-            "cores": n,
-            "vid": codes,
-            "voltage": values,
-            "temperature": Value::Null,
-        }));
-    }
-
-    // MSR dead (no PawnIO module, affinity refused): last resort is the PM
-    // table, when this version has a known or auto-detected layout.
+    // From here on the PM table is the primary source: read it once, and fall
+    // back to the package-wide MSR mirror only if this version cannot be read
+    // or mapped.
     let snap = match read_pm_table_raw() {
         Ok(s) => s,
-        Err(e) => return Ok(json!({ "supported": false, "reason": e })),
+        Err(e) => {
+            crate::log(&format!("[voltage] PM table read failed: {e}"));
+            #[cfg(target_arch = "x86_64")]
+            if let Some(vids) = msr_core_vids() {
+                return Ok(vid_payload(&vids));
+            }
+            return Ok(json!({ "supported": false, "reason": e }));
+        }
     };
     let cores = detect_physical_core_count() as usize;
     let (layout, layout_source) = match pm_core_layout(snap.version) {
@@ -1792,6 +1782,16 @@ pub fn pmtable_live(dump: bool) -> Result<Value, String> {
         },
     };
     let Some(l) = layout else {
+        // Unmapped table version: the whole-package MSR mirror is still better
+        // than an empty UI, as long as its numbers are labelled as such.
+        crate::log(&format!(
+            "[voltage] PM 0x{:08X} has no per-core layout; falling back to MSR",
+            snap.version
+        ));
+        #[cfg(target_arch = "x86_64")]
+        if let Some(vids) = msr_core_vids() {
+            return Ok(vid_payload(&vids));
+        }
         return Ok(json!({
             "supported": false,
             "pm_version": format!("0x{:08X}", snap.version),
@@ -1836,6 +1836,36 @@ pub fn pmtable_live(dump: bool) -> Result<Value, String> {
         "voltage": voltage,
         "temperature": temperature,
     }))
+}
+
+/// Package-wide fallback payload from MSR C001_0293: one code per physical
+/// core, all identical at any instant because the register mirrors the whole-
+/// package P-state. `vid` keeps the raw code, `voltage` the converted value.
+#[cfg(target_arch = "x86_64")]
+fn vid_payload(vids: &[Option<(u32, f32)>]) -> Value {
+    let codes: Vec<Value> = vids
+        .iter()
+        .map(|v| match v {
+            Some((code, _)) => json!(*code),
+            None => Value::Null,
+        })
+        .collect();
+    let values: Vec<Value> = vids
+        .iter()
+        .map(|v| match v {
+            Some((_, volt)) => json!(((*volt as f64) * 1000.0).round() / 1000.0),
+            None => Value::Null,
+        })
+        .collect();
+    json!({
+        "supported": true,
+        "source": "vid",
+        "layout": "msr",
+        "cores": values.len(),
+        "vid": codes,
+        "voltage": values,
+        "temperature": Value::Null,
+    })
 }
 
 fn with_bridge<T>(f: impl FnOnce(&SmuBridge) -> Result<T, String>) -> Result<T, String> {

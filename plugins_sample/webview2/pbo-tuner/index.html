@@ -235,7 +235,7 @@
     .core-row input:disabled { opacity: 0.45; cursor: not-allowed; }
     .core-row input.dirty { box-shadow: inset 0 0 0 1px rgba(245,158,11,0.55); }
     /* Per-core live voltage readout — boxed like the 3D V-Cache badge, in the
-       same amber instead of purple. Hidden in 1.7.0 (see .vhidden below). */
+       same amber instead of purple. */
     .core-v {
       flex: 0 0 64px;
       font-size: 11px;
@@ -250,9 +250,8 @@
       white-space: nowrap;
     }
     .core-v.empty { visibility: hidden; }
-    /* 1.7.0: every readout is created with this class, so the rows keep their
-       original width and no value is ever painted. Removing the class (and the
-       inline display:none on #btnVolt) restores the feature. */
+    /* The toggle puts this class on the readouts while they are off (default),
+       so the rows get their original width back. */
     .core-v.vhidden { display: none; }
 
     .row {
@@ -405,13 +404,7 @@
       <button id="btnAllZero" class="secondary">All Zero</button>
       <button id="btnApplyCO">Apply</button>
       <span class="spacer"></span>
-      <!-- 1.7.0: the per-core voltage readout is hidden from the UI on purpose.
-           The sidecar still carries the MSR C001_0293 path (1.6.6), but that
-           register mirrors the whole-package P-state, so every core answered
-           with the same number. Front-end only for now — drop the inline
-           display:none (and the vhidden class on .core-v) to bring it back once
-           a real per-core source is found. -->
-      <button id="btnVolt" class="secondary" style="display:none" title="切换每核心电压显示（默认关闭）">电压</button>
+      <button id="btnVolt" class="secondary" title="切换每核心电压显示（默认关闭）">电压</button>
       <button id="btnRefresh" class="secondary">Refresh</button>
     </div>
 
@@ -687,12 +680,11 @@
       return set.size;
     }
 
-    // ---- Per-core voltage readout (HIDDEN in 1.7.0) ----
-    // The code below is intact so the feature can be switched back on with a
-    // CSS-level change (see the toolbar comment), but nothing polls while the
-    // toggle is unreachable: voltShown starts false, so no request is made and
-    // the sidecar never touches MSR C001_0293 for us. It stays hidden until we
-    // find a per-core source that is not the whole-package P-state mirror.
+    // ---- Per-core voltage readout ----
+    // 1.7.1 reads the SMU PM table, which keeps one entry per core, so the
+    // cells show genuinely different values. The sidecar falls back to the
+    // package-wide MSR mirror (C001_0293) only when a PM table version cannot
+    // be mapped; `d.source` tells us which one we got so the tooltip can say so.
     let pmTimer = null;
     let pmSupported = null; // null = not probed yet
 
@@ -725,12 +717,21 @@
       }
       pmSupported = true;
       const volt = d.voltage || [];
+      const codes = d.vid || [];
+      const pmSource = d.source === 'vid'
+        ? '整包镜像（MSR C001_0293，本表版本未映射，各核同一工作点）'
+        : 'PM 表 · 每核工作电压';
       document.querySelectorAll('[data-vcore]').forEach(el => {
         const core = Number(el.dataset.vcore);
         const val = volt[core];
-        el.title = val != null
-          ? `核心 ${core} · ${val.toFixed(4)} V`
-          : '该核心本次未读到电压';
+        const code = codes[core];
+        if (val == null) {
+          el.title = pmSource + '：该核心本次未读到数值';
+        } else if (code != null) {
+          el.title = `核心 ${core} · ${val.toFixed(4)} V（VID ${code}，${pmSource}）`;
+        } else {
+          el.title = `核心 ${core} · ${val.toFixed(4)} V（${pmSource}）`;
+        }
         if (val != null) {
           el.textContent = val.toFixed(3) + 'V';
           el.classList.remove('empty');
@@ -874,7 +875,7 @@
             <span class="core-name" title="OS 核心 ${c.core} · CCD ${c.ccd} 物理槽位 ${c.physical_core}">C${c.core}</span>
             <input type="number" data-core="${c.core}" value="0"
                    min="${CO_MIN}" max="${CO_MAX}" step="1" ${STATE.canWrite ? '' : 'disabled'} />
-            <span class="core-v vhidden" data-vcore="${c.core}" title="该核心实时电压">—</span>`;
+            <span class="core-v" data-vcore="${c.core}" title="该核心实时电压">—</span>`;
           grid.appendChild(row);
         });
 
