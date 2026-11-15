@@ -18,7 +18,7 @@ use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 
 const VERSION: &str = "1.4.1";
 const DEFAULT_PORT: u16 = 18955;
@@ -304,11 +304,12 @@ fn placement(req: &Value) -> Result<(u32, u32, u32, u32), String> {
 
 /// Last ~300 lines of the service log for the page's debug panel.
 fn debug_log_tail() -> Value {
-    let path = config_dir().join("pbo_service.log");
+    let path = log_path();
     let text = std::fs::read_to_string(&path).unwrap_or_default();
     let lines: Vec<&str> = text.lines().collect();
     let start = lines.len().saturating_sub(300);
     json!({
+        "enabled": LOG_ENABLED.load(Ordering::Relaxed),
         "path": path.display().to_string(),
         "total": lines.len(),
         "lines": lines[start..],
