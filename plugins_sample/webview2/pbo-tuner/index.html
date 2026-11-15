@@ -234,8 +234,8 @@
     .core-row input.positive { color: #f87171; border-color: rgba(248,113,113,0.35); }
     .core-row input:disabled { opacity: 0.45; cursor: not-allowed; }
     .core-row input.dirty { box-shadow: inset 0 0 0 1px rgba(245,158,11,0.55); }
-    /* Per-core live voltage readout (SMU PM table) — boxed like the 3D V-Cache
-       badge, in the same amber instead of purple. */
+    /* Per-core live voltage readout — boxed like the 3D V-Cache badge, in the
+       same amber instead of purple. Hidden in 1.7.0 (see .vhidden below). */
     .core-v {
       flex: 0 0 64px;
       font-size: 11px;
@@ -250,8 +250,9 @@
       white-space: nowrap;
     }
     .core-v.empty { visibility: hidden; }
-    /* The voltage toolbar switch hides the readouts entirely so the rows keep
-       the same width as before the feature existed. */
+    /* 1.7.0: every readout is created with this class, so the rows keep their
+       original width and no value is ever painted. Removing the class (and the
+       inline display:none on #btnVolt) restores the feature. */
     .core-v.vhidden { display: none; }
 
     .row {
@@ -404,7 +405,13 @@
       <button id="btnAllZero" class="secondary">All Zero</button>
       <button id="btnApplyCO">Apply</button>
       <span class="spacer"></span>
-      <button id="btnVolt" class="secondary" title="切换每核心电压显示（默认关闭）">电压</button>
+      <!-- 1.7.0: the per-core voltage readout is hidden from the UI on purpose.
+           The sidecar still carries the MSR C001_0293 path (1.6.6), but that
+           register mirrors the whole-package P-state, so every core answered
+           with the same number. Front-end only for now — drop the inline
+           display:none (and the vhidden class on .core-v) to bring it back once
+           a real per-core source is found. -->
+      <button id="btnVolt" class="secondary" style="display:none" title="切换每核心电压显示（默认关闭）">电压</button>
       <button id="btnRefresh" class="secondary">Refresh</button>
     </div>
 
@@ -648,7 +655,7 @@
       buildCcdPanels();
       await refreshValues({ initial: true });
       await refreshFmaxScalar();
-      applyVoltToggle(); // voltage readouts default OFF — the 电压 button opts in
+      applyVoltToggle(); // voltShown=false: readouts stay hidden, no polling
 
       // Auto-apply is a host-side setting; reflect whatever the saved profile says.
       try {
@@ -680,11 +687,12 @@
       return set.size;
     }
 
-    // ---- Per-core live voltage (SMU PM table) ----
-    // The PM table is the only per-core voltage source the SMU exposes; the
-    // MSR route (C001_0293 CurCpuVid) that 1.6.6 used was dropped in 1.7.0
-    // because that register mirrors the whole-package P-state, so it returned
-    // one identical number for every core.
+    // ---- Per-core voltage readout (HIDDEN in 1.7.0) ----
+    // The code below is intact so the feature can be switched back on with a
+    // CSS-level change (see the toolbar comment), but nothing polls while the
+    // toggle is unreachable: voltShown starts false, so no request is made and
+    // the sidecar never touches MSR C001_0293 for us. It stays hidden until we
+    // find a per-core source that is not the whole-package P-state mirror.
     let pmTimer = null;
     let pmSupported = null; // null = not probed yet
 
@@ -698,17 +706,16 @@
       if (!d || !d.supported) {
         if (pmSupported === false) return;
         pmSupported = false;
-        // PM table unmapped for this CPU (unknown version, auto-detect
-        // ambiguous) — switch the toggle back off, disable it and explain
-        // once in the console.
+        // No usable source for this CPU — switch the toggle back off, disable
+        // it and explain once in the console.
         if (voltShown) {
           voltShown = false;
           applyVoltToggle();
         }
         const btnVolt = document.getElementById('btnVolt');
         btnVolt.disabled = true;
-        btnVolt.title = '该 CPU 暂不支持每核心电压读取（PM 表版本未映射）';
-        log('[!] 电压读取不可用: PM 表布局未知');
+        btnVolt.title = '该 CPU 暂不支持每核心电压读取';
+        log('[!] 电压读取不可用: 该 CPU 未提供每核心电压源');
         document.querySelectorAll('[data-vcore]').forEach(el => {
           el.textContent = '';
           el.classList.add('empty');
@@ -722,7 +729,7 @@
         const core = Number(el.dataset.vcore);
         const val = volt[core];
         el.title = val != null
-          ? `核心 ${core} · ${val.toFixed(4)} V（PM 表）`
+          ? `核心 ${core} · ${val.toFixed(4)} V`
           : '该核心本次未读到电压';
         if (val != null) {
           el.textContent = val.toFixed(3) + 'V';
@@ -867,7 +874,7 @@
             <span class="core-name" title="OS 核心 ${c.core} · CCD ${c.ccd} 物理槽位 ${c.physical_core}">C${c.core}</span>
             <input type="number" data-core="${c.core}" value="0"
                    min="${CO_MIN}" max="${CO_MAX}" step="1" ${STATE.canWrite ? '' : 'disabled'} />
-            <span class="core-v" data-vcore="${c.core}" title="该核心实时电压（PM 表）">—</span>`;
+            <span class="core-v vhidden" data-vcore="${c.core}" title="该核心实时电压">—</span>`;
           grid.appendChild(row);
         });
 

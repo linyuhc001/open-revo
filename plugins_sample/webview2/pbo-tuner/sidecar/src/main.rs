@@ -221,6 +221,7 @@ fn route(method: &str, path: &str, body: &[u8]) -> Result<Value, String> {
             let dump = req.get("dump").and_then(|v| v.as_bool()).unwrap_or(false);
             Ok(smu::pmtable_live(dump)?)
         }
+        "/api/debug_msr_vids" => Ok(smu::msr_vids_diag()),
         "/api/smu_get_co_single_core" => {
             let (core, ccd, ccx, phys) = placement(&req)?;
             Ok(json!(smu::get_co_single_core(core, ccd, ccx, phys)?))
