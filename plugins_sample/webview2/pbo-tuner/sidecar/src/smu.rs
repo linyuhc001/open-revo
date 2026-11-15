@@ -275,9 +275,11 @@ fn make_psm_margin_arg(margin: i32) -> u32 {
     offset.wrapping_add(margin as u32) & 0xFFFF
 }
 
-/// Core mask encoding:
-///   family > 17h: (ccd << 28) | ((core % 8) << 20)
-///   otherwise:    (ccd << 28) | ((ccx % 2) << 24) | ((core % 4) << 20)
+/// Core mask encoding (matches ZenStates-Core MakeCoreMask):
+///   family > 17h: (ccd << 28) | ((physical_core % 8) << 20)
+///   otherwise:    (ccd << 28) | ((ccx % 2) << 24) | ((physical_core % 4) << 20)
+/// `physical_core` must be the core's slot inside the CCD/CCX, as reported by
+/// CPUID Fn8000001E CoreId (or the APOB core map in SMUDebugTool).
 fn make_core_mask(core: u32, ccd: u32, ccx: u32, family_gt_17h: bool) -> u32 {
     if family_gt_17h {
         (ccd << 28) | ((core % 8) << 20)
@@ -553,13 +555,127 @@ fn detect_physical_core_count() -> u32 {
     smt_heuristic_core_count()
 }
 
+// ---- CPUID Fn8000001E per-core topology ----
+//
+// SMUDebugTool resolves the SMU core slot of an OS core through the APOB core
+// map (a DRAM table it reads with its own kernel driver). Our PawnIO module
+// has no physical-memory read, so we take the CPUID route instead: executed
+// with the thread pinned to each logical processor, Fn8000001E reports
+//   EBX[7:0]  CoreId  — the core's physical slot inside its CCD
+//                       (skipping fused-off slots, exactly what the CO mask
+//                       bits 23-20 want)
+//   EBX[15:8] ThreadsPerCore - 1
+//   ECX[7:0]  NodeId  — the CCD the core lives on (chiplet parts)
+// which is the same mapping the APOB table encodes, straight from the CPU.
+
+#[derive(Debug, Clone, Copy)]
+struct CpuidCore {
+    apic_id: u32,
+    core_id: u32,
+    node_id: u32,
+    threads_per_core: u32,
+}
+
+/// CPUID 0x8000001E for the first thread of every physical core, in OS order.
+#[cfg(target_arch = "x86_64")]
+fn read_cpuid_topology() -> Option<Vec<CpuidCore>> {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetCurrentThread() -> isize;
+        fn SetThreadAffinityMask(thread: isize, mask: usize) -> usize;
+    }
+
+    let Some(entries) = read_topology() else {
+        return None;
+    };
+    let mut core_masks: Vec<usize> = entries
+        .iter()
+        .filter(|e| e.relationship == RELATION_PROCESSOR_CORE)
+        .map(|e| e.processor_mask)
+        .collect();
+    if core_masks.is_empty() {
+        return None;
+    }
+    core_masks.sort_unstable();
+
+    unsafe {
+        let thread = GetCurrentThread();
+        let original = SetThreadAffinityMask(thread, core_masks[0]);
+        if original == 0 {
+            return None;
+        }
+
+        let mut out = Vec::with_capacity(core_masks.len());
+        for mask in &core_masks {
+            // First thread of the core = lowest set bit of the KAFFINITY mask.
+            let first_thread = mask & mask.wrapping_neg();
+            if first_thread == 0 || SetThreadAffinityMask(thread, first_thread) == 0 {
+                SetThreadAffinityMask(thread, original);
+                return None;
+            }
+            let leaf = core::arch::x86_64::__cpuid_count(0x8000_001E, 0);
+            out.push(CpuidCore {
+                apic_id: leaf.eax,
+                core_id: leaf.ebx & 0xFF,
+                node_id: leaf.ecx & 0xFF,
+                threads_per_core: ((leaf.ebx >> 8) & 0xFF) + 1,
+            });
+        }
+        SetThreadAffinityMask(thread, original);
+        Some(out)
+    }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn read_cpuid_topology() -> Option<Vec<CpuidCore>> {
+    None
+}
+
+/// Normalize raw CPUID NodeIds into CCD indexes. Consumer parts report
+/// 0-based contiguous nodes; anything else (gaps, 1-based firmware) falls
+/// back to first-appearance rank order, and both are logged for diagnosis.
+fn normalize_ccd_indexes(cores: &[CpuidCore]) -> (Vec<u32>, bool) {
+    let mut order: Vec<u32> = Vec::new();
+    for c in cores {
+        if !order.contains(&c.node_id) {
+            order.push(c.node_id);
+        }
+    }
+    let contiguous = order
+        .iter()
+        .enumerate()
+        .all(|(i, n)| *n as usize == i)
+        && !order.is_empty();
+    if contiguous {
+        (cores.iter().map(|c| c.node_id).collect(), true)
+    } else {
+        (cores
+            .iter()
+            .map(|c| order.iter().position(|n| *n == c.node_id).unwrap_or(0) as u32)
+            .collect(), false)
+    }
+}
+
+/// Whether the current SMU dialect needs the (ccd, physical slot) CO mask —
+/// Zen3 (family 19h) and Zen4/5. True is also the safe default when the
+/// bridge is not initialized yet, since those are the parts this code targets.
+fn uses_chiplet_co_mask() -> bool {
+    let slot = SMU_BRIDGE.get();
+    slot.and_then(|m| m.lock().ok())
+        .and_then(|g| g.as_ref().map(|b| b.smu_type))
+        .map(|t| matches!(t, SmuType::Cpu3 | SmuType::Cpu4))
+        .unwrap_or(true)
+}
+
 /// Build the per-core (core, ccd, ccx) placement table.
 ///
-/// CCD membership is taken from the L3 slice each core reports into, which is
-/// exact instead of guessed: on a 9955HX3D the two slices are 96 MB (3D V-Cache
-/// CCD) and 32 MB, and Windows tags every core with the slice it belongs to.
-/// When the L3 information is unavailable we fall back to the classic 8
-/// cores-per-CCD arithmetic used by every Ryzen desktop/mobile HX part.
+/// Preferred source: CPUID Fn8000001E executed on every core's first thread —
+/// NodeId gives the physical CCD and CoreId the physical slot inside it,
+/// which is what the CO core mask actually encodes. This matters on multi-CCD
+/// parts with fused-off cores (7845HX & co), where `core % 8` arithmetic puts
+/// margins on the wrong cores and `GetDldoPsmMargin` answers garbage.
+/// Fallback: the L3 slice each core reports into (exact for CCD membership),
+/// then the classic 8-cores-per-CCD arithmetic.
 pub fn get_core_layout() -> Vec<CorePlacement> {
     let cores = detect_cores();
     // A single L3 slice is a valid answer too: a 1-CCD part (9800X3D, 9700X,
@@ -567,6 +683,49 @@ pub fn get_core_layout() -> Vec<CorePlacement> {
     // count alone must not push us onto the 8-cores-per-CCD arithmetic, which
     // would invent a second CCD on any 1-CCD part with more than 8 cores.
     let l3_grouping_usable = !cores.is_empty() && cores.iter().all(|c| c.l3_mask != 0);
+
+    let chiplet_mask = uses_chiplet_co_mask();
+
+    // ---- CPUID path (Zen3 / Zen4 / Zen5) ----
+    if chiplet_mask {
+        if let Some(cpuid_cores) = read_cpuid_topology() {
+            if cpuid_cores.len() == cores.len() {
+                let (ccd_of, raw_contiguous) = normalize_ccd_indexes(&cpuid_cores);
+                crate::log(&format!(
+                    "[layout] CPUID topology: {} cores, {} thread(s)/core, raw NodeIds {:?} (contiguous from 0: {})",
+                    cpuid_cores.len(),
+                    cpuid_cores.first().map(|c| c.threads_per_core).unwrap_or(0),
+                    cpuid_cores.iter().map(|c| c.node_id).collect::<Vec<_>>(),
+                    raw_contiguous
+                ));
+                for (i, c) in cpuid_cores.iter().enumerate() {
+                    let l3 = cores.get(i).map(|w| w.l3_kb).unwrap_or(0);
+                    crate::log(&format!(
+                        "[layout] core {i} (OS): apic {} node {} core {} -> ccd {} phys {} l3 {l3} KB",
+                        c.apic_id, c.node_id, c.core_id, ccd_of[i], c.core_id
+                    ));
+                }
+                return cpuid_cores
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| CorePlacement {
+                        core: i as u32,
+                        ccd: ccd_of[i],
+                        ccx: ccd_of[i],
+                        physical_core: c.core_id,
+                        l3_kb: cores.get(i).map(|w| w.l3_kb).unwrap_or(0),
+                    })
+                    .collect();
+            }
+            crate::log(&format!(
+                "[layout] CPUID topology core count {} != OS core count {}, falling back",
+                cpuid_cores.len(),
+                cores.len()
+            ));
+        } else {
+            crate::log("[layout] CPUID Fn8000001E topology unavailable, falling back to L3 grouping");
+        }
+    }
 
     // Order the L3 slices by the smallest core index inside them so CCD 0 is
     // always the one containing core 0, matching what Ryzen Master reports.
@@ -580,13 +739,7 @@ pub fn get_core_layout() -> Vec<CorePlacement> {
         }
     }
 
-    let is_zen3_plus = {
-        let slot = SMU_BRIDGE.get();
-        slot.and_then(|m| m.lock().ok())
-            .and_then(|g| g.as_ref().map(|b| b.smu_type))
-            .map(|t| matches!(t, SmuType::Cpu3 | SmuType::Cpu4))
-            .unwrap_or(true)
-    };
+    let is_zen3_plus = chiplet_mask;
 
     let core_count = if cores.is_empty() {
         let fallback = smt_heuristic_core_count();
@@ -598,7 +751,7 @@ pub fn get_core_layout() -> Vec<CorePlacement> {
         cores.len() as u32
     };
 
-    (0..core_count)
+    let layout: Vec<CorePlacement> = (0..core_count)
         .map(|core| {
             let info = cores.get(core as usize);
             let ccd = match info {
@@ -613,10 +766,21 @@ pub fn get_core_layout() -> Vec<CorePlacement> {
                 core,
                 ccd,
                 ccx,
+                physical_core: core % 8,
                 l3_kb: info.map(|c| c.l3_kb).unwrap_or(0),
             }
         })
-        .collect()
+        .collect();
+
+    crate::log(&format!(
+        "[layout] fallback topology ({} cores): {:?}",
+        layout.len(),
+        layout
+            .iter()
+            .map(|p| format!("os{}->ccd{}phys{}", p.core, p.ccd, p.physical_core))
+            .collect::<Vec<_>>()
+    ));
+    layout
 }
 
 // ---- Public API ----
@@ -648,6 +812,12 @@ pub struct CorePlacement {
     pub ccd: u32,
     /// Physical CCX within the CCD.
     pub ccx: u32,
+    /// Physical core slot inside the CCD (the value that goes into bits 23-20
+    /// of the CO core mask). On parts with fused-off cores this is NOT
+    /// `core % 8` — e.g. a 7845HX's second CCD may enable slots 4-7, so OS
+    /// core 10 can be physical slot 6. SMUDebugTool resolves this from the
+    /// APOB core map; we resolve it from CPUID Fn8000001E (CoreId).
+    pub physical_core: u32,
     /// Size of the L3 slice this core shares, in KB (0 when unknown).
     /// A large value on a dual-CCD part marks the 3D V-Cache CCD.
     pub l3_kb: u32,
@@ -785,6 +955,19 @@ pub fn init_smu() -> Result<SmuInfo, String> {
     };
 
     let summary = bridge.summary();
+    crate::log(&format!(
+        "[init] code={} (driver said {:?}) smu_type={} smu_ver=0x{:06X} pm_ver=0x{:08X} pm_size=0x{:X} dram=0x{:X} cores={} co_set=0x{:02X} co_get=0x{:02X}",
+        summary.code_name,
+        driver_code,
+        summary.smu_type,
+        summary.smu_version,
+        summary.pm_table_version,
+        summary.pm_table_size,
+        summary.dram_base,
+        detect_physical_core_count(),
+        bridge.commands.set_dldo_psm_margin,
+        bridge.commands.get_dldo_psm_margin,
+    ));
     *guard = Some(bridge);
     Ok(summary)
 }
@@ -945,17 +1128,35 @@ fn with_bridge<T>(f: impl FnOnce(&SmuBridge) -> Result<T, String>) -> Result<T, 
 }
 
 /// Set Curve Optimizer margin for a single core. Returns SMU status (1 = OK).
-pub fn set_co_single_core(core: u32, ccd: u32, ccx: u32, margin: i32) -> Result<u32, String> {
+///
+/// `physical_core` is the core's slot inside its CCD (CPUID CoreId), NOT the
+/// OS core index — on dual-CCD parts with fused-off cores the two diverge and
+/// `core % 8` would address the wrong SMU core.
+pub fn set_co_single_core(
+    core: u32,
+    ccd: u32,
+    ccx: u32,
+    physical_core: u32,
+    margin: i32,
+) -> Result<u32, String> {
     with_bridge(|b| {
         if b.commands.set_dldo_psm_margin == 0 {
             return Err("Curve Optimizer not supported on this CPU".into());
         }
         let margin = clamp_margin(margin);
-        let mask = make_core_mask(core, ccd, ccx, is_family_gt_17h(b.smu_type));
+        let mask = make_core_mask(physical_core, ccd, ccx, is_family_gt_17h(b.smu_type));
         let m = make_psm_margin_arg(margin);
         let arg = (mask & 0xFFF0_0000) | m;
         let args = [arg, 0, 0, 0, 0, 0];
-        b.send_rsmu_command(b.commands.set_dldo_psm_margin, &args)?;
+        crate::log(&format!(
+            "[co] set core(OS {core}) ccd {ccd} phys {physical_core} margin {margin}: arg 0x{arg:08X}"
+        ));
+        let r = b.send_rsmu_command(b.commands.set_dldo_psm_margin, &args);
+        match &r {
+            Ok(_) => crate::log(&format!("[co] set core(OS {core}) -> SMU OK")),
+            Err(e) => crate::log(&format!("[co] set core(OS {core}) -> ERR: {e}")),
+        }
+        r?;
         Ok(SMU_OK)
     })
 }
@@ -965,16 +1166,20 @@ pub fn set_co_single_core(core: u32, ccd: u32, ccx: u32, margin: i32) -> Result<
 /// Uses the RSMU `GetDldoPsmMargin` mailbox command. The SMU echoes back the
 /// same 16-bit encoding used on write, so a negative margin arrives as
 /// `(0x100000 + margin) & 0xFFFF`, which decodes cleanly through `i16`.
-pub fn get_co_single_core(core: u32, ccd: u32, ccx: u32) -> Result<i32, String> {
+pub fn get_co_single_core(core: u32, ccd: u32, ccx: u32, physical_core: u32) -> Result<i32, String> {
     with_bridge(|b| {
         if b.commands.get_dldo_psm_margin == 0 {
             return Err("Reading Curve Optimizer is not supported on this CPU".into());
         }
-        let mask = make_core_mask(core, ccd, ccx, is_family_gt_17h(b.smu_type));
+        let mask = make_core_mask(physical_core, ccd, ccx, is_family_gt_17h(b.smu_type));
         let args = [mask, 0, 0, 0, 0, 0];
         let out = b.send_rsmu_command(b.commands.get_dldo_psm_margin, &args)?;
         let raw = (out[0] & 0xFFFF) as u16;
         let margin = raw as i16 as i32;
+        crate::log(&format!(
+            "[co] get core(OS {core}) ccd {ccd} phys {physical_core}: mask 0x{mask:08X} -> raw 0x{:08X} margin {margin}",
+            out[0]
+        ));
         // Reject implausible answers (unsupported slot / firmware noise) instead
         // of surfacing a bogus offset in the UI.
         if (-50..=50).contains(&margin) {

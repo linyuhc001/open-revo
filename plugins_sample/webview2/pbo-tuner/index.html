@@ -395,7 +395,18 @@
       <button id="btnAllZero" class="secondary">All Zero</button>
       <button id="btnApplyCO">Apply</button>
       <span class="spacer"></span>
+      <button id="btnDebugLog" class="secondary" title="查看服务端调试日志（SMU 命令、核心拓扑映射）">日志</button>
       <button id="btnRefresh" class="secondary">Refresh</button>
+    </div>
+
+    <div id="debugLogPanel" style="display:none;">
+      <div style="display:flex;gap:6px;align-items:center;margin:6px 0 4px;">
+        <span class="hint" id="debugLogPath" style="color:var(--text-dim);font-size:11px;"></span>
+        <span class="spacer" style="flex:1;"></span>
+        <button id="btnLogReload" class="secondary" style="padding:2px 10px;">刷新</button>
+        <button id="btnLogCopy" class="secondary" style="padding:2px 10px;">复制</button>
+      </div>
+      <pre id="debugLogPre" style="margin:0;padding:10px;border:1px solid var(--surface-overlay);border-radius:8px;background:rgba(0,0,0,0.25);font-family:Consolas,monospace;font-size:11px;line-height:1.5;max-height:260px;overflow:auto;white-space:pre-wrap;word-break:break-all;">…</pre>
     </div>
 
     <div class="ccd-wrap" id="ccdWrap">
@@ -610,7 +621,7 @@
       try {
         const layout = await rpc('smu_get_core_layout');
         const list = Array.isArray(layout) ? layout : [];
-        STATE.cores = list.map(x => ({ core: x.core, ccd: x.ccd, ccx: x.ccx, l3_kb: x.l3_kb || 0 }));
+        STATE.cores = list.map(x => ({ core: x.core, ccd: x.ccd, ccx: x.ccx, physical_core: x.physical_core ?? (x.core % 8), l3_kb: x.l3_kb || 0 }));
         STATE.topologyKnown = STATE.cores.length > 0;
         if (STATE.topologyKnown) {
           log(`[+] 检测到 ${STATE.cores.length} 个物理核心 / ${countCcds()} 个 CCD`);
@@ -645,7 +656,7 @@
       const physical = Math.max(1, Math.floor(hc / 2));
       STATE.cores = [];
       for (let i = 0; i < physical; i++) {
-        STATE.cores.push({ core: i, ccd: Math.floor(i / 8), ccx: Math.floor(i / 8), l3_kb: 0 });
+        STATE.cores.push({ core: i, ccd: Math.floor(i / 8), ccx: Math.floor(i / 8), physical_core: i % 8, l3_kb: 0 });
       }
       STATE.topologyKnown = false;
       log(`[!] 拓扑不可用，已按 SMT-2 推算 ${physical} 个物理核心（CCD 分组仅供参考，写入已禁用）`);
@@ -799,7 +810,7 @@
           const row = document.createElement('div');
           row.className = 'core-row';
           row.innerHTML = `
-            <span class="core-name">C${c.core}</span>
+            <span class="core-name" title="OS 核心 ${c.core} · CCD ${c.ccd} 物理槽位 ${c.physical_core}">C${c.core}</span>
             <input type="number" data-core="${c.core}" value="0"
                    min="${CO_MIN}" max="${CO_MAX}" step="1" ${STATE.canWrite ? '' : 'disabled'} />
             <span class="core-v" data-vcore="${c.core}" title="该核心实时电压（来自 SMU PM 表）">—</span>`;
@@ -915,7 +926,7 @@
       }
       for (const c of STATE.cores) {
         try {
-          const v = await rpc('smu_get_co_single_core', { core: c.core, ccd: c.ccd, ccx: c.ccx });
+          const v = await rpc('smu_get_co_single_core', { core: c.core, ccd: c.ccd, ccx: c.ccx, physical_core: c.physical_core });
           const n = Number(v);
           STATE.values[c.core] = Number.isFinite(n) ? Math.max(CO_MIN, Math.min(CO_MAX, n)) : 0;
           ok++;
@@ -1136,7 +1147,7 @@
             // with "core missing", which silently disabled both read-back and
             // Apply.
             const status = await rpc('smu_set_co_single_core',
-              { core: c.core, ccd: c.ccd, ccx: c.ccx, margin });
+              { core: c.core, ccd: c.ccd, ccx: c.ccx, physical_core: c.physical_core, margin });
             if (Number(status) === 1) ok++;
             else { fail++; log(`[-] Core ${c.core} (CCD${c.ccd}) 返回 status 0x${Number(status).toString(16)}`); }
           } catch (e) {
@@ -1229,6 +1240,31 @@
       } catch (e) {
         log('[-] Scalar 失败: ' + e);
       }
+    });
+
+    // ---- 服务端调试日志 ----
+    const debugLogPanel = document.getElementById('debugLogPanel');
+    async function loadDebugLog() {
+      try {
+        const d = await rpc('debug_log');
+        document.getElementById('debugLogPath').textContent =
+          `${d.path || ''}（共 ${d.total ?? '?'} 行，显示末尾）`;
+        document.getElementById('debugLogPre').textContent =
+          (d.lines && d.lines.length ? d.lines.join('\n') : '(空)').trimEnd() + '\n';
+      } catch (e) {
+        document.getElementById('debugLogPre').textContent = '读取失败: ' + e;
+      }
+    }
+    document.getElementById('btnDebugLog').addEventListener('click', () => {
+      const show = debugLogPanel.style.display === 'none';
+      debugLogPanel.style.display = show ? 'block' : 'none';
+      if (show) loadDebugLog();
+    });
+    document.getElementById('btnLogReload').addEventListener('click', loadDebugLog);
+    document.getElementById('btnLogCopy').addEventListener('click', async () => {
+      const text = document.getElementById('debugLogPre').textContent;
+      try { await navigator.clipboard.writeText(text); log('[+] 调试日志已复制到剪贴板'); }
+      catch (_) { log('[-] 复制失败，请手动选择文本复制'); }
     });
 
     // ---- 服务端口 (custom listening port) ----

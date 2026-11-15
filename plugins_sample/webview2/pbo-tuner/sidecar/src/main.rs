@@ -20,7 +20,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU16, Ordering};
 
-const VERSION: &str = "1.1.0";
+const VERSION: &str = "1.4.0";
 const DEFAULT_PORT: u16 = 18955;
 
 /// Port this instance is actually listening on; reported by /api/health and
@@ -175,6 +175,12 @@ fn route(method: &str, path: &str, body: &[u8]) -> Result<Value, String> {
             "cpu": smu::cpu_name(),
         }));
     }
+    // Debug aid: the tail of the service log, so a bad CO read/write can be
+    // diagnosed straight from the page without hunting for the log file.
+    // Accepts any method — the page's rpc() helper always POSTs.
+    if path == "/api/debug_log" {
+        return Ok(debug_log_tail());
+    }
     if method != "POST" {
         return Err(format!("unsupported {method} {path}"));
     }
@@ -197,16 +203,16 @@ fn route(method: &str, path: &str, body: &[u8]) -> Result<Value, String> {
             Ok(smu::pmtable_live(dump)?)
         }
         "/api/smu_get_co_single_core" => {
-            let (core, ccd, ccx) = placement(&req)?;
-            Ok(json!(smu::get_co_single_core(core, ccd, ccx)?))
+            let (core, ccd, ccx, phys) = placement(&req)?;
+            Ok(json!(smu::get_co_single_core(core, ccd, ccx, phys)?))
         }
         "/api/smu_set_co_single_core" => {
-            let (core, ccd, ccx) = placement(&req)?;
+            let (core, ccd, ccx, phys) = placement(&req)?;
             let margin = params(&req)
                 .get("margin")
                 .and_then(|v| v.as_i64())
                 .ok_or("margin missing")? as i32;
-            Ok(json!(smu::set_co_single_core(core, ccd, ccx, margin)?))
+            Ok(json!(smu::set_co_single_core(core, ccd, ccx, phys, margin)?))
         }
         "/api/smu_set_co_all_cores" => {
             let margin = req
@@ -257,8 +263,10 @@ fn params(req: &Value) -> &Value {
     }
 }
 
-/// `{core, ccd, ccx}` — the page always sends all three.
-fn placement(req: &Value) -> Result<(u32, u32, u32), String> {
+/// `{core, ccd, ccx}` — the page always sends all three. `physical_core` is
+/// optional: the SMU core slot inside the CCD, which on multi-CCD parts with
+/// fused-off cores differs from `core % 8` (the legacy assumption).
+fn placement(req: &Value) -> Result<(u32, u32, u32, u32), String> {
     let p = params(req);
     let get = |k: &str| -> Result<u32, String> {
         p.get(k)
@@ -266,7 +274,26 @@ fn placement(req: &Value) -> Result<(u32, u32, u32), String> {
             .map(|v| v as u32)
             .ok_or_else(|| format!("{k} missing"))
     };
-    Ok((get("core")?, get("ccd")?, get("ccx")?))
+    let core = get("core")?;
+    let phys = p
+        .get("physical_core")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32)
+        .unwrap_or(core % 8);
+    Ok((core, get("ccd")?, get("ccx")?, phys))
+}
+
+/// Last ~300 lines of the service log for the page's debug panel.
+fn debug_log_tail() -> Value {
+    let path = config_dir().join("pbo_service.log");
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines.len().saturating_sub(300);
+    json!({
+        "path": path.display().to_string(),
+        "total": lines.len(),
+        "lines": lines[start..],
+    })
 }
 
 fn write_response(stream: &mut TcpStream, code: u16, body: &str) -> std::io::Result<()> {
@@ -666,7 +693,7 @@ fn auto_apply_profile() -> Result<String, String> {
         let Some(margin) = co.get(&core.core.to_string()).and_then(|v| v.as_i64()) else {
             continue;
         };
-        match smu::set_co_single_core(core.core, core.ccd, core.ccx, margin as i32) {
+        match smu::set_co_single_core(core.core, core.ccd, core.ccx, core.physical_core, margin as i32) {
             Ok(_) => applied += 1,
             Err(_) => failed += 1,
         }
@@ -688,7 +715,7 @@ fn auto_apply_profile() -> Result<String, String> {
 
 // ---- Logging ----
 
-fn log(msg: &str) {
+pub(crate) fn log(msg: &str) {
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
