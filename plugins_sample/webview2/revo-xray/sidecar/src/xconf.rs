@@ -323,6 +323,7 @@ pub fn build_config(
     rules: &[Rule],
     dns: &DnsCfg,
     routing_strategy: &str,
+    tun: bool,
 ) -> Result<String, String> {
     let mut outbound = node_outbound(node)?;
     // Drop rules that reference geo dat files we don't have — xray refuses to
@@ -495,6 +496,35 @@ pub fn build_config(
             "rules": rule_list
         }
     });
+    if tun {
+        // Xray-native TUN inbound (proxy/tun + wintun.dll, must sit next to
+        // xray.exe; needs admin rights). Field names verified against
+        // infra/conf/tun.go on the Xray-core tree:
+        // - autoSystemRoutingTable installs the catch-all route via wintun's
+        //   LUID (Metric 0) and auto-sets autoOutboundsInterface="auto",
+        //   which binds the node dialing sockets to the physical adapter
+        //   (IP_UNICAST_IF) — loop protection is built in.
+        // - autoSystemWfpBlockLeak requires autoSystemRoutingTable (Windows
+        //   check in TunConfig.Build) and blocking DNS leaks requires the
+        //   `dns` list on the adapter — both satisfied here.
+        // - "misconfigtun" blackholes traffic that would re-enter the TUN.
+        let tun_in = json!({
+            "tag": "tun-in",
+            "protocol": "tun",
+            "settings": {
+                "name": "revo_tun",
+                "mtu": 9000,
+                "gateway": ["172.19.0.1/30"],
+                "dns": ["223.5.5.5", "119.29.29.29"],
+                "autoSystemRoutingTable": ["0.0.0.0/0"],
+                "autoSystemWfpBlockLeak": ["dns", "misconfigtun"]
+            },
+            "sniffing": { "enabled": true, "destOverride": ["http", "tls", "quic"] }
+        });
+        cfg.as_object_mut().unwrap()
+            .get_mut("inbounds").unwrap().as_array_mut().unwrap()
+            .push(tun_in);
+    }
     if let Some(d) = dns_block {
         cfg.as_object_mut().unwrap().insert("dns".into(), d);
     }

@@ -139,6 +139,8 @@
       <span style="color:#21262d">|</span>
       <span style="font-weight:600;">系统代理</span><div id="sysProxySwitch" class="switch" title="接管/还原 Windows 系统代理（指向 HTTP 入口）"></div>
       <span style="color:#21262d">|</span>
+      <span style="font-weight:600;">TUN</span><div id="tunSwitch" class="switch" title="TUN 模式：虚拟网卡接管全系统流量（需管理员权限，开启/关闭会重启核心）"></div>
+      <span style="color:#21262d">|</span>
       <span id="coreDot" class="dot"></span><span id="coreText">核心未运行</span>
       <span style="color:#21262d">|</span>
       <span id="svcDot" class="dot"></span><span id="svcText">服务检查中</span>
@@ -510,6 +512,7 @@ function applyHealth(j) {
   $('socksPort').textContent = j.socks_port || 10808;
   $('httpPort').textContent = j.http_port || 10809;
   $('sysProxySwitch').classList.toggle('on', !!j.sysproxy?.enabled && !!j.sysproxy?.ours);
+  $('tunSwitch').classList.toggle('on', !!j.tun);
   // core switch = core running only (independent from system proxy)
   $('coreSwitch').classList.toggle('on', running);
   const geo = j.geo_ready || {};
@@ -737,6 +740,23 @@ $('coreSwitch').addEventListener('click', async () => {
   } catch (e) { toast(e.message, true); }
   sw.disabled = false;
   checkHealth();
+});
+
+// TUN switch: virtual-adapter global takeover, requires admin rights.
+// Toggling restarts the core so the tun inbound is added/removed atomically.
+$('tunSwitch').addEventListener('click', async () => {
+  const sw = $('tunSwitch');
+  const on = !sw.classList.contains('on');
+  sw.disabled = true;
+  toast(on ? '正在开启 TUN（重启核心）…' : '正在关闭 TUN（重启核心）…');
+  try {
+    await post('/api/tun', { on });
+    toast(on ? 'TUN 已开启（全系统流量接管）' : 'TUN 已关闭');
+    checkHealth();
+  } catch (e) {
+    toast(e.message + (on ? '（TUN 需管理员权限，且 wintun.dll 需与 xray.exe 同目录）' : ''), true);
+  }
+  sw.disabled = false;
 });
 
 $('sysProxySwitch').addEventListener('click', async () => {

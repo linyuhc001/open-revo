@@ -20,7 +20,7 @@ Xray-only 的轻量代理面板：vless / vmess / trojan / shadowsocks 节点与
 | 订阅 | 添加/删除订阅、手动更新；更新按「proto+地址+端口+凭据+订阅」去重刷新，不重复堆积 |
 | 路由 | 域名解析策略（AsIs / IPIfNonMatch / IPOnDemand）；预定义规则集一键填入（绕过大陆 / 黑名单 / 全局代理，规则取自 v2rayN ServiceLib/Sample 原版模板，含阻断 udp443 / 代理 GFW / DNS 分流规则）；自定义规则列表（出站 代理/直连/拦截 × 域名/IP/端口/网络条件，支持 geosite:/domain:/纯域名、geoip:/CIDR），增删改、上下移；自动追加最终兜底规则（未命中走代理，IPIfNonMatch 下按 0.0.0.0/0 匹配，同 v2rayN）；空列表回落到默认 CN 直连规则集；缺 geo 文件时 geo 规则自动跳过 |
 | DNS | 基础设置（对齐 v2rayN DNS 基础设置页）：直连 DNS / 远程 DNS / Bootstrap DNS 三个下拉+自定义（选项即 v2rayN Global.cs 内置默认）、启用开关、并行查询 / 过时缓存 / 阻断 AAAA、直连解析策略（freedom sockopt）/ 远程解析策略（targetStrategy）/ 代理拨号解析策略（sockopt）。生成逻辑同 v2rayN FillDnsServers：按路由规则把代理侧域名挂远程 DNS、直连侧域名挂直连 DNS（direct-dns-N 标签 → direct），Bootstrap 限定解析 DoH 域名；兜底 DNS 由最后一条路由规则决定（直连兜底=白名单式，否则远程兜底）。所有解析由 xray 核心完成，插件只生成配置 |
-| 核心 | 头部「代理」「系统代理」两个独立开关（代理 = 启停 Xray 核心；系统代理 = 接管/还原 WinINET，互不绑定）、内核与 Geo 文件下载/更新（支持镜像前缀；**优先走自身代理，失败回落直连**；文件被运行中内核占用时自动「临时停核 → 替换 → 恢复运行」，仍被锁则改名 `.old` 兜底、下次启动清理）、启动/停止/重启；本机入口显示 |
+| 核心 | 头部「代理」「系统代理」「TUN」三个独立开关（代理 = 启停 Xray 核心；系统代理 = 接管/还原 WinINET；TUN = 虚拟网卡全系统接管，互不绑定）、内核与 Geo 文件下载/更新（支持镜像前缀；**优先走自身代理，失败回落直连**；文件被运行中内核占用时自动「临时停核 → 替换 → 恢复运行」，仍被锁则改名 `.old` 兜底、下次启动清理）、启动/停止/重启；本机入口显示 |
 | 设置 | 入站端口自定义（1024–65535，保存前真实绑定探测 + TCP 表占用进程定位，同进程管理插件），还原默认；服务端口自定义（独立卡片，默认 18957，检测/应用，应用后伴随服务在新端口重启、代理核心自动恢复、manifest 同步更新） |
 | 日志 | 服务日志（环形缓冲 + 落盘 `data/service.log`） |
 
@@ -28,7 +28,7 @@ Xray-only 的轻量代理面板：vless / vmess / trojan / shadowsocks 节点与
 
 服务按所选节点生成 xray 客户端配置：
 
-- 入站：socks（UDP 开启 + sniffing）与 http 两个本地入口
+- 入站：socks（UDP 开启 + sniffing）与 http 两个本地入口；TUN 开启时额外挂载 Xray 原生 `tun` 入站（见下节）
 - 出站：所选节点 + `direct`（freedom）+ `block`（blackhole）
 - 路由：默认 `geosite:private/cn`、`geoip:private/cn` → direct，其余走代理（geoip/geosite.dat 随内核 zip 提供）
 - 传输层支持：tcp（含 http 伪装）、ws、grpc、h2、httpupgrade、xhttp、kcp；安全层支持 tls / reality（vless flow 透传）
@@ -37,7 +37,17 @@ Xray-only 的轻量代理面板：vless / vmess / trojan / shadowsocks 节点与
 
 ## 系统代理
 
-「系统代理」开关写 WinINET 每用户注册表（`ProxyEnable/ProxyServer/ProxyOverride`），指向本地 HTTP 入口，并通过 `InternetSetOption` 广播刷新；不写 PAC，不需要管理员权限。开启状态会在页眉实时显示。
+「系统代理」开关写 WinINET 每用户注册表（`ProxyEnable/ProxyServer/ProxyOverride`），指向本地 HTTP 入口，并通过 `InternetSetOption` 广播刷新；不写 PAC，不需要管理员权限。开启状态会在页眉实时显示。**默认关闭**：伴随服务每次启动时，若注册表仍指向本插件的 HTTP 入口（上次会话遗留），自动还原关闭；用户自己设置的系统代理不会被触碰。
+
+## TUN 模式
+
+页眉「TUN」开关启用 **Xray 原生 TUN 入站**（`proxy/tun` 模块 + 内核 zip 自带的 wintun.dll），创建虚拟网卡接管全系统流量（含不认系统代理的程序与 UDP），类似 v2rayN 的 Tun 模式：
+
+- 切换开关会自动重启核心，使 tun 入站原子地加入/移出配置；状态持久化，核心因改配置重启时保持
+- 防环由 xray 内部处理：`autoSystemRoutingTable` 添加全局路由时自动置 `autoOutboundsInterface: "auto"`，节点连接强制绑定物理网卡
+- `autoSystemWfpBlockLeak`（dns + misconfigtun）经 WFP 堵住 DNS 从物理口漏出与回环流量
+- **需要管理员权限**（创建 wintun 适配器）；权限不足时核心启动失败，日志会给出 xray 报错尾部
+- MTU 9000、网关 172.19.0.1/30、网卡名 revo_tun
 
 ## 内核进程托管
 
@@ -74,6 +84,7 @@ POST /api/routing/set         {rules[{outbound, domain, ip}], strategy?}   strat
 POST /api/dns/set             {enabled, direct_dns?, remote_dns?, bootstrap_dns?, query_strategy?}
 GET  /api/log                 {log}
 POST /api/sysproxy            {on}
+POST /api/tun                 {on}                     切换 TUN 入站并持久化；核心运行中则自动重启
 GET  /api/sysproxy            {enabled, ours}
 ```
 
@@ -112,7 +123,7 @@ crate 自带独立 `[workspace]`，本目录 `cargo build` 不会触碰宿主依
 
 ## 已知边界（v0.9）
 
-- 仅 Xray 内核：不支持 sing-box/mihomo 系协议（hy2/tuic 等）、无 TUN 模式（xray 本身不做 TUN）
+- 仅 Xray 内核：不支持 sing-box/mihomo 系协议（hy2/tuic 等）；TUN 使用 Xray 原生 `proxy/tun` 实现（非 sing-box），仅 Windows（wintun）且需管理员权限
 - 订阅格式：base64 与明文链接列表；Clash YAML 订阅会报"解析出 0 个节点"
 - ss 节点忽略 plugin 参数（obfs 系不支持）；IPv6 字面量地址未做括号归一
 - 核心启动失败时以日志尾部提示，暂不做自动回滚

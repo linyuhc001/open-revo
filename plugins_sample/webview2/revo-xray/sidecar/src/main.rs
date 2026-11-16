@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-const VERSION: &str = "0.9.5";
+const VERSION: &str = "0.9.6";
 const LOG_RING: usize = 400;
 /// service.log rotates to service.log.old when it grows past this (1 MB).
 const LOG_FILE_MAX: u64 = 1024 * 1024;
@@ -55,6 +55,10 @@ struct Persist {
     /// doesn't leave the browser pointed at a dead local proxy.
     #[serde(default)]
     resume_core: bool,
+    /// TUN inbound (Xray-native `tun` protocol + wintun.dll). Persisted so a
+    /// core restart (settings save, node switch) keeps the TUN inbound.
+    #[serde(default)]
+    tun_on: bool,
 }
 
 fn default_socks() -> u16 { 10808 }
@@ -309,7 +313,8 @@ fn core_start(st: &State) -> Result<Value, String> {
     let rules = p.routing.clone();
     let dns = p.dns.clone();
     let strategy = p.routing_strategy.clone();
-    let cfg = xconf::build_config(&node, &ports, geoip_ok, geosite_ok, &rules, &dns, &strategy)?;
+    let tun = p.tun_on;
+    let cfg = xconf::build_config(&node, &ports, geoip_ok, geosite_ok, &rules, &dns, &strategy, tun)?;
     let cfg_path = st.data_dir.join("config.json");
     std::fs::write(&cfg_path, &cfg).map_err(|e| format!("写配置失败: {e}"))?;
 
@@ -1136,6 +1141,26 @@ fn h_sysproxy(st: &State, v: &Value) -> Result<Value, String> {
     Ok(json!({ "ok": true, "on": on }))
 }
 
+/// TUN switch: toggling persists `tun_on` and restarts the core if it is
+/// running, so the `tun` inbound is added/removed atomically with the rest of
+/// the config. Requires admin rights (wintun adapter creation); the usual
+/// startup-failure path surfaces the xray log tail when that's missing.
+fn h_tun(st: &State, v: &Value) -> Result<Value, String> {
+    let on = v.get("on").and_then(|x| x.as_bool()).ok_or("缺少 on")?;
+    let was_running = st.core_running();
+    {
+        let mut p = st.data.lock().unwrap_or_else(|e| e.into_inner());
+        p.tun_on = on;
+        st.persist(&p);
+    }
+    st.log(&format!("TUN {}", if on { "开启（下次核心启动挂载 tun 入站）" } else { "关闭" }));
+    if was_running {
+        core_start(st)?;
+        st.log("核心已按 TUN 状态重启");
+    }
+    Ok(json!({ "ok": true, "tun": on, "restarted": was_running }))
+}
+
 /// `xray.exe version` with an mtime-keyed cache — never spawn a child on
 /// every health poll. Must be called WITHOUT the data lock held.
 fn xray_version_cached(st: &State) -> String {
@@ -1164,10 +1189,10 @@ fn h_health(st: &State) -> Value {
     // Snapshot under the data lock only — registry reads, child-process
     // spawns and everything blocking happen AFTER the lock is released. A
     // health poll must never be able to wedge the data lock.
-    let (selected, node_count, http_port, socks_port, running) = {
+    let (selected, node_count, http_port, socks_port, running, tun_on) = {
         let p = st.data.lock().unwrap_or_else(|e| e.into_inner());
         let running = st.core_running();
-        (p.selected.clone(), p.nodes.len(), p.http_port, p.socks_port, running)
+        (p.selected.clone(), p.nodes.len(), p.http_port, p.socks_port, running, p.tun_on)
     };
     let (sp_enabled, sp_ours) = winapi::system_proxy_state(http_port);
     let xray_version = xray_version_cached(st);
@@ -1186,6 +1211,7 @@ fn h_health(st: &State) -> Value {
         "selected": selected,
         "nodes": node_count,
         "sysproxy": { "enabled": sp_enabled, "ours": sp_ours },
+        "tun": tun_on,
         "socks_port": socks_port,
         "http_port": http_port,
     })
@@ -1234,6 +1260,7 @@ fn route(st: &Arc<State>, method: &str, path: &str, body: &[u8]) -> Result<Value
             Ok(json!({ "log": ring.iter().cloned().collect::<Vec<_>>().join("\n") }))
         }
         ("POST", "/api/sysproxy") => h_sysproxy(st, &v),
+        ("POST", "/api/tun") => h_tun(st, &v),
         ("GET", "/api/sysproxy") => {
             let p = st.data.lock().unwrap_or_else(|e| e.into_inner());
             let (enabled, ours) = winapi::system_proxy_state(p.http_port);
@@ -1327,6 +1354,20 @@ fn main() {
 
     // sweep leftover `.old` backups from previous locked-file updates
     cleanup_old_files(&st);
+
+    // System proxy defaults to OFF on every service start: if the registry
+    // still points at our HTTP port from a previous session, restore it. A
+    // proxy the user set themselves (not ours) is left untouched.
+    {
+        let http = st.data.lock().unwrap_or_else(|e| e.into_inner()).http_port;
+        let (enabled, ours) = winapi::system_proxy_state(http);
+        if enabled && ours {
+            match winapi::set_system_proxy(false, http) {
+                Ok(()) => st.log("服务启动：系统代理恢复默认关闭"),
+                Err(e) => st.log(&format!("服务启动：系统代理还原失败: {e}")),
+            }
+        }
+    }
 
     // xray crash watcher: keep the state honest if the core dies on its own.
     {
