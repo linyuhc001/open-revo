@@ -1,0 +1,50 @@
+name: Build Xray Service
+
+# Compiles the xray-tuner companion service into a standalone .exe and
+# publishes it as an artifact. Same pattern as process-service.yml / pbo-sidecar.yml:
+# the sidecar crate lives inside the plugin folder and never builds the host.
+
+on:
+  workflow_dispatch:
+  push:
+    # Only source inputs rebuild. The built xray-service.exe also lives
+    # under sidecar/, and matching it here would make every artifact commit
+    # trigger another build.
+    paths:
+      - 'plugins_sample/webview2/xray-tuner/sidecar/src/**'
+      - 'plugins_sample/webview2/xray-tuner/sidecar/Cargo.toml'
+      - 'plugins_sample/webview2/xray-tuner/sidecar/Cargo.lock'
+      - '.github/workflows/xray-sidecar.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: xray-service-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: plugins_sample/webview2/xray-tuner/sidecar
+
+      - name: Build release
+        working-directory: plugins_sample/webview2/xray-tuner/sidecar
+        run: cargo build --release
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xray-service
+          path: plugins_sample/webview2/xray-tuner/sidecar/target/release/xray-service.exe
+          if-no-files-found: error

@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Xray 代理调校</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface-card: #1a212b;
+    --border-subtle: #2a313c;
+    --text-primary: #e6edf3;
+    --text-dim: #7d8590;
+    --accent: #58a6ff;
+    --status-ok: #3fb950;
+    --status-warn: #d29922;
+    --status-err: #f85149;
+    --radius-md: 10px;
+    --radius-sm: 6px;
+    --mono: ui-monospace, SFMono-Regular, Consolas, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text-primary);
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-size: 13px;
+    padding: 14px 16px;
+    overflow-y: auto;
+  }
+  .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .header h1 { font-size: 16px; font-weight: 600; letter-spacing: 0.5px; }
+  .svc { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--text-dim); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--status-err); flex: none; }
+  .dot.ok { background: var(--status-ok); box-shadow: 0 0 6px var(--status-ok); }
+  .dot.warn { background: var(--status-warn); }
+  .nav { display: flex; gap: 6px; margin-bottom: 14px; }
+  .nav button {
+    background: var(--surface); border: 1px solid var(--border-subtle); color: var(--text-dim);
+    font: inherit; font-size: 13px; padding: 7px 18px; cursor: pointer;
+    border-radius: 8px; transition: background 0.15s, color 0.15s, border-color 0.15s;
+  }
+  .nav button:hover { color: var(--text-primary); border-color: #3d4653; background: #1c232e; }
+  .nav button.active {
+    background: #1f6feb33; border-color: #388bfd66; color: var(--accent);
+    font-weight: 600; box-shadow: inset 0 0 0 1px #388bfd22;
+  }
+  .page { display: none; }
+  .page.active { display: block; }
+  .card {
+    background: var(--surface-card); border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md); padding: 12px 14px; margin-bottom: 12px;
+  }
+  .card h2 { font-size: 13px; font-weight: 600; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+  .card h2 .hint { font-weight: 400; font-size: 11px; color: var(--text-dim); }
+  .tag {
+    font-size: 10px; padding: 2px 8px; border-radius: 10px;
+    background: #1f6feb33; color: var(--accent); border: 1px solid #388bfd44;
+  }
+  .tag.ok { background: #23863633; color: var(--status-ok); border-color: #3fb95044; }
+  .tag.warn { background: #bb800933; color: var(--status-warn); border-color: #d2992244; }
+  .btn {
+    background: var(--surface); border: 1px solid var(--border-subtle); color: var(--text-primary);
+    border-radius: var(--radius-sm); padding: 5px 10px; font: inherit; font-size: 12px; cursor: pointer;
+    user-select: none;
+  }
+  .btn:hover { border-color: var(--accent); }
+  .btn:active { transform: translateY(1px); }
+  .btn.primary { background: #1f6feb33; border-color: #388bfd66; }
+  .btn.danger { color: var(--status-err); border-color: #f8514955; }
+  .btn.danger:hover { background: #f8514922; }
+  .btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+  input[type="text"], textarea {
+    background: var(--surface); border: 1px solid var(--border-subtle); color: var(--text-primary);
+    border-radius: var(--radius-sm); padding: 6px 10px; font: inherit; font-size: 12px; outline: none;
+  }
+  input[type="text"]:focus, textarea:focus { border-color: var(--accent); }
+  textarea { width: 100%; font-family: var(--mono); resize: vertical; min-height: 70px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { padding: 6px 8px; text-align: left; border-bottom: 1px solid #21262d; white-space: nowrap; }
+  th { color: var(--text-dim); font-weight: 500; font-size: 11px; position: sticky; top: 0; background: var(--surface-card); }
+  td.wrap { white-space: normal; word-break: break-all; }
+  tr.node-row { cursor: pointer; }
+  tr.node-row:hover { background: #1c232e; }
+  tr.node-row.selected { background: #1f6feb26; }
+  tr.node-row.selected td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
+  .lat-ok { color: var(--status-ok); }
+  .lat-mid { color: var(--status-warn); }
+  .lat-bad { color: var(--status-err); }
+  .lat-dim { color: var(--text-dim); }
+  .log {
+    background: #0a0d12; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
+    font-family: var(--mono); font-size: 11px; padding: 10px; height: 320px; overflow-y: auto;
+    white-space: pre-wrap; word-break: break-all; color: #8b949e;
+  }
+  .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .empty { color: var(--text-dim); text-align: center; padding: 24px 0; font-size: 12px; }
+  .toast {
+    position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%) translateY(20px);
+    background: #1c232e; border: 1px solid var(--border-subtle); color: var(--text-primary);
+    padding: 8px 16px; border-radius: 8px; font-size: 12px; opacity: 0; pointer-events: none;
+    transition: opacity 0.2s, transform 0.2s; max-width: 70%;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .toast.err { border-color: #f8514966; color: #ffb3ad; }
+  .switch { position: relative; width: 40px; height: 20px; background: #21262d; border-radius: 10px; cursor: pointer; border: 1px solid var(--border-subtle); transition: background .15s; flex: none; }
+  .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--text-dim); transition: all .15s; }
+  .switch.on { background: #1f6feb55; border-color: #388bfd66; }
+  .switch.on::after { left: 22px; background: var(--accent); }
+</style>
+</head>
+<body>
+  <div class="header">
+    <h1>Xray 代理调校</h1>
+    <div class="svc">
+      <span id="coreDot" class="dot"></span><span id="coreText">核心未运行</span>
+      <span style="color:#21262d">|</span>
+      <span id="svcDot" class="dot"></span><span id="svcText">服务检查中</span>
+      <span style="color:#21262d">|</span>
+      <span>系统代理</span><div id="sysProxySwitch" class="switch"></div>
+    </div>
+  </div>
+
+  <div class="nav" id="nav">
+    <button data-page="nodes" class="active">节点</button>
+    <button data-page="subs">订阅</button>
+    <button data-page="core">核心</button>
+    <button data-page="logs">日志</button>
+  </div>
+
+  <!-- ===== 节点 ===== -->
+  <div class="page active" data-page="nodes">
+    <div class="card">
+      <h2>导入节点
+        <span class="hint">支持 vless:// vmess:// trojan:// ss:// 链接（可多行），或 base64 订阅内容</span>
+      </h2>
+      <textarea id="importText" placeholder="粘贴分享链接或 base64 订阅内容…"></textarea>
+      <div class="row" style="margin-top:8px;">
+        <button class="btn primary" id="btnImport">导入</button>
+        <button class="btn" id="btnClipImport">从剪贴板导入</button>
+        <span class="hint" style="font-size:11px;color:var(--text-dim);" id="importHint"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>节点列表 <span class="tag" id="nodeCount">0</span>
+        <span class="hint">双击行 = 选中并启动 · 当前协议仅 vless / vmess / trojan / ss（xray 内核）</span>
+      </h2>
+      <div class="row" style="margin-bottom:8px;">
+        <button class="btn" id="btnTcpingAll">测全部 tcping</button>
+        <button class="btn" id="btnTestReal">测当前节点真延迟</button>
+        <button class="btn" id="btnRefresh">刷新</button>
+        <button class="btn danger" id="btnClear" style="margin-left:auto;">清空列表</button>
+      </div>
+      <div id="nodeTableWrap" style="max-height: 380px; overflow-y:auto;">
+        <table>
+          <thead><tr><th style="width:34%">名称</th><th>协议</th><th>地址</th><th>tcping</th><th>真延迟</th><th>订阅</th><th style="width:120px">操作</th></tr></thead>
+          <tbody id="nodeBody"></tbody>
+        </table>
+        <div class="empty" id="nodeEmpty">还没有节点，先在上面导入或添加订阅</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 订阅 ===== -->
+  <div class="page" data-page="subs">
+    <div class="card">
+      <h2>添加订阅 <span class="hint">支持 base64 / 明文链接列表的订阅地址</span></h2>
+      <div class="row">
+        <input type="text" id="subName" placeholder="名称（可选）" style="width:160px;" />
+        <input type="text" id="subUrl" placeholder="https://… 订阅地址" style="flex:1;" />
+        <button class="btn primary" id="btnSubAdd">添加</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>订阅列表</h2>
+      <table>
+        <thead><tr><th style="width:22%">名称</th><th class="wrap">地址</th><th>节点数</th><th>上次更新</th><th style="width:140px">操作</th></tr></thead>
+        <tbody id="subBody"></tbody>
+      </table>
+      <div class="empty" id="subEmpty">暂无订阅</div>
+    </div>
+  </div>
+
+  <!-- ===== 核心 ===== -->
+  <div class="page" data-page="core">
+    <div class="card">
+      <h2>Xray 内核 <span class="tag" id="xrayVerTag">未安装</span></h2>
+      <div class="row">
+        <button class="btn primary" id="btnCoreStart">启动核心</button>
+        <button class="btn" id="btnCoreStop">停止</button>
+        <button class="btn" id="btnCoreRestart">重启</button>
+        <span style="flex:1"></span>
+        <button class="btn" id="btnCoreDownload">下载 / 更新内核</button>
+        <input type="text" id="mirrorUrl" placeholder="镜像前缀（可选，如 https://ghproxy.net）" style="width:280px;" />
+      </div>
+      <div class="row" style="margin-top:8px;">
+        <span class="hint" style="font-size:11px;color:var(--text-dim);">
+          内核来自 XTLS/Xray-core 官方 release，解压到插件 data/bin 目录；国内网络建议填镜像前缀
+        </span>
+      </div>
+    </div>
+    <div class="card">
+      <h2>本机入口</h2>
+      <div class="row" style="font-family:var(--mono);font-size:12px;">
+        <span>SOCKS5: <b>127.0.0.1:<span id="socksPort">10808</span></b></span>
+        <span style="color:#21262d">|</span>
+        <span>HTTP: <b>127.0.0.1:<span id="httpPort">10809</span></b></span>
+        <span style="flex:1"></span>
+        <span style="font-size:11px;color:var(--text-dim);">系统代理开关只改 WinINET，指向 HTTP 入口</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 日志 ===== -->
+  <div class="page" data-page="logs">
+    <div class="card">
+      <h2>服务日志 <button class="btn" id="btnLogRefresh" style="margin-left:auto;">刷新</button></h2>
+      <div class="log" id="logBox">（空）</div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+// ==========================================================================
+// API base: manifest service.port is the source of truth, cached here.
+// ==========================================================================
+let apiPort = Number(localStorage.getItem('xr-port')) || 18957;
+let API = 'http://127.0.0.1:' + apiPort;
+function setApiPort(p) {
+  apiPort = p;
+  localStorage.setItem('xr-port', String(p));
+  API = 'http://127.0.0.1:' + p;
+}
+const $ = (id) => document.getElementById(id);
+
+let toastTimer = null;
+function toast(msg, isErr) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.classList.toggle('err', !!isErr);
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 3200);
+}
+
+function fetchTimeout(url, ms, opts) {
+  const c = new AbortController();
+  const t = setTimeout(() => c.abort(), ms);
+  return fetch(url, { ...opts, signal: c.signal }).finally(() => clearTimeout(t));
+}
+
+let serviceOk = false;
+async function checkHealth() {
+  try {
+    const r = await fetchTimeout(API + '/api/health', 3000);
+    const j = await r.json();
+    serviceOk = j.status === 'ok';
+    if (serviceOk && j.port && j.port !== apiPort) setApiPort(j.port);
+    $('svcText').textContent = serviceOk
+      ? `服务在线 v${j.version || ''}`
+      : '服务异常';
+    $('svcDot').classList.toggle('ok', serviceOk);
+    applyHealth(j);
+    return serviceOk;
+  } catch (_) {
+    serviceOk = false;
+    $('svcText').textContent = 'sidecar 未响应';
+    $('svcDot').classList.remove('ok');
+    return false;
+  }
+}
+
+async function api(path, opts) {
+  const r = await fetchTimeout(API + path, 20000, opts);
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.__error || j.error) throw new Error(j.__error || j.error || ('HTTP ' + r.status));
+  return j;
+}
+const post = (path, body) => api(path, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body || {}),
+});
+
+// ---------------- health → header ----------------
+let healthCache = {};
+function applyHealth(j) {
+  healthCache = j;
+  const running = !!j.running;
+  $('coreDot').classList.toggle('ok', running);
+  $('coreDot').classList.toggle('warn', !running && j.xray_installed);
+  $('coreText').textContent = running
+    ? `核心运行中 · ${(j.xray_version || 'xray').split(' ')[0]}`
+    : (j.xray_installed ? '核心已停止' : '核心未安装');
+  $('xrayVerTag').textContent = j.xray_installed ? (j.xray_version || '已安装') : '未安装';
+  $('xrayVerTag').className = 'tag ' + (j.xray_installed ? 'ok' : 'warn');
+  $('socksPort').textContent = j.socks_port || 10808;
+  $('httpPort').textContent = j.http_port || 10809;
+  $('sysProxySwitch').classList.toggle('on', !!j.sysproxy?.ours);
+}
+
+// ---------------- nodes ----------------
+let nodes = [];
+let selectedId = '';
+
+function latCell(ms, kind) {
+  if (!ms) return '<span class="lat-dim">—</span>';
+  const cls = ms < 200 ? 'lat-ok' : ms < 800 ? 'lat-mid' : 'lat-bad';
+  return `<span class="${cls}">${ms}${kind || ''}</span>`;
+}
+
+function renderNodes() {
+  const body = $('nodeBody');
+  $('nodeCount').textContent = nodes.length;
+  $('nodeEmpty').style.display = nodes.length ? 'none' : 'block';
+  body.innerHTML = nodes.map((n) => `
+    <tr class="node-row${n.id === selectedId ? ' selected' : ''}" data-id="${n.id}">
+      <td class="wrap">${esc(n.name || '(未命名)')}</td>
+      <td>${esc(n.proto.toUpperCase())}</td>
+      <td class="wrap">${esc(n.add)}:${n.port}</td>
+      <td>${latCell(n.tcping_ms)}</td>
+      <td>${latCell(n.real_ms)}</td>
+      <td>${n.sub_id ? '<span class="tag">订阅</span>' : '<span class="lat-dim">手动</span>'}</td>
+      <td>
+        <button class="btn" data-act="ping" data-id="${n.id}">测</button>
+        <button class="btn" data-act="share" data-id="${n.id}">链</button>
+        <button class="btn danger" data-act="del" data-id="${n.id}">删</button>
+      </td>
+    </tr>`).join('');
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+async function getNodes() {
+  if (!(await checkHealth())) return;
+  const j = await api('/api/nodes');
+  nodes = j.nodes || [];
+  selectedId = j.selected || '';
+  renderNodes();
+}
+
+$('nodeBody').addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('button[data-act]');
+  const tr = ev.target.closest('tr.node-row');
+  if (btn) {
+    const id = btn.dataset.id;
+    try {
+      if (btn.dataset.act === 'ping') {
+        toast('tcping 中…');
+        const j = await post('/api/test/tcping', { id });
+        toast(`tcping：${j.results[id] ?? '超时'} ms`, !j.results?.[id]);
+        getNodes();
+      } else if (btn.dataset.act === 'share') {
+        const j = await post('/api/nodes/share', { id });
+        await navigator.clipboard.writeText(j.link || '');
+        toast('分享链接已复制到剪贴板');
+      } else if (btn.dataset.act === 'del') {
+        await post('/api/nodes/delete', { id });
+        toast('已删除');
+        getNodes();
+      }
+    } catch (e) { toast(e.message, true); }
+    return;
+  }
+  if (tr) {
+    // click row = select; double-click handled below
+    try {
+      await post('/api/nodes/select', { id: tr.dataset.id });
+      selectedId = tr.dataset.id;
+      renderNodes();
+    } catch (e) { toast(e.message, true); }
+  }
+});
+$('nodeBody').addEventListener('dblclick', async (ev) => {
+  const tr = ev.target.closest('tr.node-row');
+  if (!tr) return;
+  try {
+    await post('/api/nodes/select', { id: tr.dataset.id });
+    selectedId = tr.dataset.id;
+    renderNodes();
+    if (!healthCache.running) await post('/api/core/start');
+    toast('已选中并启动核心');
+    checkHealth();
+  } catch (e) { toast(e.message, true); }
+});
+
+$('btnImport').addEventListener('click', async () => {
+  const text = $('importText').value.trim();
+  if (!text) return toast('先粘贴链接或订阅内容', true);
+  try {
+    const j = await post('/api/nodes/import', { text });
+    $('importText').value = '';
+    const errs = (j.errors || []).length;
+    toast(`导入完成：新增 ${j.added}，共 ${j.total}${errs ? `，${errs} 条无法识别` : ''}`, false);
+    getNodes();
+  } catch (e) { toast(e.message, true); }
+});
+$('btnClipImport').addEventListener('click', async () => {
+  try {
+    $('importText').value = (await navigator.clipboard.readText()) || '';
+    $('btnImport').click();
+  } catch (e) { toast('读取剪贴板失败：' + e.message, true); }
+});
+$('btnTcpingAll').addEventListener('click', async () => {
+  toast('批量 tcping 中…');
+  try { await post('/api/test/tcping', {}); toast('tcping 完成'); getNodes(); }
+  catch (e) { toast(e.message, true); }
+});
+$('btnTestReal').addEventListener('click', async () => {
+  toast('真延迟探测中…（走当前节点的完整链路）');
+  try { const j = await post('/api/test/real', {}); toast(`真延迟：${j.ms} ms`); getNodes(); }
+  catch (e) { toast(e.message, true); }
+});
+$('btnRefresh').addEventListener('click', () => getNodes());
+$('btnClear').addEventListener('click', async () => {
+  if (!confirm('确定清空全部节点？')) return;
+  try { await post('/api/nodes/clear'); getNodes(); } catch (e) { toast(e.message, true); }
+});
+
+// ---------------- subs ----------------
+function renderSubs(subs) {
+  $('subEmpty').style.display = subs.length ? 'none' : 'block';
+  $('subBody').innerHTML = subs.map((s) => `
+    <tr>
+      <td>${esc(s.name)}</td>
+      <td class="wrap" style="font-family:var(--mono);font-size:11px;">${esc(s.url)}</td>
+      <td>${s.count || 0}</td>
+      <td>${esc(s.last_update || '—')}</td>
+      <td>
+        <button class="btn" data-act="sub-upd" data-id="${s.id}">更新</button>
+        <button class="btn danger" data-act="sub-del" data-id="${s.id}">删除</button>
+      </td>
+    </tr>`).join('');
+}
+
+async function getSubs() {
+  const j = await api('/api/subs');
+  renderSubs(j.subs || []);
+}
+
+$('subBody').addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('button[data-act]');
+  if (!btn) return;
+  const id = btn.dataset.id;
+  try {
+    if (btn.dataset.act === 'sub-upd') {
+      toast('拉取订阅中…');
+      const j = await post('/api/subs/update', { id });
+      toast(`订阅更新：${j.count} 个节点`);
+      getSubs(); getNodes();
+    } else if (btn.dataset.act === 'sub-del') {
+      await post('/api/subs/delete', { id });
+      toast('订阅与其节点已删除');
+      getSubs(); getNodes();
+    }
+  } catch (e) { toast(e.message, true); }
+});
+
+$('btnSubAdd').addEventListener('click', async () => {
+  const url = $('subUrl').value.trim();
+  if (!url) return toast('先填订阅地址', true);
+  try {
+    await post('/api/subs/add', { url, name: $('subName').value.trim() });
+    $('subUrl').value = ''; $('subName').value = '';
+    toast('订阅已添加，点「更新」拉取节点');
+    getSubs();
+  } catch (e) { toast(e.message, true); }
+});
+
+// ---------------- core ----------------
+$('btnCoreStart').addEventListener('click', async () => {
+  try { const j = await post('/api/core/start'); toast(`核心已启动 · ${j.node || ''}`); checkHealth(); }
+  catch (e) { toast(e.message, true); }
+});
+$('btnCoreStop').addEventListener('click', async () => {
+  try { await post('/api/core/stop'); toast('核心已停止'); checkHealth(); }
+  catch (e) { toast(e.message, true); }
+});
+$('btnCoreRestart').addEventListener('click', async () => {
+  try { await post('/api/core/restart'); toast('核心已重启'); checkHealth(); }
+  catch (e) { toast(e.message, true); }
+});
+$('btnCoreDownload').addEventListener('click', async () => {
+  const btn = $('btnCoreDownload');
+  btn.disabled = true;
+  toast('下载内核中…（约 16MB，最多等 2 分钟）');
+  try {
+    const j = await post('/api/core/download', { mirror: $('mirrorUrl').value.trim() });
+    toast(`内核就绪：${j.version}`);
+  } catch (e) { toast(e.message, true); }
+  btn.disabled = false;
+  checkHealth();
+});
+
+$('sysProxySwitch').addEventListener('click', async () => {
+  const on = !$('sysProxySwitch').classList.contains('on');
+  try {
+    await post('/api/sysproxy', { on });
+    toast(on ? '系统代理已开启（指向 HTTP 入口）' : '系统代理已关闭');
+    checkHealth();
+  } catch (e) { toast(e.message, true); }
+});
+
+// ---------------- logs ----------------
+async function refreshLog() {
+  try {
+    const j = await api('/api/log');
+    const box = $('logBox');
+    box.textContent = j.log || '（空）';
+    box.scrollTop = box.scrollHeight;
+  } catch (e) { /* ignore */ }
+}
+$('btnLogRefresh').addEventListener('click', refreshLog);
+
+// ---------------- nav ----------------
+document.querySelectorAll('#nav button').forEach((b) => {
+  b.addEventListener('click', () => {
+    document.querySelectorAll('#nav button').forEach((x) => x.classList.remove('active'));
+    b.classList.add('active');
+    document.querySelectorAll('.page').forEach((p) => p.classList.toggle('active', p.dataset.page === b.dataset.page));
+    if (b.dataset.page === 'subs') getSubs().catch((e) => toast(e.message, true));
+    if (b.dataset.page === 'logs') refreshLog();
+    if (b.dataset.page === 'nodes') getNodes();
+  });
+});
+
+// ---------------- boot ----------------
+(async () => {
+  await checkHealth();
+  await getNodes();
+  setInterval(checkHealth, 5000);
+})();
+</script>
+</body>
+</html>
