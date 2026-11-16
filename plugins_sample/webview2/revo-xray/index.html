@@ -128,30 +128,20 @@
   .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--text-dim); transition: all .15s; }
   .switch.on { background: #1f6feb55; border-color: #388bfd66; }
   .switch.on::after { left: 22px; background: var(--accent); }
-  .master {
-    display: inline-flex; align-items: center; gap: 7px;
-    padding: 6px 16px; border-radius: 18px; font-weight: 600;
-    border: 1px solid var(--border-subtle); background: var(--surface);
-    color: var(--text-dim); cursor: pointer; font: inherit; font-size: 13px;
-    transition: all .15s;
-  }
-  .master .mdot { width: 9px; height: 9px; border-radius: 50%; background: var(--status-err); flex: none; }
-  .master:hover { border-color: var(--accent); }
-  .master.on { background: #23863633; border-color: #3fb95066; color: var(--status-ok); }
-  .master.on .mdot { background: var(--status-ok); box-shadow: 0 0 6px var(--status-ok); }
+  .switch:disabled { opacity: 0.5; cursor: wait; }
 </style>
 </head>
 <body>
   <div class="header">
     <h1>Revo Xray</h1>
     <div class="svc">
-      <button id="masterSwitch" class="master" title="一键开启/关闭代理：启动核心 + 接管系统代理"><span class="mdot"></span><span id="masterText">代理 关</span></button>
+      <span style="font-weight:600;">代理</span><div id="coreSwitch" class="switch" title="启动/停止 Xray 核心"></div>
+      <span style="color:#21262d">|</span>
+      <span style="font-weight:600;">系统代理</span><div id="sysProxySwitch" class="switch" title="接管/还原 Windows 系统代理（指向 HTTP 入口）"></div>
       <span style="color:#21262d">|</span>
       <span id="coreDot" class="dot"></span><span id="coreText">核心未运行</span>
       <span style="color:#21262d">|</span>
       <span id="svcDot" class="dot"></span><span id="svcText">服务检查中</span>
-      <span style="color:#21262d">|</span>
-      <span>系统代理</span><div id="sysProxySwitch" class="switch"></div>
     </div>
   </div>
 
@@ -520,10 +510,8 @@ function applyHealth(j) {
   $('socksPort').textContent = j.socks_port || 10808;
   $('httpPort').textContent = j.http_port || 10809;
   $('sysProxySwitch').classList.toggle('on', !!j.sysproxy?.enabled && !!j.sysproxy?.ours);
-  // master switch = core running + system proxy pointing at us
-  const on = !!j.switch;
-  $('masterSwitch').classList.toggle('on', on);
-  $('masterText').textContent = on ? '代理 开' : '代理 关';
+  // core switch = core running only (independent from system proxy)
+  $('coreSwitch').classList.toggle('on', running);
   const geo = j.geo_ready || {};
   const geoOk = geo.geoip && geo.geosite;
   $('geoTag').textContent = geoOk ? 'geo 就绪' : (j.xray_installed ? 'geo 未下载' : 'geo 未下载');
@@ -737,27 +725,31 @@ $('btnGeoDownload').addEventListener('click', async () => {
   checkHealth();
 });
 
-// master switch: on = start core + take over system proxy; off = restore + stop
-$('masterSwitch').addEventListener('click', async () => {
-  const on = !$('masterSwitch').classList.contains('on');
-  const btn = $('masterSwitch');
-  btn.disabled = true;
-  toast(on ? '正在开启代理…（启动核心 + 接管系统代理）' : '正在关闭代理…');
+// core switch: start / stop the Xray core only (system proxy is separate)
+$('coreSwitch').addEventListener('click', async () => {
+  const sw = $('coreSwitch');
+  const on = !sw.classList.contains('on');
+  sw.disabled = true;
+  toast(on ? '正在启动核心…' : '正在停止核心…');
   try {
-    await post('/api/proxy/toggle', { on });
-    toast(on ? '代理已开启' : '代理已关闭');
+    await post(on ? '/api/core/start' : '/api/core/stop', {});
+    toast(on ? '核心已启动' : '核心已停止');
   } catch (e) { toast(e.message, true); }
-  btn.disabled = false;
+  sw.disabled = false;
   checkHealth();
 });
 
 $('sysProxySwitch').addEventListener('click', async () => {
-  const on = !$('sysProxySwitch').classList.contains('on');
+  const sw = $('sysProxySwitch');
+  const on = !sw.classList.contains('on');
+  sw.disabled = true;
+  toast(on ? '正在接管系统代理…' : '正在还原系统代理…');
   try {
     await post('/api/sysproxy', { on });
     toast(on ? '系统代理已开启（指向 HTTP 入口）' : '系统代理已关闭');
     checkHealth();
   } catch (e) { toast(e.message, true); }
+  sw.disabled = false;
 });
 
 // ---------------- settings: ports / routing / dns ----------------
