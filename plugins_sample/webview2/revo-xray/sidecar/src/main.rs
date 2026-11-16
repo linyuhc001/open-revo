@@ -718,8 +718,8 @@ fn geo_download(st: &State, mirror: &str) -> Result<Value, String> {
         std::fs::create_dir_all(&st.bin_dir).ok();
         let mut done = Vec::new();
         for (name, body) in fetched {
-            replace_file(&st.bin_dir.join(name), &body)?;
             done.push(format!("{name} {:.1}MB", body.len() as f64 / 1e6));
+            replace_file(&st.bin_dir.join(name), &body)?;
         }
         st.log(&format!("Geo 文件就绪：{}", done.join(" / ")));
         Ok(json!({ "ok": true, "files": done }))
