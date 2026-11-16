@@ -236,9 +236,9 @@
     <div class="card">
       <h2>本机入口</h2>
       <div class="row" style="font-family:var(--mono);font-size:12px;">
-        <span>SOCKS5: <b>127.0.0.1:<span id="socksPort">10808</span></b></span>
+        <span>SOCKS5: <b>127.0.0.1:<span id="socksPort">20808</span></b></span>
         <span style="color:#21262d">|</span>
-        <span>HTTP: <b>127.0.0.1:<span id="httpPort">10809</span></b></span>
+        <span>HTTP: <b>127.0.0.1:<span id="httpPort">20809</span></b></span>
         <span style="flex:1"></span>
         <span style="font-size:11px;color:var(--text-dim);">系统代理开关只改 WinINET，指向 HTTP 入口</span>
       </div>
@@ -390,7 +390,7 @@
       </div>
       <div class="row" style="margin-top:8px;">
         <span class="hint" id="portsHint" style="font-size:11px;color:var(--text-dim);">
-          默认 10808 / 10809，范围 1024–65535 且两者不能相同、不能占用插件服务端口；
+          默认 20808 / 20809，范围 1024–65535 且两者不能相同、不能占用插件服务端口；
           保存后若核心在运行会自动重启生效，系统代理始终指向 HTTP 入口
         </span>
       </div>
@@ -522,8 +522,8 @@ function applyHealth(j) {
     : (j.xray_installed ? '核心已停止' : '核心未安装');
   $('xrayVerTag').textContent = j.xray_installed ? (j.xray_version || '已安装') : '未安装';
   $('xrayVerTag').className = 'tag ' + (j.xray_installed ? 'ok' : 'warn');
-  $('socksPort').textContent = j.socks_port || 10808;
-  $('httpPort').textContent = j.http_port || 10809;
+  $('socksPort').textContent = j.socks_port || 20808;
+  $('httpPort').textContent = j.http_port || 20809;
   $('sysProxySwitch').classList.toggle('on', !!j.sysproxy?.enabled && !!j.sysproxy?.ours);
   $('tunSwitch').classList.toggle('on', !!j.tun);
   // core switch = core running only (independent from system proxy)
@@ -790,8 +790,8 @@ let routingRules = []; // {outbound, domain, ip, port, network} — comma string
 
 async function getSettings() {
   const j = await api('/api/settings');
-  $('setSocksPort').value = j.socks_port || 10808;
-  $('setHttpPort').value = j.http_port || 10809;
+  $('setSocksPort').value = j.socks_port || 20808;
+  $('setHttpPort').value = j.http_port || 20809;
   routingRules = (j.routing || []).map((r) => ({
     outbound: r.outbound || 'direct',
     domain: (r.domain || []).join(','),
@@ -1129,7 +1129,7 @@ $('btnPortsSave').addEventListener('click', async () => {
 });
 $('btnPortsReset').addEventListener('click', async () => {
   try {
-    const r = await post('/api/ports/set', { socks: 10808, http: 10809 });
+    const r = await post('/api/ports/set', { socks: 20808, http: 20809 });
     toast(r.restarted ? '已还原默认端口并重启核心' : '已还原默认端口');
     getSettings(); checkHealth();
   } catch (e) { toast(e.message, true); }

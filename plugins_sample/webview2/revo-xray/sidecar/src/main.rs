@@ -73,8 +73,8 @@ struct Persist {
     geo_tag: String,
 }
 
-fn default_socks() -> u16 { 10808 }
-fn default_http() -> u16 { 10809 }
+fn default_socks() -> u16 { 20808 }
+fn default_http() -> u16 { 20809 }
 fn default_strategy() -> String { "IPIfNonMatch".into() }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -1513,7 +1513,7 @@ fn load_state(data_dir: &Path) -> Persist {
         .unwrap_or_default();
     // Persist::default() zeroes the ports (serde(default=) only fires for
     // missing fields in an existing file, not for a wholly absent file), so
-    // re-anchor them here — a fresh install must get 10808/10809.
+    // re-anchor them here — a fresh install must get 20808/20809.
     if p.socks_port == 0 {
         p.socks_port = default_socks();
     }
