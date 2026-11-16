@@ -239,6 +239,20 @@
       <h2>路由规则 <span class="tag" id="ruleCount">0</span>
         <span class="hint">自上而下匹配，先命中先用 · 域名支持 geosite:cn / domain:xx.com / 纯域名 · IP 支持 geoip:cn / geoip:private / CIDR（多项逗号分隔）</span>
       </h2>
+      <div class="row">
+        <span>域名解析策略</span>
+        <select id="routeStrategy">
+          <option value="AsIs">AsIs（只按域名匹配）</option>
+          <option value="IPIfNonMatch">IPIfNonMatch（先域名后 IP，推荐）</option>
+          <option value="IPOnDemand">IPOnDemand（IP 优先）</option>
+        </select>
+        <span style="color:#21262d">|</span>
+        <span>预定义规则集</span>
+        <button class="btn" data-preset="whitelist">绕过大陆</button>
+        <button class="btn" data-preset="blacklist">黑名单</button>
+        <button class="btn" data-preset="global">全局代理</button>
+        <span class="hint" style="font-size:11px;color:var(--text-dim);">点选填入模板，再点「保存规则」生效</span>
+      </div>
       <div id="ruleWrap" style="max-height:400px;overflow-y:auto;">
         <table>
           <thead><tr><th style="width:34px">#</th><th style="width:104px">出站</th><th style="width:42%">域名</th><th style="width:32%">IP</th><th style="width:130px">操作</th></tr></thead>
@@ -259,7 +273,7 @@
   <!-- ===== DNS ===== -->
   <div class="page" data-page="dns">
     <div class="card">
-      <h2>DNS 基础设置 <span class="hint">同 v2rayN 基础模式：注入 dns 段供 IPIfNonMatch 域名解析用，不建独立 dns-out</span></h2>
+      <h2>DNS 基础设置 <span class="hint">同 v2rayN 基础模式：解析全部由 xray 核心完成，插件只生成配置 · 远程 DNS 查询走代理出站，直连 DNS 走直连</span></h2>
       <div class="row">
         <span>启用 DNS</span>
         <div id="dnsSwitch" class="switch"></div>
@@ -271,10 +285,54 @@
           <option value="UseIPv6">UseIPv6</option>
         </select>
       </div>
-      <textarea id="dnsServers" style="margin-top:10px;min-height:120px;" placeholder="每行一个 DNS 服务器，例如：
-https://223.5.5.5/dns-query
-223.5.5.5
-https://doh.pub/dns-query"></textarea>
+      <div style="margin-top:12px;display:grid;grid-template-columns:130px 1fr;gap:10px 14px;align-items:start;max-width:820px;">
+        <span style="padding-top:6px;">直连 DNS</span>
+        <div>
+          <input type="text" id="dnsDirect" list="dlDirect" style="width:100%;" placeholder="119.29.29.29" />
+          <datalist id="dlDirect">
+            <option value="119.29.29.29"></option>
+            <option value="223.5.5.5"></option>
+            <option value="119.29.29.29,223.5.5.5,https://doh.pub/dns-query"></option>
+            <option value="https://doh.pub/dns-query"></option>
+            <option value="https://dns.alidns.com/dns-query"></option>
+            <option value="https://doh.pub/dns-query,https://dns.alidns.com/dns-query"></option>
+            <option value="localhost"></option>
+          </datalist>
+          <div class="hint" style="font-size:11px;color:var(--text-dim);">默认仅在路由阶段被调用解析，国内域名用（可下拉选或自行输入）</div>
+        </div>
+        <span style="padding-top:6px;">远程 DNS</span>
+        <div>
+          <input type="text" id="dnsRemote" list="dlRemote" style="width:100%;" placeholder="https://cloudflare-dns.com/dns-query" />
+          <datalist id="dlRemote">
+            <option value="https://cloudflare-dns.com/dns-query"></option>
+            <option value="https://dns.google/dns-query"></option>
+            <option value="https://cloudflare-dns.com/dns-query,https://dns.google/dns-query,8.8.8.8"></option>
+            <option value="https://dns.cloudflare.com/dns-query"></option>
+            <option value="https://doh.dns.sb/dns-query"></option>
+            <option value="https://doh.opendns.com/dns-query"></option>
+            <option value="https://common.dot.dns.yandex.net/dns-query"></option>
+            <option value="https://1.1.1.1/dns-query"></option>
+            <option value="https://8.8.8.8/dns-query"></option>
+            <option value="https://1.1.1.1/dns-query,https://8.8.8.8/dns-query"></option>
+            <option value="8.8.8.8"></option>
+            <option value="1.1.1.1"></option>
+            <option value="185.222.222.222"></option>
+            <option value="208.67.222.222"></option>
+            <option value="77.88.8.8"></option>
+          </datalist>
+          <div class="hint" style="font-size:11px;color:var(--text-dim);">DoH/远程解析，查询流量经代理出站；请确保远程服务器可访问该 DNS</div>
+        </div>
+        <span style="padding-top:6px;">Bootstrap DNS</span>
+        <div>
+          <input type="text" id="dnsBootstrap" list="dlBoot" style="width:100%;" placeholder="119.29.29.29" />
+          <datalist id="dlBoot">
+            <option value="119.29.29.29"></option>
+            <option value="223.5.5.5"></option>
+            <option value="localhost"></option>
+          </datalist>
+          <div class="hint" style="font-size:11px;color:var(--text-dim);">解析 DNS 服务器自身的域名，需指定为纯 IP</div>
+        </div>
+      </div>
       <div class="row" style="margin-top:8px;">
         <button class="btn primary" id="btnDnsSave">保存 DNS 设置</button>
         <span class="hint" style="font-size:11px;color:var(--text-dim);">保存后若核心在运行会自动重启生效；未启用时配置里不含 dns 段</span>
@@ -657,10 +715,13 @@ async function getSettings() {
     ip: (r.ip || []).join(','),
   }));
   renderRules();
+  $('routeStrategy').value = j.routing_strategy || 'IPIfNonMatch';
   const d = j.dns || {};
   $('dnsSwitch').classList.toggle('on', !!d.enabled);
   $('dnsStrategy').value = d.query_strategy || 'UseIP';
-  $('dnsServers').value = (d.servers || []).join('\n');
+  $('dnsDirect').value = d.direct_dns || '119.29.29.29';
+  $('dnsRemote').value = d.remote_dns || 'https://cloudflare-dns.com/dns-query';
+  $('dnsBootstrap').value = d.bootstrap_dns || '119.29.29.29';
 }
 
 function renderRules() {
@@ -730,18 +791,54 @@ $('btnRuleClear').addEventListener('click', () => {
 });
 $('btnRuleSave').addEventListener('click', async () => {
   const rules = routingRules.map((r) => ({ outbound: r.outbound, domain: r.domain || '', ip: r.ip || '' }));
+  const strategy = $('routeStrategy').value;
   try {
-    const j = await post('/api/routing/set', { rules });
+    const j = await post('/api/routing/set', { rules, strategy });
     toast(j.restarted ? `已保存 ${rules.length} 条规则并重启核心` : `已保存 ${rules.length} 条规则`);
   } catch (e) { toast(e.message, true); }
 });
 
+// v2rayN preset rule sets (V4-Whitelist / Blacklist / Global, simplified)
+const ROUTE_PRESETS = {
+  whitelist: [
+    ['direct', '', 'geoip:private'],
+    ['direct', 'geosite:private', ''],
+    ['block', 'geosite:category-ads-all', ''],
+    ['direct', 'geosite:cn', ''],
+    ['direct', '', 'geoip:cn'],
+  ],
+  blacklist: [
+    ['direct', '', 'geoip:private'],
+    ['direct', 'geosite:private', ''],
+    ['block', 'geosite:category-ads-all', ''],
+    ['proxy', 'geosite:geolocation-!cn', ''],
+    ['direct', '', '0.0.0.0/0'],
+  ],
+  global: [
+    ['direct', '', 'geoip:private'],
+    ['direct', 'geosite:private', ''],
+    ['block', 'geosite:category-ads-all', ''],
+  ],
+};
+document.querySelectorAll('button[data-preset]').forEach((b) => {
+  b.addEventListener('click', () => {
+    routingRules = (ROUTE_PRESETS[b.dataset.preset] || []).map(([ob, dom, ip]) => ({ outbound: ob, domain: dom, ip }));
+    renderRules();
+    toast('已填入规则集模板，点「保存规则」生效');
+  });
+});
+
 $('dnsSwitch').addEventListener('click', () => $('dnsSwitch').classList.toggle('on'));
 $('btnDnsSave').addEventListener('click', async () => {
-  const enabled = $('dnsSwitch').classList.contains('on');
-  const servers = $('dnsServers').value.split('\n').map((s) => s.trim()).filter(Boolean);
+  const body = {
+    enabled: $('dnsSwitch').classList.contains('on'),
+    direct_dns: $('dnsDirect').value.trim(),
+    remote_dns: $('dnsRemote').value.trim(),
+    bootstrap_dns: $('dnsBootstrap').value.trim(),
+    query_strategy: $('dnsStrategy').value,
+  };
   try {
-    const j = await post('/api/dns/set', { enabled, servers, query_strategy: $('dnsStrategy').value });
+    const j = await post('/api/dns/set', body);
     toast(j.restarted ? 'DNS 已保存并重启核心' : 'DNS 已保存');
   } catch (e) { toast(e.message, true); }
 });

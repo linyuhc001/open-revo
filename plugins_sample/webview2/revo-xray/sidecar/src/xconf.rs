@@ -27,16 +27,121 @@ pub struct Rule {
     pub ip: Vec<String>,
 }
 
-/// Basic DNS settings, v2rayN's "DNS 基础设置": an `dns` block for
-/// IPIfNonMatch domain resolution, no dedicated dns-out outbound.
-#[derive(Clone, Default, Serialize, Deserialize)]
+/// Basic DNS settings, v2rayN's "DNS 基础设置" (simple mode). Three slots:
+/// direct DNS (CN domains, queried direct), remote DNS (DoH, queried through
+/// the proxy outbound) and bootstrap DNS (plain-IP servers used only to
+/// resolve the DoH servers' own domain names). All resolution itself is done
+/// by the xray core — the plugin only writes the `dns` block and the matching
+/// `inboundTag: dns-module` routing rules.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct DnsCfg {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default)]
-    pub servers: Vec<String>,
+    pub direct_dns: String, // v2rayN default: 119.29.29.29
+    #[serde(default)]
+    pub remote_dns: String, // v2rayN default: https://cloudflare-dns.com/dns-query
+    #[serde(default)]
+    pub bootstrap_dns: String, // v2rayN default: 119.29.29.29 (pure IP)
     #[serde(default)]
     pub query_strategy: String, // UseIP | UseIPv4 | UseIPv6 (empty = UseIP)
+}
+
+impl Default for DnsCfg {
+    fn default() -> Self {
+        DnsCfg {
+            enabled: false,
+            direct_dns: DEFAULT_DIRECT_DNS.into(),
+            remote_dns: DEFAULT_REMOTE_DNS.into(),
+            bootstrap_dns: DEFAULT_BOOTSTRAP_DNS.into(),
+            query_strategy: String::new(),
+        }
+    }
+}
+
+pub const DEFAULT_DIRECT_DNS: &str = "119.29.29.29";
+pub const DEFAULT_REMOTE_DNS: &str = "https://cloudflare-dns.com/dns-query";
+pub const DEFAULT_BOOTSTRAP_DNS: &str = "119.29.29.29";
+
+/// Extract the host part of a DNS address (`https://dns.google/dns-query`,
+/// `tcp://8.8.8.8:853`, `223.5.5.5`) when it is a real domain name — those
+/// domains need bootstrap resolution. Returns None for plain IPs / localhost.
+fn dns_server_domain(addr: &str) -> Option<String> {
+    let a = addr.trim();
+    if a.is_empty() || a == "localhost" {
+        return None;
+    }
+    let rest = match a.find("://") {
+        Some(i) => &a[i + 3..],
+        None => a,
+    };
+    let host = rest.split(['/', ':']).next().unwrap_or("");
+    if host.is_empty() {
+        return None;
+    }
+    let ipv4 = host.contains('.') && host.split('.').all(|p| p.parse::<u8>().is_ok());
+    let ipv6 = host.contains(':') && host.parse::<std::net::Ipv6Addr>().is_ok();
+    if ipv4 || ipv6 {
+        None
+    } else {
+        Some(host.to_string())
+    }
+}
+
+/// Build the `dns` block the v2rayN simple-mode way:
+/// 1. bootstrap (pure IP) servers constrained to the DoH servers' domains,
+/// 2. remote DNS with `skipFallback`, reachable only via its tag + routing,
+/// 3. direct DNS as the last, fallback-permitted server.
+/// The direct servers get `direct-dns-N` tags; build_config adds the routing
+/// rules `inboundTag direct-dns-N -> direct` and `dns-module -> proxy`.
+fn dns_servers(dns: &DnsCfg) -> (Vec<Value>, Vec<String>) {
+    let direct = if dns.direct_dns.is_empty() { DEFAULT_DIRECT_DNS } else { dns.direct_dns.trim() };
+    let remote = if dns.remote_dns.is_empty() { DEFAULT_REMOTE_DNS } else { dns.remote_dns.trim() };
+    let bootstrap = if dns.bootstrap_dns.is_empty() { DEFAULT_BOOTSTRAP_DNS } else { dns.bootstrap_dns.trim() };
+
+    // domains that need bootstrap resolution = the domain-form servers above
+    let mut boot_domains: Vec<String> = [direct, remote]
+        .iter()
+        .filter_map(|s| dns_server_domain(s))
+        .map(|d| format!("full:{d}"))
+        .collect();
+    boot_domains.sort();
+    boot_domains.dedup();
+
+    let mut servers = Vec::new();
+    if !boot_domains.is_empty() {
+        for b in bootstrap.split(',') {
+            let b = b.trim();
+            if b.is_empty() {
+                continue;
+            }
+            servers.push(json!({
+                "address": b,
+                "domains": boot_domains,
+                "skipFallback": true,
+            }));
+        }
+    }
+    servers.push(json!({
+        "address": remote,
+        "skipFallback": true,
+        "tag": "remote-dns",
+    }));
+    let mut direct_tags = Vec::new();
+    for (i, d) in direct.split(',').enumerate() {
+        let d = d.trim();
+        if d.is_empty() {
+            continue;
+        }
+        let tag = format!("direct-dns-{}", i + 1);
+        direct_tags.push(tag.clone());
+        servers.push(json!({
+            "address": d,
+            "skipFallback": false,
+            "tag": tag,
+        }));
+    }
+    (servers, direct_tags)
 }
 
 pub fn build_config(
@@ -46,6 +151,7 @@ pub fn build_config(
     geosite_ok: bool,
     rules: &[Rule],
     dns: &DnsCfg,
+    routing_strategy: &str,
 ) -> Result<String, String> {
     let outbound = node_outbound(node)?;
     // Drop rules that reference geo dat files we don't have — xray refuses to
@@ -83,6 +189,38 @@ pub fn build_config(
             rule_keeps(&v).then_some(v)
         }).collect()
     };
+    let strategy = match routing_strategy {
+        "AsIs" | "IPIfNonMatch" | "IPOnDemand" if !routing_strategy.is_empty() => routing_strategy,
+        _ => "IPIfNonMatch",
+    };
+    // DNS module routing, v2rayN simple-mode style: direct DNS queries leave
+    // via the direct outbound, everything else the DNS module dials (remote
+    // DoH) goes through the proxy.
+    let mut rule_list: Vec<Value> = rule_list;
+    let mut dns_block: Option<Value> = None;
+    if dns.enabled {
+        let (servers, direct_tags) = dns_servers(dns);
+        if !servers.is_empty() {
+            if !direct_tags.is_empty() {
+                rule_list.push(json!({
+                    "type": "field",
+                    "inboundTag": direct_tags,
+                    "outboundTag": "direct",
+                }));
+            }
+            rule_list.push(json!({
+                "type": "field",
+                "inboundTag": ["dns-module"],
+                "outboundTag": "proxy",
+            }));
+            let strat = if dns.query_strategy.is_empty() { "UseIP".to_string() } else { dns.query_strategy.clone() };
+            dns_block = Some(json!({
+                "tag": "dns-module",
+                "servers": servers,
+                "queryStrategy": strat,
+            }));
+        }
+    }
     let mut cfg = json!({
         "log": { "loglevel": "warning" },
         "inbounds": [
@@ -108,16 +246,12 @@ pub fn build_config(
             { "tag": "block", "protocol": "blackhole", "settings": {} }
         ],
         "routing": {
-            "domainStrategy": "IPIfNonMatch",
+            "domainStrategy": strategy,
             "rules": rule_list
         }
     });
-    if dns.enabled && !dns.servers.is_empty() {
-        let strat = if dns.query_strategy.is_empty() { "UseIP".to_string() } else { dns.query_strategy.clone() };
-        cfg.as_object_mut().unwrap().insert("dns".into(), json!({
-            "servers": dns.servers.clone(),
-            "queryStrategy": strat,
-        }));
+    if let Some(d) = dns_block {
+        cfg.as_object_mut().unwrap().insert("dns".into(), d);
     }
     Ok(cfg.to_string())
 }

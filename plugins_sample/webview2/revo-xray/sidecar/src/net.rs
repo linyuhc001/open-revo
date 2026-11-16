@@ -8,10 +8,22 @@ use std::time::{Duration, Instant};
 use flate2::read::DeflateDecoder;
 
 pub fn http_get(url: &str, timeout_s: u64) -> Result<Vec<u8>, String> {
-    let agent = ureq::AgentBuilder::new()
+    http_get_via(url, timeout_s, None)
+}
+
+/// GET with an optional local HTTP proxy (our own http inbound). Core/geo/
+/// subscription downloads prefer the running core's tunnel so GitHub is
+/// reachable behind the GFW, and fall back to direct on failure.
+pub fn http_get_via(url: &str, timeout_s: u64, proxy_port: Option<u16>) -> Result<Vec<u8>, String> {
+    let mut builder = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(timeout_s))
-        .redirects(8)
-        .build();
+        .redirects(8);
+    if let Some(p) = proxy_port {
+        let proxy =
+            ureq::Proxy::new(&format!("http://127.0.0.1:{p}")).map_err(|e| format!("代理地址无效: {e}"))?;
+        builder = builder.proxy(proxy);
+    }
+    let agent = builder.build();
     let resp = agent.get(url).call().map_err(|e| format!("GET {url}: {e}"))?;
     let mut buf = Vec::new();
     resp.into_reader()

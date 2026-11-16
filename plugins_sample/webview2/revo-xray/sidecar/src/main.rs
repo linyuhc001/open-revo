@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-const VERSION: &str = "0.9.2";
+const VERSION: &str = "0.9.3";
 const LOG_RING: usize = 400;
 /// v2rayN's geo template: Global.GeoUrl in ServiceLib/Global.cs.
 /// `{0}` is filled with "geoip" / "geosite".
@@ -44,12 +44,15 @@ struct Persist {
     http_port: u16,
     #[serde(default)]
     routing: Vec<xconf::Rule>,
+    #[serde(default = "default_strategy")]
+    routing_strategy: String,
     #[serde(default)]
     dns: xconf::DnsCfg,
 }
 
 fn default_socks() -> u16 { 10808 }
 fn default_http() -> u16 { 10809 }
+fn default_strategy() -> String { "IPIfNonMatch".into() }
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Sub {
@@ -284,7 +287,8 @@ fn core_start(st: &State) -> Result<Value, String> {
     let ports = xconf::Ports { socks: p.socks_port, http: p.http_port };
     let rules = p.routing.clone();
     let dns = p.dns.clone();
-    let cfg = xconf::build_config(&node, &ports, geoip_ok, geosite_ok, &rules, &dns)?;
+    let strategy = p.routing_strategy.clone();
+    let cfg = xconf::build_config(&node, &ports, geoip_ok, geosite_ok, &rules, &dns, &strategy)?;
     let cfg_path = st.data_dir.join("config.json");
     std::fs::write(&cfg_path, &cfg).map_err(|e| format!("写配置失败: {e}"))?;
 
@@ -343,6 +347,100 @@ fn core_stop(st: &State) -> Result<Value, String> {
     Ok(json!({ "ok": true, "running": false }))
 }
 
+/// Fetch preferring our own proxy when the core is running (GitHub is the
+/// usual target and unreachable from CN networks directly), falling back to
+/// direct otherwise / on failure. Logs which path was taken.
+fn http_get_auto(st: &State, what: &str, url: &str, timeout_s: u64) -> Result<Vec<u8>, String> {
+    if st.core_running() {
+        let http = st.data.lock().unwrap().http_port;
+        match net::http_get_via(url, timeout_s, Some(http)) {
+            Ok(b) => {
+                st.log(&format!("{what}：已走自身代理下载"));
+                return Ok(b);
+            }
+            Err(e) => st.log(&format!("{what}：自身代理下载失败（{e}），改用直连")),
+        }
+    }
+    let b = net::http_get_via(url, timeout_s, None)?;
+    st.log(&format!("{what}：已直连下载"));
+    Ok(b)
+}
+
+/// Windows keeps a running exe un-deletable but renameable: park the old file
+/// aside, write the new one; `.old` leftovers are cleaned up on startup.
+fn replace_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    match std::fs::write(path, bytes) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            let name = path
+                .file_name()
+                .ok_or("路径无效")?
+                .to_string_lossy()
+                .into_owned();
+            let bak = path.with_file_name(format!("{name}.{}.old", id_gen()));
+            std::fs::rename(path, &bak).map_err(|e| format!("目标被占用且无法改名: {e}"))?;
+            std::fs::write(path, bytes).map_err(|e| format!("改名后写入仍失败: {e}"))?;
+            Ok(())
+        }
+    }
+}
+
+/// Ensure the target is removable before an unzip overwrites it in place.
+fn pre_replace_locked(path: &Path) -> Result<(), String> {
+    if !path.is_file() {
+        return Ok(());
+    }
+    if std::fs::remove_file(path).is_ok() {
+        return Ok(());
+    }
+    let name = path
+        .file_name()
+        .ok_or("路径无效")?
+        .to_string_lossy()
+        .into_owned();
+    let bak = path.with_file_name(format!("{name}.{}.old", id_gen()));
+    std::fs::rename(path, &bak).map_err(|e| format!("文件被占用且无法改名: {e}"))?;
+    Ok(())
+}
+
+fn cleanup_old_files(st: &State) {
+    if let Ok(rd) = std::fs::read_dir(&st.bin_dir) {
+        for e in rd.flatten() {
+            if e.file_name().to_string_lossy().ends_with(".old") {
+                let _ = std::fs::remove_file(e.path());
+                st.log(&format!("清理旧文件：{}", e.file_name().to_string_lossy()));
+            }
+        }
+    }
+}
+
+/// Run a file-replacement closure with the core temporarily stopped (xray.exe
+/// cannot be overwritten while running), then restore the previous state.
+fn with_core_stopped<T>(
+    st: &State,
+    what: &str,
+    f: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let was_running = st.core_running();
+    if was_running {
+        st.take_core();
+        st.log(&format!("{what}：核心运行中，先临时停止"));
+    }
+    let r = f();
+    if was_running {
+        match &r {
+            Ok(_) => {
+                st.log(&format!("{what}：完成，恢复核心运行"));
+                core_start(st)?;
+            }
+            Err(_) => {
+                st.log(&format!("{what}：失败，核心未自动恢复，请手动启动"));
+            }
+        }
+    }
+    r
+}
+
 fn core_download(st: &State, mirror: &str) -> Result<Value, String> {
     let url = if mirror.is_empty() {
         net::XRAY_RELEASE_URL.to_string()
@@ -350,25 +448,31 @@ fn core_download(st: &State, mirror: &str) -> Result<Value, String> {
         format!("{}{}", mirror.trim_end_matches('/'), "/XTLS/Xray-core/releases/latest/download/Xray-windows-64.zip")
     };
     st.log(&format!("开始下载内核：{url}"));
-    let zip_bytes = net::http_get(&url, 120)?;
+    // fetch first — the core may still be running to proxy this request
+    let zip_bytes = http_get_auto(st, "内核", &url, 120)?;
     st.log(&format!("内核下载完成 {} 字节，解压中", zip_bytes.len()));
     let zip_path = st.data_dir.join("xray-core.zip");
     std::fs::write(&zip_path, &zip_bytes).map_err(|e| format!("写 zip 失败: {e}"))?;
-    std::fs::create_dir_all(&st.bin_dir).ok();
-    let files = net::unzip_into(&zip_path, &st.bin_dir)?;
-    let _ = std::fs::remove_file(&zip_path);
-    let ver = net::xray_version(&st.xray_exe()).unwrap_or_else(|| "unknown".into());
-    st.log(&format!("内核就绪：{}（{} 个文件）", ver, files.len()));
+    let res = with_core_stopped(st, "内核更新", || {
+        cleanup_old_files(st);
+        pre_replace_locked(&st.xray_exe())?;
+        std::fs::create_dir_all(&st.bin_dir).ok();
+        let files = net::unzip_into(&zip_path, &st.bin_dir)?;
+        let _ = std::fs::remove_file(&zip_path);
+        let ver = net::xray_version(&st.xray_exe()).unwrap_or_else(|| "unknown".into());
+        st.log(&format!("内核就绪：{}（{} 个文件）", ver, files.len()));
+        Ok(json!({ "ok": true, "version": ver, "files": files.len() }))
+    });
     // recent Xray zips no longer ship the geo dat files; grab them separately
     // (best-effort — the panel keeps working without them, just without CN rules)
     let missing = !st.bin_dir.join("geoip.dat").is_file() || !st.bin_dir.join("geosite.dat").is_file();
-    if missing {
+    if res.is_ok() && missing {
         match geo_download(st, mirror) {
             Ok(_) => {}
             Err(e) => st.log(&format!("geo 文件下载失败（可稍后点「下载 Geo 文件」重试）: {e}")),
         }
     }
-    Ok(json!({ "ok": true, "version": ver, "files": files.len() }))
+    res
 }
 
 fn geo_download(st: &State, mirror: &str) -> Result<Value, String> {
@@ -377,17 +481,27 @@ fn geo_download(st: &State, mirror: &str) -> Result<Value, String> {
     } else {
         format!("{}{}", mirror.trim_end_matches('/'), "/Loyalsoldier/v2ray-rules-dat/releases/latest/download")
     };
-    std::fs::create_dir_all(&st.bin_dir).ok();
-    let mut done = Vec::new();
+    // fetch both files first — proxy path needs the core running
+    let mut fetched = Vec::new();
     for name in ["geoip.dat", "geosite.dat"] {
         let url = format!("{base}/{name}");
         st.log(&format!("下载 {name}：{url}"));
-        let body = net::http_get(&url, 180)?;
-        std::fs::write(st.bin_dir.join(name), &body).map_err(|e| format!("写 {name} 失败: {e}"))?;
-        done.push(format!("{name} {:.1}MB", body.len() as f64 / 1e6));
+        let body = http_get_auto(st, name, &url, 180)?;
+        fetched.push((name, body));
     }
-    st.log(&format!("Geo 文件就绪：{}", done.join(" / ")));
-    Ok(json!({ "ok": true, "files": done }))
+    // then swap them in with the core stopped
+    let res = with_core_stopped(st, "Geo 文件更新", || {
+        cleanup_old_files(st);
+        std::fs::create_dir_all(&st.bin_dir).ok();
+        let mut done = Vec::new();
+        for (name, body) in fetched {
+            replace_file(&st.bin_dir.join(name), &body)?;
+            done.push(format!("{name} {:.1}MB", body.len() as f64 / 1e6));
+        }
+        st.log(&format!("Geo 文件就绪：{}", done.join(" / ")));
+        Ok(json!({ "ok": true, "files": done }))
+    });
+    res
 }
 
 /// Master switch, v2rayN style: one toggle = core up + system proxy taken
@@ -438,6 +552,7 @@ fn h_settings(st: &State) -> Value {
         "socks_port": p.socks_port,
         "http_port": p.http_port,
         "routing": p.routing,
+        "routing_strategy": p.routing_strategy,
         "dns": p.dns,
     })
 }
@@ -559,37 +674,48 @@ fn parse_rules(v: &Value) -> Result<Vec<xconf::Rule>, String> {
 
 fn h_routing_set(st: &State, v: &Value) -> Result<Value, String> {
     let rules = parse_rules(v)?;
+    let strategy = jstr(v, "strategy");
+    if !matches!(strategy.as_str(), "AsIs" | "IPIfNonMatch" | "IPOnDemand" | "") {
+        return Err(format!("未知的域名解析策略: {strategy}"));
+    }
     let n = rules.len();
-    let r = save_and_restart(st, |p| p.routing = rules)?;
+    let r = save_and_restart(st, |p| {
+        p.routing = rules;
+        if !strategy.is_empty() {
+            p.routing_strategy = strategy;
+        }
+    })?;
     st.log(&format!("路由规则已保存（{n} 条）"));
     Ok(r)
 }
 
 fn h_dns_set(st: &State, v: &Value) -> Result<Value, String> {
     let enabled = v.get("enabled").and_then(|x| x.as_bool()).unwrap_or(false);
-    let servers: Vec<String> = v
-        .get("servers")
-        .and_then(|x| x.as_array())
-        .map(|a| {
-            a.iter()
-                .filter_map(|x| x.as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()))
-                .collect()
-        })
-        .unwrap_or_default();
-    if enabled && servers.is_empty() {
-        return Err("启用 DNS 时至少填一个服务器".into());
+    let direct = jstr(v, "direct_dns");
+    let remote = jstr(v, "remote_dns");
+    let bootstrap = jstr(v, "bootstrap_dns");
+    if enabled && direct.is_empty() && remote.is_empty() {
+        return Err("启用 DNS 时至少填一个 DNS 服务器".into());
     }
     let mut strat = jstr(v, "query_strategy");
     if !matches!(strat.as_str(), "UseIP" | "UseIPv4" | "UseIPv6") {
         strat = "UseIP".into();
     }
-    let n = servers.len();
     let r = save_and_restart(st, |p| {
-        p.dns = xconf::DnsCfg { enabled, servers: servers.clone(), query_strategy: strat.clone() };
+        p.dns = xconf::DnsCfg {
+            enabled,
+            direct_dns: direct.clone(),
+            remote_dns: remote.clone(),
+            bootstrap_dns: bootstrap.clone(),
+            query_strategy: strat.clone(),
+        };
     })?;
     st.log(&format!(
-        "DNS 设置已保存（{}，{n} 个服务器）",
-        if enabled { "启用" } else { "停用" }
+        "DNS 设置已保存（{}，直连 {} / 远程 {} / bootstrap {}）",
+        if enabled { "启用" } else { "停用" },
+        if direct.is_empty() { "默认" } else { &direct },
+        if remote.is_empty() { "默认" } else { &remote },
+        if bootstrap.is_empty() { "默认" } else { &bootstrap },
     ));
     Ok(r)
 }
@@ -771,7 +897,7 @@ fn h_subs_update(st: &State, v: &Value) -> Result<Value, String> {
         let s = p.subs.iter().find(|s| s.id == id).ok_or("订阅不存在")?;
         (s.url.clone(), s.name.clone())
     };
-    let body = net::http_get(&url, 30)?;
+    let body = http_get_auto(st, "订阅", &url, 30)?;
     let text = String::from_utf8_lossy(&body);
     let (nodes, errors) = node::parse_bulk(&text);
     if nodes.is_empty() {
@@ -966,6 +1092,9 @@ fn main() {
 
     // The struct doesn't carry the port; store it in a static for health.
     HEALTH_PORT.store(port, Ordering::Relaxed);
+
+    // sweep leftover `.old` backups from previous locked-file updates
+    cleanup_old_files(&st);
 
     // xray crash watcher: keep the state honest if the core dies on its own.
     {

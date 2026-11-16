@@ -18,9 +18,9 @@ Xray-only 的轻量代理面板：vless / vmess / trojan / shadowsocks 节点与
 | :--- | :--- |
 | 节点 | 粘贴/剪贴板导入分享链接（多行）、base64 订阅内容；表格展示协议/地址/延迟；单击选中、双击选中并启动；单节点 tcping、批量 tcping、当前节点真延迟（走 socks→出口的 204 探测）；分享链接导出（复制到剪贴板） |
 | 订阅 | 添加/删除订阅、手动更新；更新按「proto+地址+端口+凭据+订阅」去重刷新，不重复堆积 |
-| 路由 | 自定义规则列表（出站 代理/直连/拦截 × 域名/IP 条件，支持 geosite:/domain:/纯域名、geoip:/CIDR），增删改、上下移；空列表回落到默认 CN 直连规则集；缺 geo 文件时 geo 规则自动跳过 |
-| DNS | 基础设置（同 v2rayN 基础模式）：启用开关、DNS 服务器列表、查询策略 UseIP/UseIPv4/UseIPv6，生成 `dns` 段供 IPIfNonMatch 解析 |
-| 核心 | 代理总开关（一键 = 启动核心 + 接管系统代理 / 还原 + 停止）、内核与 Geo 文件下载/更新（支持镜像前缀）、启动/停止/重启；本机入口显示 |
+| 路由 | 域名解析策略（AsIs / IPIfNonMatch / IPOnDemand）；预定义规则集一键填入（绕过大陆 / 黑名单 / 全局代理，同 v2rayN V4 模板）；自定义规则列表（出站 代理/直连/拦截 × 域名/IP 条件，支持 geosite:/domain:/纯域名、geoip:/CIDR），增删改、上下移；空列表回落到默认 CN 直连规则集；缺 geo 文件时 geo 规则自动跳过 |
+| DNS | 基础设置（同 v2rayN 基础模式）：直连 DNS / 远程 DNS / Bootstrap DNS 三个下拉+自定义（内置 v2rayN 默认选项）、启用开关、查询策略 UseIP/UseIPv4/UseIPv6。远程 DNS 查询经代理出站（`inboundTag dns-module→proxy`），直连 DNS 走直连，Bootstrap（纯 IP）负责解析 DoH 服务器域名。所有解析由 xray 核心完成，插件只生成配置 |
+| 核心 | 代理总开关（一键 = 启动核心 + 接管系统代理 / 还原 + 停止）、内核与 Geo 文件下载/更新（支持镜像前缀；**优先走自身代理，失败回落直连**；文件被运行中内核占用时自动「临时停核 → 替换 → 恢复运行」，仍被锁则改名 `.old` 兜底、下次启动清理）、启动/停止/重启；本机入口显示 |
 | 设置 | 入站端口自定义（1024–65535，保存前真实绑定探测 + TCP 表占用进程定位，同进程管理插件），还原默认 |
 | 日志 | 服务日志（环形缓冲 + 落盘 `data/service.log`） |
 
@@ -62,14 +62,14 @@ POST /api/subs/update         {id}                     → {count, errors[]}
 POST /api/core/start          无参数；未选节点/未装内核时报错
 POST /api/core/stop
 POST /api/core/restart
-POST /api/core/download       {mirror?}                镜像前缀拼在 release URL 之前
-POST /api/geo/download        {mirror?}                geoip/geosite.dat（Loyalsoldier 源，同 v2rayN）
+POST /api/core/download       {mirror?}                镜像前缀拼在 release URL 之前；核心运行中优先走自身代理
+POST /api/geo/download        {mirror?}                geoip/geosite.dat（Loyalsoldier 源，同 v2rayN）；同上优先自身代理
 POST /api/proxy/toggle        {on}                     总开关：on=启核心+接管系统代理，off=还原+停核心
-GET  /api/settings            {socks_port, http_port, routing[], dns}
+GET  /api/settings            {socks_port, http_port, routing[], routing_strategy, dns}
 POST /api/ports/check         {socks, http}            真实绑定探测 + 占用进程定位 → {ok, ports{socks,http}}
 POST /api/ports/set           {socks, http}            校验 + 冲突复检后保存；核心在运行则自动重启生效
-POST /api/routing/set         {rules[{outbound, domain, ip}]}   空数组 = 回到默认规则集
-POST /api/dns/set             {enabled, servers[], query_strategy}
+POST /api/routing/set         {rules[{outbound, domain, ip}], strategy?}   strategy = AsIs/IPIfNonMatch/IPOnDemand；空数组 = 回到默认规则集
+POST /api/dns/set             {enabled, direct_dns?, remote_dns?, bootstrap_dns?, query_strategy?}
 GET  /api/log                 {log}
 POST /api/sysproxy            {on}
 GET  /api/sysproxy            {enabled, ours}
