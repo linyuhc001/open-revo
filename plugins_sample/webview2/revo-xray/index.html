@@ -710,7 +710,7 @@ $('btnCoreDownload').addEventListener('click', async () => {
   toast('下载内核中…（约 16MB，最多等 2 分钟）');
   try {
     const j = await post('/api/core/download', { mirror: $('mirrorUrl').value.trim() });
-    toast(`内核就绪：${j.version}`);
+    toast(j.skipped ? (j.message || '已是最新') : `内核就绪：${j.version}`);
   } catch (e) { toast(e.message, true); }
   btn.disabled = false;
   checkHealth();
@@ -721,8 +721,8 @@ $('btnGeoDownload').addEventListener('click', async () => {
   btn.disabled = true;
   toast('下载 geo 文件中…（geoip + geosite，最多等 3 分钟）');
   try {
-    await post('/api/geo/download', { mirror: $('mirrorUrl').value.trim() });
-    toast('geo 文件就绪');
+    const j = await post('/api/geo/download', { mirror: $('mirrorUrl').value.trim() });
+    toast(j.skipped ? (j.message || 'geo 文件已完整') : 'geo 文件就绪');
   } catch (e) { toast(e.message, true); }
   btn.disabled = false;
   checkHealth();

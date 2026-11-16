@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-const VERSION: &str = "0.9.6";
+const VERSION: &str = "0.9.7";
 const LOG_RING: usize = 400;
 /// service.log rotates to service.log.old when it grows past this (1 MB).
 const LOG_FILE_MAX: u64 = 1024 * 1024;
@@ -471,7 +471,78 @@ fn with_core_stopped<T>(
     r
 }
 
+/// Parse "Xray 26.9.9 (...)" / "v26.9.9" → [26, 9, 9]. None if unparseable.
+fn version_key(s: &str) -> Option<Vec<u32>> {
+    let t = s.trim().trim_start_matches('v');
+    let t = t.strip_prefix("Xray ").unwrap_or(t);
+    let t = t.split([' ', '(', '-']).next().unwrap_or("");
+    let mut out = Vec::new();
+    for p in t.split('.') {
+        out.push(p.trim().parse::<u32>().ok()?);
+    }
+    if out.is_empty() { None } else { Some(out) }
+}
+
+/// Segment-wise compare, padding the shorter side with zeros.
+fn ver_cmp(a: &[u32], b: &[u32]) -> std::cmp::Ordering {
+    for i in 0..a.len().max(b.len()) {
+        let x = a.get(i).copied().unwrap_or(0);
+        let y = b.get(i).copied().unwrap_or(0);
+        if x != y {
+            return x.cmp(&y);
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+
+/// Latest Xray-core tag from the GitHub releases API (proxied when the core
+/// is running, direct otherwise). None = API unreachable, caller falls back
+/// to the old always-download behavior.
+fn latest_xray_tag(st: &State) -> Option<String> {
+    let body = http_get_auto(
+        st,
+        "版本检查",
+        "https://api.github.com/repos/XTLS/Xray-core/releases/latest",
+        20,
+    )
+    .ok()?;
+    let v: Value = serde_json::from_slice(&body).ok()?;
+    v.get("tag_name")?.as_str().map(|s| s.trim().to_string())
+}
+
 fn core_download(st: &State, mirror: &str) -> Result<Value, String> {
+    // Preflight: only download when the local core is OLDER than the latest
+    // release, OR required files are missing (repair). Up-to-date + complete
+    // → skip; anything else keeps the old always-download fallback (API
+    // unreachable, unparseable versions, custom builds).
+    let exe_ok = st.xray_exe().is_file();
+    let wintun_ok = st.bin_dir.join("wintun.dll").is_file();
+    let local_ver = xray_version_cached(st);
+    if exe_ok && wintun_ok {
+        if let Some(lk) = version_key(&local_ver) {
+            if let Some(tag) = latest_xray_tag(st) {
+                match version_key(&tag).map(|nk| ver_cmp(&nk, &lk)) {
+                    Some(std::cmp::Ordering::Equal) | Some(std::cmp::Ordering::Greater) => {
+                        st.log(&format!("内核已是最新（{local_ver}），跳过下载"));
+                        return Ok(json!({
+                            "ok": true,
+                            "skipped": true,
+                            "version": local_ver,
+                            "message": format!("内核已是最新（{local_ver}），无需下载")
+                        }));
+                    }
+                    Some(std::cmp::Ordering::Less) => {
+                        st.log(&format!("发现新内核：本地 {local_ver} → 最新 {tag}"));
+                    }
+                    None => st.log(&format!("无法解析最新版本号（{tag}），继续下载")),
+                }
+            } else {
+                st.log("无法获取最新版本号（GitHub API 不可达），继续下载");
+            }
+        }
+    } else {
+        st.log("内核文件不完整（xray.exe / wintun.dll 缺失），执行修复下载");
+    }
     let url = if mirror.is_empty() {
         net::XRAY_RELEASE_URL.to_string()
     } else {
@@ -506,6 +577,19 @@ fn core_download(st: &State, mirror: &str) -> Result<Value, String> {
 }
 
 fn geo_download(st: &State, mirror: &str) -> Result<Value, String> {
+    // Loyalsoldier dat files are rolling "latest" builds with no comparable
+    // version, so the preflight is a completeness check only: both files
+    // present and non-empty → skip. Missing/empty → (re)download.
+    let complete = ["geoip.dat", "geosite.dat"].iter().all(|name| {
+        std::fs::metadata(st.bin_dir.join(name))
+            .map(|m| m.len() > 0)
+            .unwrap_or(false)
+    });
+    if complete {
+        st.log("geo 文件已完整（geoip.dat + geosite.dat），跳过下载");
+        return Ok(json!({ "ok": true, "skipped": true, "message": "geo 文件已完整（geoip.dat + geosite.dat），无需下载" }));
+    }
+    st.log("geo 文件缺失，开始下载");
     let base = if mirror.is_empty() {
         GEO_URL_TEMPLATE.to_string()
     } else {
