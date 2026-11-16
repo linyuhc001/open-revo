@@ -16,8 +16,12 @@ use windows_sys::Win32::System::Registry::{
     HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE, REG_DWORD, REG_SZ,
 };
 use windows_sys::Win32::System::Threading::{
-    CreateProcessW, GetExitCodeProcess, ResumeThread, TerminateProcess, WaitForSingleObject,
-    CREATE_NO_WINDOW, CREATE_SUSPENDED, PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOW,
+    CreateProcessW, GetExitCodeProcess, GetProcessId, OpenProcess, QueryFullProcessImageNameW,
+    ResumeThread, TerminateProcess, WaitForSingleObject, CREATE_NO_WINDOW, CREATE_SUSPENDED,
+    PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOW,
+};
+use windows_sys::Win32::NetworkManagement_IpHelper::{
+    GetExtendedTcpTable, TCP_TABLE_OWNER_PID_ALL,
 };
 
 /// Sendable wrapper for a child-process HANDLE. The raw pointer is only ever
@@ -243,5 +247,84 @@ fn refresh_wininet() {
     unsafe {
         InternetSetOptionW(std::ptr::null_mut(), INTERNET_OPTION_SETTINGS_CHANGED, std::ptr::null(), 0);
         InternetSetOptionW(std::ptr::null_mut(), INTERNET_OPTION_REFRESH, std::ptr::null(), 0);
+    }
+}
+
+// ---------- port conflict detection (same pattern as process-manager) ------
+
+/// PID of a process handle (0 → None).
+pub fn process_id(h: HANDLE) -> Option<u32> {
+    let pid = unsafe { GetProcessId(h) };
+    if pid == 0 { None } else { Some(pid) }
+}
+
+/// Is `port` bindable on 127.0.0.1? If not, report who holds it by looking up
+/// the LISTEN row in the TCP table. Returns (process_image_name, pid).
+pub fn listener_owner(port: u16) -> (String, Option<u32>) {
+    #[repr(C)]
+    struct TcpRowOwnerPid {
+        state: u32,
+        local_addr: u32,
+        local_port: u32,
+        remote_addr: u32,
+        remote_port: u32,
+        owning_pid: u32,
+    }
+    unsafe {
+        let mut size: u32 = 0;
+        let rc = GetExtendedTcpTable(
+            std::ptr::null_mut(),
+            &mut size,
+            0,
+            2, // AF_INET
+            TCP_TABLE_OWNER_PID_ALL as i32,
+            0,
+        );
+        if rc != 122 {
+            return (String::new(), None); // ERROR_INSUFFICIENT_BUFFER expected
+        }
+        let mut buf = vec![0u8; size as usize];
+        let rc = GetExtendedTcpTable(
+            buf.as_mut_ptr() as *mut core::ffi::c_void,
+            &mut size,
+            0,
+            2,
+            TCP_TABLE_OWNER_PID_ALL as i32,
+            0,
+        );
+        if rc != 0 {
+            return (String::new(), None);
+        }
+        let base = buf.as_mut_ptr() as *const u32;
+        let count = *base as usize;
+        let row_ptr = base.add(1) as *const TcpRowOwnerPid;
+        for i in 0..count {
+            let r = std::ptr::read(row_ptr.add(i));
+            // state 2 = LISTEN; port is stored network-endian in a dword
+            if r.state == 2 && (((r.local_port >> 8) & 0xff) | ((r.local_port & 0xff) << 8)) as u16 == port {
+                return (process_image(r.owning_pid), Some(r.owning_pid));
+            }
+        }
+    }
+    (String::new(), None)
+}
+
+/// Process image file name for a PID (basename only), "pid N" as fallback.
+fn process_image(pid: u32) -> String {
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if h.is_null() {
+            return format!("pid {pid}");
+        }
+        let mut buf = [0u16; 1024];
+        let mut len = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(h, 0, buf.as_mut_ptr(), &mut len);
+        windows_sys::Win32::Foundation::CloseHandle(h);
+        if ok != 0 {
+            let s = String::from_utf16_lossy(&buf[..len as usize]);
+            s.rsplit(['\\', '/']).next().unwrap_or(&s).to_string()
+        } else {
+            format!("pid {pid}")
+        }
     }
 }

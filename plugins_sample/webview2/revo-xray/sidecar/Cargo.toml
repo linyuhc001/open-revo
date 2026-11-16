@@ -2,7 +2,7 @@
 name = "xray-service"
 version = "0.9.0"
 edition = "2021"
-description = "OpenRevo xray-tuner companion service (Xray-core process manager + node/subscription API)"
+description = "OpenRevo revo-xray companion service (Xray-core process manager + node/subscription API)"
 
 [[bin]]
 name = "xray-service"
@@ -24,6 +24,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_JobObjects",
     "Win32_System_Registry",
     "Win32_Networking_WinInet",
+    "Win32_NetworkManagement_IpHelper",
 ] }
 
 [profile.release]

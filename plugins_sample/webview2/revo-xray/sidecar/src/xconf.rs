@@ -6,6 +6,7 @@
 // a readable message instead of producing a config that silently fails.
 
 use crate::node::Node;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 pub struct Ports {
@@ -13,7 +14,39 @@ pub struct Ports {
     pub http: u16,
 }
 
-pub fn build_config(node: &Node, ports: &Ports, geoip_ok: bool, geosite_ok: bool) -> Result<String, String> {
+/// One user-defined routing rule (v2rayN simplified form). `domain` entries
+/// accept `geosite:xx` / `domain:xx` / plain substrings, `ip` accepts
+/// `geoip:xx` / `geoip:private` / CIDR.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Rule {
+    #[serde(default)]
+    pub outbound: String, // proxy | direct | block
+    #[serde(default)]
+    pub domain: Vec<String>,
+    #[serde(default)]
+    pub ip: Vec<String>,
+}
+
+/// Basic DNS settings, v2rayN's "DNS 基础设置": an `dns` block for
+/// IPIfNonMatch domain resolution, no dedicated dns-out outbound.
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct DnsCfg {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub servers: Vec<String>,
+    #[serde(default)]
+    pub query_strategy: String, // UseIP | UseIPv4 | UseIPv6 (empty = UseIP)
+}
+
+pub fn build_config(
+    node: &Node,
+    ports: &Ports,
+    geoip_ok: bool,
+    geosite_ok: bool,
+    rules: &[Rule],
+    dns: &DnsCfg,
+) -> Result<String, String> {
     let outbound = node_outbound(node)?;
     // Drop rules that reference geo dat files we don't have — xray refuses to
     // load the whole config otherwise. Plain domain/CIDR rules always survive.
@@ -32,9 +65,25 @@ pub fn build_config(node: &Node, ports: &Ports, geoip_ok: bool, geosite_ok: bool
         { "type": "field", "domain": ["geosite:cn"], "outboundTag": "direct" },
         { "type": "field", "ip": ["geoip:cn"], "outboundTag": "direct" }
     ]);
-    let rules: Vec<Value> = default_rules.as_array().unwrap()
-        .iter().filter(|r| rule_keeps(r)).cloned().collect();
-    let cfg = json!({
+    let rule_list: Vec<Value> = if rules.is_empty() {
+        default_rules.as_array().unwrap()
+            .iter().filter(|r| rule_keeps(r)).cloned().collect()
+    } else {
+        rules.iter().filter_map(|r| {
+            let mut obj = serde_json::Map::new();
+            obj.insert("type".into(), json!("field"));
+            obj.insert("outboundTag".into(), json!(r.outbound));
+            if !r.domain.is_empty() {
+                obj.insert("domain".into(), json!(r.domain));
+            }
+            if !r.ip.is_empty() {
+                obj.insert("ip".into(), json!(r.ip));
+            }
+            let v = Value::Object(obj);
+            rule_keeps(&v).then_some(v)
+        }).collect()
+    };
+    let mut cfg = json!({
         "log": { "loglevel": "warning" },
         "inbounds": [
             {
@@ -60,9 +109,16 @@ pub fn build_config(node: &Node, ports: &Ports, geoip_ok: bool, geosite_ok: bool
         ],
         "routing": {
             "domainStrategy": "IPIfNonMatch",
-            "rules": rules
+            "rules": rule_list
         }
     });
+    if dns.enabled && !dns.servers.is_empty() {
+        let strat = if dns.query_strategy.is_empty() { "UseIP".to_string() } else { dns.query_strategy.clone() };
+        cfg.as_object_mut().unwrap().insert("dns".into(), json!({
+            "servers": dns.servers.clone(),
+            "queryStrategy": strat,
+        }));
+    }
     Ok(cfg.to_string())
 }
 

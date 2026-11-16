@@ -1,4 +1,4 @@
-// xray-service — OpenRevo xray-tuner companion service.
+// xray-service — OpenRevo revo-xray companion service.
 //
 // Headless HTTP service (127.0.0.1:18957 by default) that drives Xray-core:
 // node/subscription storage, share-link parsing, client config generation,
@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-const VERSION: &str = "0.9.1";
+const VERSION: &str = "0.9.2";
 const LOG_RING: usize = 400;
 /// v2rayN's geo template: Global.GeoUrl in ServiceLib/Global.cs.
 /// `{0}` is filled with "geoip" / "geosite".
@@ -42,6 +42,10 @@ struct Persist {
     socks_port: u16,
     #[serde(default = "default_http")]
     http_port: u16,
+    #[serde(default)]
+    routing: Vec<xconf::Rule>,
+    #[serde(default)]
+    dns: xconf::DnsCfg,
 }
 
 fn default_socks() -> u16 { 10808 }
@@ -135,6 +139,13 @@ impl State {
             }
         }
         None
+    }
+
+    /// PID of the running xray child, if any — used to whitelist "the port is
+    /// held by our own core" during conflict probes.
+    fn core_pid(&self) -> Option<u32> {
+        let guard = self.core.lock().unwrap();
+        guard.as_ref().and_then(|h| winapi::process_id(h.0))
     }
 }
 
@@ -271,7 +282,9 @@ fn core_start(st: &State) -> Result<Value, String> {
         None => return Err("尚未选择节点".into()),
     };
     let ports = xconf::Ports { socks: p.socks_port, http: p.http_port };
-    let cfg = xconf::build_config(&node, &ports, geoip_ok, geosite_ok)?;
+    let rules = p.routing.clone();
+    let dns = p.dns.clone();
+    let cfg = xconf::build_config(&node, &ports, geoip_ok, geosite_ok, &rules, &dns)?;
     let cfg_path = st.data_dir.join("config.json");
     std::fs::write(&cfg_path, &cfg).map_err(|e| format!("写配置失败: {e}"))?;
 
@@ -395,6 +408,190 @@ fn h_proxy_toggle(st: &State, v: &Value) -> Result<Value, String> {
         st.log("总开关：代理关闭（系统代理已还原，核心已停止）");
     }
     Ok(json!({ "ok": true, "on": on }))
+}
+
+// ---------- settings: ports / routing / dns -------------------------------
+
+/// Save something into Persist, persist it, and hot-restart the core if it
+/// was running so the change takes effect immediately.
+fn save_and_restart<F>(st: &State, mutate: F) -> Result<Value, String>
+where
+    F: FnOnce(&mut Persist),
+{
+    let was_running = st.core_running();
+    {
+        let mut p = st.data.lock().unwrap();
+        mutate(&mut p);
+        st.persist(&p);
+    }
+    if was_running {
+        st.log("配置已保存，重启核心使新配置生效…");
+        core_start(st)?;
+        st.log("核心已按新配置重启");
+    }
+    Ok(json!({ "ok": true, "restarted": was_running }))
+}
+
+fn h_settings(st: &State) -> Value {
+    let p = st.data.lock().unwrap();
+    json!({
+        "socks_port": p.socks_port,
+        "http_port": p.http_port,
+        "routing": p.routing,
+        "dns": p.dns,
+    })
+}
+
+/// Port conflict probe, same semantics as process-manager's /api/port/check:
+/// real bind attempt on 127.0.0.1, owner lookup via the TCP table when busy.
+/// A candidate equal to our own service port is always rejected.
+fn h_ports_check(st: &State, v: &Value) -> Value {
+    let parse = |k: &str| -> Option<u16> {
+        v.get(k).and_then(|x| x.as_u64()).map(|n| n as u16)
+            .or_else(|| v.get(k).and_then(|x| x.as_str()).and_then(|s| s.trim().parse().ok()))
+    };
+    let service_port = HEALTH_PORT.load(Ordering::Relaxed);
+    let core_pid = st.core_pid();
+    let mut out = serde_json::Map::new();
+    for k in ["socks", "http"] {
+        let Some(p) = parse(k) else {
+            out.insert(k.into(), json!({ "ok": false, "reason": "端口无效" }));
+            continue;
+        };
+        if p < 1024 || p > 65535 {
+            out.insert(k.into(), json!({ "ok": false, "reason": "需在 1024–65535 之间" }));
+            continue;
+        }
+        if p == service_port {
+            out.insert(k.into(), json!({ "ok": false, "reason": format!("与插件服务端口 {service_port} 冲突") }));
+            continue;
+        }
+        match std::net::TcpListener::bind(("127.0.0.1", p)) {
+            Ok(l) => drop(l),
+            Err(_) => {
+                let (owner, pid) = winapi::listener_owner(p);
+                // our own running xray holds this inbound — usable by definition
+                if pid.is_some() && pid == core_pid {
+                    out.insert(k.into(), json!({ "ok": true, "self": true }));
+                    continue;
+                }
+                let who = if owner.is_empty() { format!("未知进程(pid {pid:?})") } else { owner };
+                out.insert(k.into(), json!({ "ok": false, "reason": format!("已被 {who} 占用"), "pid": pid }));
+                continue;
+            }
+        }
+        out.insert(k.into(), json!({ "ok": true }));
+    }
+    // cross-check only matters when both parsed fine
+    if let (Some(a), Some(b)) = (parse("socks"), parse("http")) {
+        if a == b && a >= 1024 {
+            out.insert("socks".into(), json!({ "ok": false, "reason": "socks 与 http 端口相同" }));
+            out.insert("http".into(), json!({ "ok": false, "reason": "socks 与 http 端口相同" }));
+        }
+    }
+    let all_ok = out.values().all(|x| x.get("ok").and_then(|y| y.as_bool()).unwrap_or(false));
+    json!({ "ok": all_ok, "ports": out })
+}
+
+fn h_ports_set(st: &State, v: &Value) -> Result<Value, String> {
+    let parse = |k: &str| -> Result<u16, String> {
+        v.get(k)
+            .and_then(|x| x.as_u64())
+            .map(|n| n as u16)
+            .or_else(|| v.get(k).and_then(|x| x.as_str()).and_then(|s| s.trim().parse().ok()))
+            .ok_or(format!("缺少或无效的 {k} 端口"))
+    };
+    let socks = parse("socks")?;
+    let http = parse("http")?;
+    let service_port = HEALTH_PORT.load(Ordering::Relaxed);
+    for (name, p) in [("socks", socks), ("http", http)] {
+        if p < 1024 {
+            return Err(format!("{name} 端口需在 1024–65535 之间"));
+        }
+        if p == service_port {
+            return Err(format!("{name} 端口与插件服务端口 {service_port} 冲突"));
+        }
+    }
+    if socks == http {
+        return Err("socks 与 http 端口不能相同".into());
+    }
+    // belt and braces: re-run the conflict probe before committing
+    let probe = h_ports_check(st, &json!({ "socks": socks, "http": http }));
+    if !probe.get("ok").and_then(|x| x.as_bool()).unwrap_or(false) {
+        return Err(format!("端口检测未通过：{probe}"));
+    }
+    let socks_str = socks; let http_str = http;
+    let r = save_and_restart(st, |p| {
+        p.socks_port = socks_str;
+        p.http_port = http_str;
+    })?;
+    st.log(&format!("入站端口改为 socks:{socks} / http:{http}"));
+    Ok(r)
+}
+
+fn parse_rules(v: &Value) -> Result<Vec<xconf::Rule>, String> {
+    let arr = v.get("rules").and_then(|x| x.as_array()).ok_or("缺少 rules")?;
+    let mut out = Vec::new();
+    for r in arr {
+        let ob = r.get("outbound").and_then(|x| x.as_str()).unwrap_or("direct").to_string();
+        if !matches!(ob.as_str(), "proxy" | "direct" | "block") {
+            return Err(format!("未知出站: {ob}"));
+        }
+        let split = |k: &str| -> Vec<String> {
+            r.get(k).and_then(|x| x.as_str()).unwrap_or("")
+                .split([',', '，', ';', '；', '\n'])
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        };
+        let domain = split("domain");
+        let ip = split("ip");
+        if domain.is_empty() && ip.is_empty() {
+            return Err("存在既无域名也无 IP 的规则".into());
+        }
+        out.push(xconf::Rule { outbound: ob, domain, ip });
+    }
+    if out.len() > 64 {
+        return Err("规则过多（上限 64 条）".into());
+    }
+    Ok(out)
+}
+
+fn h_routing_set(st: &State, v: &Value) -> Result<Value, String> {
+    let rules = parse_rules(v)?;
+    let n = rules.len();
+    let r = save_and_restart(st, |p| p.routing = rules)?;
+    st.log(&format!("路由规则已保存（{n} 条）"));
+    Ok(r)
+}
+
+fn h_dns_set(st: &State, v: &Value) -> Result<Value, String> {
+    let enabled = v.get("enabled").and_then(|x| x.as_bool()).unwrap_or(false);
+    let servers: Vec<String> = v
+        .get("servers")
+        .and_then(|x| x.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()))
+                .collect()
+        })
+        .unwrap_or_default();
+    if enabled && servers.is_empty() {
+        return Err("启用 DNS 时至少填一个服务器".into());
+    }
+    let mut strat = jstr(v, "query_strategy");
+    if !matches!(strat.as_str(), "UseIP" | "UseIPv4" | "UseIPv6") {
+        strat = "UseIP".into();
+    }
+    let n = servers.len();
+    let r = save_and_restart(st, |p| {
+        p.dns = xconf::DnsCfg { enabled, servers: servers.clone(), query_strategy: strat.clone() };
+    })?;
+    st.log(&format!(
+        "DNS 设置已保存（{}，{n} 个服务器）",
+        if enabled { "启用" } else { "停用" }
+    ));
+    Ok(r)
 }
 
 // ---------- route handlers ----------
@@ -670,6 +867,11 @@ fn route(st: &Arc<State>, method: &str, path: &str, body: &[u8]) -> Result<Value
         ("POST", "/api/core/download") => core_download(st, &jstr(&v, "mirror")),
         ("POST", "/api/geo/download") => geo_download(st, &jstr(&v, "mirror")),
         ("POST", "/api/proxy/toggle") => h_proxy_toggle(st, &v),
+        ("GET", "/api/settings") => Ok(h_settings(st)),
+        ("POST", "/api/ports/check") => Ok(h_ports_check(st, &v)),
+        ("POST", "/api/ports/set") => h_ports_set(st, &v),
+        ("POST", "/api/routing/set") => h_routing_set(st, &v),
+        ("POST", "/api/dns/set") => h_dns_set(st, &v),
         ("GET", "/api/log") => {
             let ring = st.logs.lock().unwrap();
             Ok(json!({ "log": ring.iter().cloned().collect::<Vec<_>>().join("\n") }))

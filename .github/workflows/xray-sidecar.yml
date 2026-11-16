@@ -1,6 +1,6 @@
 name: Build Xray Service
 
-# Compiles the xray-tuner companion service into a standalone .exe and
+# Compiles the revo-xray companion service into a standalone .exe and
 # publishes it as an artifact. Same pattern as process-service.yml / pbo-sidecar.yml:
 # the sidecar crate lives inside the plugin folder and never builds the host.
 
@@ -11,9 +11,9 @@ on:
     # under sidecar/, and matching it here would make every artifact commit
     # trigger another build.
     paths:
-      - 'plugins_sample/webview2/xray-tuner/sidecar/src/**'
-      - 'plugins_sample/webview2/xray-tuner/sidecar/Cargo.toml'
-      - 'plugins_sample/webview2/xray-tuner/sidecar/Cargo.lock'
+      - 'plugins_sample/webview2/revo-xray/sidecar/src/**'
+      - 'plugins_sample/webview2/revo-xray/sidecar/Cargo.toml'
+      - 'plugins_sample/webview2/revo-xray/sidecar/Cargo.lock'
       - '.github/workflows/xray-sidecar.yml'
 
 permissions:
@@ -36,15 +36,15 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: plugins_sample/webview2/xray-tuner/sidecar
+          workspaces: plugins_sample/webview2/revo-xray/sidecar
 
       - name: Build release
-        working-directory: plugins_sample/webview2/xray-tuner/sidecar
+        working-directory: plugins_sample/webview2/revo-xray/sidecar
         run: cargo build --release
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: xray-service
-          path: plugins_sample/webview2/xray-tuner/sidecar/target/release/xray-service.exe
+          path: plugins_sample/webview2/revo-xray/sidecar/target/release/xray-service.exe
           if-no-files-found: error

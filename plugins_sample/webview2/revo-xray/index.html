@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Xray 代理调校</title>
+<title>Revo Xray</title>
 <style>
   :root {
     --bg: #0d1117;
@@ -71,11 +71,11 @@
   .btn.danger { color: var(--status-err); border-color: #f8514955; }
   .btn.danger:hover { background: #f8514922; }
   .btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
-  input[type="text"], textarea {
+  input[type="text"], textarea, select {
     background: var(--surface); border: 1px solid var(--border-subtle); color: var(--text-primary);
     border-radius: var(--radius-sm); padding: 6px 10px; font: inherit; font-size: 12px; outline: none;
   }
-  input[type="text"]:focus, textarea:focus { border-color: var(--accent); }
+  input[type="text"]:focus, textarea:focus, select:focus { border-color: var(--accent); }
   textarea { width: 100%; font-family: var(--mono); resize: vertical; min-height: 70px; }
   table { width: 100%; border-collapse: collapse; font-size: 12px; }
   th, td { padding: 6px 8px; text-align: left; border-bottom: 1px solid #21262d; white-space: nowrap; }
@@ -123,7 +123,7 @@
 </head>
 <body>
   <div class="header">
-    <h1>Xray 代理调校</h1>
+    <h1>Revo Xray</h1>
     <div class="svc">
       <button id="masterSwitch" class="master" title="一键开启/关闭代理：启动核心 + 接管系统代理"><span class="mdot"></span><span id="masterText">代理 关</span></button>
       <span style="color:#21262d">|</span>
@@ -138,7 +138,10 @@
   <div class="nav" id="nav">
     <button data-page="nodes" class="active">节点</button>
     <button data-page="subs">订阅</button>
+    <button data-page="routing">路由</button>
+    <button data-page="dns">DNS</button>
     <button data-page="core">核心</button>
+    <button data-page="settings">设置</button>
     <button data-page="logs">日志</button>
   </div>
 
@@ -230,6 +233,88 @@
     </div>
   </div>
 
+  <!-- ===== 路由 ===== -->
+  <div class="page" data-page="routing">
+    <div class="card">
+      <h2>路由规则 <span class="tag" id="ruleCount">0</span>
+        <span class="hint">自上而下匹配，先命中先用 · 域名支持 geosite:cn / domain:xx.com / 纯域名 · IP 支持 geoip:cn / geoip:private / CIDR（多项逗号分隔）</span>
+      </h2>
+      <div id="ruleWrap" style="max-height:400px;overflow-y:auto;">
+        <table>
+          <thead><tr><th style="width:34px">#</th><th style="width:104px">出站</th><th style="width:42%">域名</th><th style="width:32%">IP</th><th style="width:130px">操作</th></tr></thead>
+          <tbody id="ruleBody"></tbody>
+        </table>
+        <div class="empty" id="ruleEmpty">未自定义规则（使用默认 CN 直连规则集）</div>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <button class="btn primary" id="btnRuleSave">保存规则</button>
+        <button class="btn" id="btnRuleAdd">添加规则</button>
+        <button class="btn" id="btnRuleDefault">填入默认规则</button>
+        <button class="btn" id="btnRuleClear">清空（回到默认）</button>
+        <span class="hint" style="font-size:11px;color:var(--text-dim);">保存后若核心在运行会自动重启生效；缺 geo 文件时 geo 规则自动跳过</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== DNS ===== -->
+  <div class="page" data-page="dns">
+    <div class="card">
+      <h2>DNS 基础设置 <span class="hint">同 v2rayN 基础模式：注入 dns 段供 IPIfNonMatch 域名解析用，不建独立 dns-out</span></h2>
+      <div class="row">
+        <span>启用 DNS</span>
+        <div id="dnsSwitch" class="switch"></div>
+        <span style="color:#21262d">|</span>
+        <span>查询策略</span>
+        <select id="dnsStrategy">
+          <option value="UseIP">UseIP</option>
+          <option value="UseIPv4">UseIPv4</option>
+          <option value="UseIPv6">UseIPv6</option>
+        </select>
+      </div>
+      <textarea id="dnsServers" style="margin-top:10px;min-height:120px;" placeholder="每行一个 DNS 服务器，例如：
+https://223.5.5.5/dns-query
+223.5.5.5
+https://doh.pub/dns-query"></textarea>
+      <div class="row" style="margin-top:8px;">
+        <button class="btn primary" id="btnDnsSave">保存 DNS 设置</button>
+        <span class="hint" style="font-size:11px;color:var(--text-dim);">保存后若核心在运行会自动重启生效；未启用时配置里不含 dns 段</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 设置 ===== -->
+  <div class="page" data-page="settings">
+    <div class="card">
+      <h2>入站端口 <span class="hint">本机代理入口，保存前会做端口冲突检测（同进程管理插件）</span></h2>
+      <div class="row">
+        <span>SOCKS5 端口</span>
+        <input type="text" id="setSocksPort" style="width:110px;" />
+        <span style="color:#21262d">|</span>
+        <span>HTTP 端口</span>
+        <input type="text" id="setHttpPort" style="width:110px;" />
+        <button class="btn" id="btnPortsCheck">检测冲突</button>
+        <button class="btn primary" id="btnPortsSave">保存</button>
+        <button class="btn" id="btnPortsReset">还原默认</button>
+      </div>
+      <div class="row" style="margin-top:8px;">
+        <span class="hint" id="portsHint" style="font-size:11px;color:var(--text-dim);">
+          默认 10808 / 10809，范围 1024–65535 且两者不能相同、不能占用插件服务端口；
+          保存后若核心在运行会自动重启生效，系统代理始终指向 HTTP 入口
+        </span>
+      </div>
+    </div>
+    <div class="card">
+      <h2>关于</h2>
+      <div class="row" style="font-size:12px;color:var(--text-dim);">
+        <span>服务版本 <b id="svcVer" style="color:var(--text-primary);">—</b></span>
+        <span style="color:#21262d">|</span>
+        <span>内核 <b id="xrayVerShort" style="color:var(--text-primary);">—</b></span>
+        <span style="color:#21262d">|</span>
+        <span>数据目录：插件目录下 data\（config.json 每次启动核心自动重生成）</span>
+      </div>
+    </div>
+  </div>
+
   <!-- ===== 日志 ===== -->
   <div class="page" data-page="logs">
     <div class="card">
@@ -279,6 +364,8 @@ async function checkHealth() {
     $('svcText').textContent = serviceOk
       ? `服务在线 v${j.version || ''}`
       : '服务异常';
+    $('svcVer').textContent = j.version || '—';
+    $('xrayVerShort').textContent = j.xray_installed ? (j.xray_version || '已安装') : '未安装';
     $('svcDot').classList.toggle('ok', serviceOk);
     applyHealth(j);
     return serviceOk;
@@ -557,6 +644,147 @@ $('sysProxySwitch').addEventListener('click', async () => {
   } catch (e) { toast(e.message, true); }
 });
 
+// ---------------- settings: ports / routing / dns ----------------
+let routingRules = []; // {outbound, domain, ip} — domain/ip are comma strings in the editor
+
+async function getSettings() {
+  const j = await api('/api/settings');
+  $('setSocksPort').value = j.socks_port || 10808;
+  $('setHttpPort').value = j.http_port || 10809;
+  routingRules = (j.routing || []).map((r) => ({
+    outbound: r.outbound || 'direct',
+    domain: (r.domain || []).join(','),
+    ip: (r.ip || []).join(','),
+  }));
+  renderRules();
+  const d = j.dns || {};
+  $('dnsSwitch').classList.toggle('on', !!d.enabled);
+  $('dnsStrategy').value = d.query_strategy || 'UseIP';
+  $('dnsServers').value = (d.servers || []).join('\n');
+}
+
+function renderRules() {
+  const body = $('ruleBody');
+  $('ruleCount').textContent = routingRules.length;
+  $('ruleEmpty').style.display = routingRules.length ? 'none' : 'block';
+  const obLabel = { proxy: '代理', direct: '直连', block: '拦截' };
+  body.innerHTML = routingRules.map((r, i) => `
+    <tr data-i="${i}">
+      <td>${i + 1}</td>
+      <td>
+        <select data-f="outbound" style="width:88px;">
+          ${['proxy', 'direct', 'block'].map((o) => `<option value="${o}"${r.outbound === o ? ' selected' : ''}>${obLabel[o]}</option>`).join('')}
+        </select>
+      </td>
+      <td><input type="text" data-f="domain" value="${esc(r.domain)}" style="width:100%;" placeholder="geosite:cn,domain:xx.com" /></td>
+      <td><input type="text" data-f="ip" value="${esc(r.ip)}" style="width:100%;" placeholder="geoip:cn,1.2.3.0/24" /></td>
+      <td>
+        <button class="btn" data-act="up"${i === 0 ? ' disabled' : ''}>↑</button>
+        <button class="btn" data-act="down"${i === routingRules.length - 1 ? ' disabled' : ''}>↓</button>
+        <button class="btn danger" data-act="del">删</button>
+      </td>
+    </tr>`).join('');
+}
+
+$('ruleBody').addEventListener('input', (ev) => {
+  const tr = ev.target.closest('tr[data-i]');
+  const f = ev.target.dataset.f;
+  if (!tr || !f) return;
+  const i = Number(tr.dataset.i);
+  if (!routingRules[i]) return;
+  routingRules[i][f] = ev.target.value;
+});
+$('ruleBody').addEventListener('click', (ev) => {
+  const btn = ev.target.closest('button[data-act]');
+  if (!btn) return;
+  const i = Number(btn.closest('tr').dataset.i);
+  const act = btn.dataset.act;
+  if (act === 'up' && i > 0) {
+    [routingRules[i - 1], routingRules[i]] = [routingRules[i], routingRules[i - 1]];
+  } else if (act === 'down' && i < routingRules.length - 1) {
+    [routingRules[i + 1], routingRules[i]] = [routingRules[i], routingRules[i + 1]];
+  } else if (act === 'del') {
+    routingRules.splice(i, 1);
+  } else {
+    return;
+  }
+  renderRules();
+});
+$('btnRuleAdd').addEventListener('click', () => {
+  routingRules.push({ outbound: 'direct', domain: '', ip: '' });
+  renderRules();
+});
+$('btnRuleDefault').addEventListener('click', () => {
+  routingRules = [
+    { outbound: 'direct', domain: '', ip: 'geoip:private' },
+    { outbound: 'direct', domain: 'geosite:private', ip: '' },
+    { outbound: 'direct', domain: 'geosite:cn', ip: '' },
+    { outbound: 'direct', domain: '', ip: 'geoip:cn' },
+  ];
+  renderRules();
+});
+$('btnRuleClear').addEventListener('click', () => {
+  routingRules = [];
+  renderRules();
+  toast('已清空，点「保存规则」后回到默认 CN 直连规则集');
+});
+$('btnRuleSave').addEventListener('click', async () => {
+  const rules = routingRules.map((r) => ({ outbound: r.outbound, domain: r.domain || '', ip: r.ip || '' }));
+  try {
+    const j = await post('/api/routing/set', { rules });
+    toast(j.restarted ? `已保存 ${rules.length} 条规则并重启核心` : `已保存 ${rules.length} 条规则`);
+  } catch (e) { toast(e.message, true); }
+});
+
+$('dnsSwitch').addEventListener('click', () => $('dnsSwitch').classList.toggle('on'));
+$('btnDnsSave').addEventListener('click', async () => {
+  const enabled = $('dnsSwitch').classList.contains('on');
+  const servers = $('dnsServers').value.split('\n').map((s) => s.trim()).filter(Boolean);
+  try {
+    const j = await post('/api/dns/set', { enabled, servers, query_strategy: $('dnsStrategy').value });
+    toast(j.restarted ? 'DNS 已保存并重启核心' : 'DNS 已保存');
+  } catch (e) { toast(e.message, true); }
+});
+
+async function portsCheck(socks, http) {
+  return post('/api/ports/check', { socks, http });
+}
+function showPortProblems(j) {
+  const bad = Object.entries(j.ports || {}).filter(([, x]) => !x.ok);
+  if (bad.length) {
+    toast(bad.map(([k, x]) => `${k === 'socks' ? 'SOCKS' : 'HTTP'}: ${x.reason}`).join('；'), true);
+    return true;
+  }
+  return false;
+}
+$('btnPortsCheck').addEventListener('click', async () => {
+  try {
+    const j = await portsCheck($('setSocksPort').value.trim(), $('setHttpPort').value.trim());
+    if (!showPortProblems(j)) toast('两个端口都可用');
+  } catch (e) { toast(e.message, true); }
+});
+$('btnPortsSave').addEventListener('click', async () => {
+  const socks = $('setSocksPort').value.trim();
+  const http = $('setHttpPort').value.trim();
+  try {
+    // client-side pre-check mirrors the server: conflict errors surface before saving
+    const j = await portsCheck(socks, http);
+    if (showPortProblems(j)) return;
+    const r = await post('/api/ports/set', { socks: Number(socks), http: Number(http) });
+    $('socksPort').textContent = socks;
+    $('httpPort').textContent = http;
+    toast(r.restarted ? `端口已改为 ${socks}/${http} 并重启核心` : `端口已改为 ${socks}/${http}，下次启动核心生效`);
+    checkHealth();
+  } catch (e) { toast(e.message, true); }
+});
+$('btnPortsReset').addEventListener('click', async () => {
+  try {
+    const r = await post('/api/ports/set', { socks: 10808, http: 10809 });
+    toast(r.restarted ? '已还原默认端口并重启核心' : '已还原默认端口');
+    getSettings(); checkHealth();
+  } catch (e) { toast(e.message, true); }
+});
+
 // ---------------- logs ----------------
 async function refreshLog() {
   try {
@@ -577,6 +805,9 @@ document.querySelectorAll('#nav button').forEach((b) => {
     if (b.dataset.page === 'subs') getSubs().catch((e) => toast(e.message, true));
     if (b.dataset.page === 'logs') refreshLog();
     if (b.dataset.page === 'nodes') getNodes();
+    if (['routing', 'dns', 'settings'].includes(b.dataset.page)) {
+      getSettings().catch((e) => toast(e.message, true));
+    }
   });
 });
 

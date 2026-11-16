@@ -1,9 +1,9 @@
 {
-  "id": "xray-tuner",
-  "name": "Xray 代理调校",
-  "version": "0.9.1",
+  "id": "revo-xray",
+  "name": "Revo Xray",
+  "version": "0.9.2",
   "author": "Community",
-  "description": "Xray 内核代理面板：vless/vmess/trojan/ss 节点与订阅导入、一键选节点、tcping 与真连接延迟测试、系统代理开关、内核按需下载与进程托管。插件自带伴随服务直接驱动 Xray-core，不改动宿主源码。",
+  "description": "Revo Xray 代理面板：vless/vmess/trojan/ss 节点与订阅导入、一键选节点、tcping 与真连接延迟测试、系统代理开关、内核按需下载与进程托管。插件自带伴随服务直接驱动 Xray-core，不改动宿主源码。",
   "type": "tab",
   "entry": "index.html",
   "min_host_version": "0.9.4",
