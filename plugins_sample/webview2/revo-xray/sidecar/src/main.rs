@@ -24,14 +24,10 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-const VERSION: &str = "0.9.8";
+const VERSION: &str = "0.9.9";
 const LOG_RING: usize = 400;
 /// service.log rotates to service.log.old when it grows past this (1 MB).
 const LOG_FILE_MAX: u64 = 1024 * 1024;
-/// v2rayN's geo template: Global.GeoUrl in ServiceLib/Global.cs.
-/// `{0}` is filled with "geoip" / "geosite".
-const GEO_URL_TEMPLATE: &str =
-    "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download";
 /// Loyalsoldier/v2ray-rules-dat release API — tags are timestamps like
 /// "202611152204", directly comparable.
 const GEO_TAG_API: &str = "https://api.github.com/repos/Loyalsoldier/v2ray-rules-dat/releases/latest";
@@ -642,37 +638,60 @@ fn geo_download(st: &State, mirror: &str) -> Result<Value, String> {
         st.log("geo 文件缺失，开始下载");
     }
 
-    // Source order: user mirror (if set) first, then the built-ins raced by a
-    // direct speed probe (first 256KB of geoip.dat). All probes failing →
-    // keep the declared order and fall back to the proxy path per file.
-    let mut sources: Vec<(String, String)> = Vec::new();
+    // Source selection: URLs come from github.com/Loyalsoldier/v2ray-rules-dat
+    // (release + its jsDelivr mirrors). Race GitHub against the CDNs and pick
+    // the fastest. When our own proxy is running, GitHub joins the race
+    // through the tunnel; without a proxy GitHub is pointless from CN — go
+    // straight to the CDNs. The user mirror, if set, is probed too.
+    let proxy_on = st.core_running();
+    let proxy_port = if proxy_on {
+        Some(st.data.lock().unwrap_or_else(|e| e.into_inner()).http_port)
+    } else {
+        None
+    };
+    if proxy_on {
+        st.log("自身代理运行中：GitHub 经代理参与测速，与 CDN 比速度");
+    } else {
+        st.log("无自身代理：直接走 CDN 源");
+    }
+    // (label, template, proxy port override)
+    let mut sources: Vec<(String, String, Option<u16>)> = Vec::new();
     if !mirror.is_empty() {
         let m = mirror.trim_end_matches('/').to_string();
         sources.push((
             "镜像".to_string(),
             format!("{m}/Loyalsoldier/v2ray-rules-dat/releases/latest/download/{{name}}"),
+            None,
         ));
     }
-    for (label, tpl) in GEO_SOURCES {
-        sources.push((label.to_string(), tpl.to_string()));
+    let (gh_label, gh_tpl) = GEO_SOURCES[0];
+    if let Some(p) = proxy_port {
+        sources.push((format!("{gh_label}@代理"), gh_tpl.to_string(), Some(p)));
+    }
+    for (label, tpl) in &GEO_SOURCES[1..] {
+        sources.push(((*label).to_string(), (*tpl).to_string(), None));
     }
     let handles: Vec<_> = sources
         .iter()
-        .map(|(label, tpl)| {
+        .map(|(label, tpl, proxy)| {
             let url = tpl.replace("{name}", "geoip.dat");
-            let label = label.to_string();
-            let tpl = tpl.to_string();
-            std::thread::spawn(move || (label, tpl, net::probe_speed(&url, 256 * 1024, 8)))
+            let label = label.clone();
+            let tpl = tpl.clone();
+            let proxy = *proxy;
+            std::thread::spawn(move || {
+                let ms = net::probe_speed(&url, 256 * 1024, 8, proxy);
+                (label, tpl, proxy, ms)
+            })
         })
         .collect();
-    let mut probed: Vec<(String, String, Option<u128>)> = handles
+    let mut probed: Vec<(String, String, Option<u16>, Option<u128>)> = handles
         .into_iter()
-        .map(|h| h.join().unwrap_or((String::new(), String::new(), None)))
+        .map(|h| h.join().unwrap_or((String::new(), String::new(), None, None)))
         .collect();
-    probed.sort_by_key(|p| p.2.clone().unwrap_or(u128::MAX));
+    probed.sort_by_key(|p| p.3.unwrap_or(u128::MAX));
     let speed_line = probed
         .iter()
-        .map(|(l, _, ms)| match ms {
+        .map(|(l, _, _, ms)| match ms {
             Some(t) => format!("{l} {t}ms"),
             None => format!("{l} 超时"),
         })
@@ -680,17 +699,17 @@ fn geo_download(st: &State, mirror: &str) -> Result<Value, String> {
         .join(" / ");
     st.log(&format!("geo 源测速：{speed_line}，按此顺序尝试"));
 
-    // Fetch both files, walking sources fastest-first. Direct downloads —
-    // the CDNs exist precisely because GitHub is unreachable directly; if
-    // every source fails, the old proxy-path (via our own core) is the
-    // final fallback.
+    // Fetch both files, walking sources fastest-first. The file set follows
+    // v2rayN's Xray logic: geoip.dat + geosite.dat only — Country.mmdb /
+    // geoip.metadb / geoip-only-cn-private.dat belong to the mihomo core
+    // (and an optional slim geoip), which this plugin does not ship.
     let mut fetched: Vec<(String, Vec<u8>)> = Vec::new();
     for name in ["geoip.dat", "geosite.dat"] {
         let mut body = None;
-        for (label, tpl, _ms) in &probed {
+        for (label, tpl, proxy, _ms) in &probed {
             let url = tpl.replace("{name}", name);
             st.log(&format!("下载 {name} ← {label}：{url}"));
-            match net::http_get_via(&url, 180, None) {
+            match net::http_get_via(&url, 180, *proxy) {
                 Ok(b) if !b.is_empty() => {
                     st.log(&format!("{name}：{label} 下载成功 {:.1}MB", b.len() as f64 / 1e6));
                     body = Some(b);
@@ -700,15 +719,10 @@ fn geo_download(st: &State, mirror: &str) -> Result<Value, String> {
                 Err(e) => st.log(&format!("{name}：{label} 失败（{e}），换下一个源")),
             }
         }
-        let b = match body {
-            Some(b) => b,
-            None => {
-                // every direct source failed — last resort: via our own proxy
-                let url = format!("{}/{}", GEO_URL_TEMPLATE, name);
-                st.log(&format!("{name}：全部直连源失败，走自身代理兜底"));
-                http_get_auto(st, name, &url, 180)?
-            }
-        };
+        let b = body.ok_or_else(|| {
+            st.log("geo 下载失败：所有候选源（GitHub/CDN/镜像）均不可用");
+            "geo 下载失败：所有候选源均不可用，请检查网络或在设置里配置镜像".to_string()
+        })?;
         fetched.push((name.to_string(), b));
     }
 

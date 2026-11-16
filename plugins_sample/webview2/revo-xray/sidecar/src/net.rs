@@ -15,11 +15,15 @@ pub fn http_get(url: &str, timeout_s: u64) -> Result<Vec<u8>, String> {
 /// return the total elapsed ms (connect + TTFB + transfer). Used to race the
 /// GitHub release URL against jsDelivr CDNs before a geo download. None =
 /// source unusable within the timeout.
-pub fn probe_speed(url: &str, bytes: usize, timeout_s: u64) -> Option<u128> {
-    let agent = ureq::AgentBuilder::new()
+pub fn probe_speed(url: &str, bytes: usize, timeout_s: u64, proxy_port: Option<u16>) -> Option<u128> {
+    let mut builder = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(timeout_s))
-        .redirects(8)
-        .build();
+        .redirects(8);
+    if let Some(p) = proxy_port {
+        let proxy = ureq::Proxy::new(&format!("http://127.0.0.1:{p}")).ok()?;
+        builder = builder.proxy(proxy);
+    }
+    let agent = builder.build();
     let start = Instant::now();
     let resp = agent
         .get(url)
