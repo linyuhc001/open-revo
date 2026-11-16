@@ -185,7 +185,7 @@ fn dns_server_entry(addr: &str, domains: &[String]) -> Value {
 /// resolved by the direct DNS, everything else by the remote DNS. `geosite:` /
 /// `ext:` entries go to separate buckets (still per-outbound).
 fn extract_dns_domains(rule_list: &[Value]) -> (Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
-    let mut bucket = |lists: &mut [Vec<String>; 2], d: &str| {
+    let bucket = |lists: &mut [Vec<String>; 2], d: &str| {
         let is_geo = d.starts_with("geosite:") || d.starts_with("ext:");
         let l = &mut lists[if is_geo { 1 } else { 0 }];
         if !l.iter().any(|x| x == d) {
@@ -503,7 +503,7 @@ pub fn build_config(
 fn stream_settings(node: &Node) -> Result<Value, String> {
     let net = if node.net.is_empty() { "tcp" } else { node.net.as_str() };
     let mut s = json!({ "network": net });
-    let mut obj = s.as_object_mut().unwrap();
+    let obj = s.as_object_mut().unwrap();
 
     match node.tls.as_str() {
         "tls" => {

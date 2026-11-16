@@ -283,7 +283,7 @@ fn core_start(st: &State) -> Result<Value, String> {
     if !geoip_ok || !geosite_ok {
         st.log("注意：缺少 geoip.dat / geosite.dat，已降级为不含 geo 规则的配置（点「下载 Geo 文件」可恢复 CN 直连规则）");
     }
-    let mut p = st.data.lock().unwrap_or_else(|e| e.into_inner());
+    let p = st.data.lock().unwrap_or_else(|e| e.into_inner());
     let node = p
         .nodes
         .iter()
@@ -1132,6 +1132,7 @@ fn xray_version_cached(st: &State) -> String {
         return String::new();
     }
     let mtime = std::fs::metadata(&exe)
+        .ok()
         .and_then(|m| m.modified().ok())
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs())
