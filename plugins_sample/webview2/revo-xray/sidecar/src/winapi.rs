@@ -20,7 +20,7 @@ use windows_sys::Win32::System::Threading::{
     ResumeThread, TerminateProcess, WaitForSingleObject, CREATE_NO_WINDOW, CREATE_SUSPENDED,
     PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOW,
 };
-use windows_sys::Win32::NetworkManagement_IpHelper::{
+use windows_sys::Win32::NetworkManagement::IpHelper::{
     GetExtendedTcpTable, TCP_TABLE_OWNER_PID_ALL,
 };
 
