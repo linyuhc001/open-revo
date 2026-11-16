@@ -182,10 +182,18 @@ pub fn unzip_into(zip_path: &Path, dest: &Path) -> Result<Vec<String>, String> {
     if extracted.is_empty() {
         return Err("zip 里没有条目".into());
     }
-    // The official release zip ships a few manual-run helper scripts
-    // (xray_no_window.{cmd,ps1,vbs}) that the plugin never uses — it spawns
-    // the core itself, already window-less. Drop them like v2rayN does.
-    for junk in ["xray_no_window.cmd", "xray_no_window.ps1", "xray_no_window.vbs"] {
+    // The official release zip ships files the plugin never uses: the
+    // manual-run helper scripts (xray_no_window.{cmd,ps1,vbs}) — the plugin
+    // spawns the core itself, already window-less — plus license/readme
+    // docs. Only xray.exe and wintun.dll matter. Drop the rest like v2rayN.
+    for junk in [
+        "xray_no_window.cmd",
+        "xray_no_window.ps1",
+        "xray_no_window.vbs",
+        "LICENSE",
+        "LICENSE-Wintun",
+        "README.md",
+    ] {
         let p = dest.join(junk);
         if p.is_file() {
             let _ = std::fs::remove_file(&p);
