@@ -339,6 +339,7 @@ pub fn build_config(
     let default_rules = json!([
         { "type": "field", "ip": ["geoip:private"], "outboundTag": "direct" },
         { "type": "field", "domain": ["geosite:private"], "outboundTag": "direct" },
+        { "type": "field", "domain": ["geosite:category-ads-all"], "outboundTag": "block" },
         { "type": "field", "domain": ["geosite:cn"], "outboundTag": "direct" },
         { "type": "field", "ip": ["geoip:cn"], "outboundTag": "direct" }
     ]);

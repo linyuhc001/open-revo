@@ -273,8 +273,8 @@
       <div class="row" style="margin-top:10px;">
         <button class="btn primary" id="btnRuleSave">保存规则</button>
         <button class="btn" id="btnRuleAdd">添加规则</button>
-        <button class="btn" id="btnRuleDefault">填入默认规则</button>
-        <button class="btn" id="btnRuleClear">清空（回到默认）</button>
+        <button class="btn" id="btnRuleDefault">填入默认规则（绕过大陆）</button>
+        <button class="btn" id="btnRuleClear">清空（回落到内置绕过大陆规则集）</button>
         <span class="hint" style="font-size:11px;color:var(--text-dim);">保存后若核心在运行会自动重启生效；缺 geo 文件时 geo 规则自动跳过</span>
       </div>
     </div>
@@ -843,18 +843,14 @@ $('btnRuleAdd').addEventListener('click', () => {
   renderRules();
 });
 $('btnRuleDefault').addEventListener('click', () => {
-  routingRules = [
-    { outbound: 'direct', domain: '', ip: 'geoip:private' },
-    { outbound: 'direct', domain: 'geosite:private', ip: '' },
-    { outbound: 'direct', domain: 'geosite:cn', ip: '' },
-    { outbound: 'direct', domain: '', ip: 'geoip:cn' },
-  ];
+  // default = 绕过大陆（v2rayN V4-Whitelist preset）
+  routingRules = ROUTE_PRESETS.whitelist.map((r) => ({ ...r }));
   renderRules();
 });
 $('btnRuleClear').addEventListener('click', () => {
   routingRules = [];
   renderRules();
-  toast('已清空，点「保存规则」后回到默认 CN 直连规则集');
+  toast('已清空，点「保存规则」后回落到内置绕过大陆规则集');
 });
 $('btnRuleSave').addEventListener('click', async () => {
   const rules = routingRules.map((r) => ({
