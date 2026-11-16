@@ -20,6 +20,12 @@ use windows_sys::Win32::System::Threading::{
     CREATE_NO_WINDOW, CREATE_SUSPENDED, PROCESS_INFORMATION, STARTUPINFOW,
 };
 
+/// Sendable wrapper for a child-process HANDLE. The raw pointer is only ever
+/// used on the service's own threads, but `thread::spawn` needs `State` to be
+/// `Send`, so the handle has to opt in explicitly.
+pub struct CoreHandle(pub HANDLE);
+unsafe impl Send for CoreHandle {}
+
 /// Spawn silently (no console window) and tie the child to a job object that
 /// kills it when our own process dies — mirrors what v2rayN's
 /// WindowsJobService does so xray.exe never outlives the plugin service.

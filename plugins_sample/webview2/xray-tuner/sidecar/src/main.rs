@@ -23,7 +23,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use windows_sys::Win32::Foundation::HANDLE;
 
 const VERSION: &str = "0.9.0";
 const LOG_RING: usize = 400;
@@ -59,7 +58,7 @@ struct Sub {
 
 struct State {
     data: Mutex<Persist>,
-    core: Mutex<Option<HANDLE>>,
+    core: Mutex<Option<winapi::CoreHandle>>,
     logs: Mutex<VecDeque<String>>,
     data_dir: PathBuf,
     bin_dir: PathBuf,
@@ -114,7 +113,7 @@ impl State {
     fn core_running(&self) -> bool {
         let mut guard = self.core.lock().unwrap();
         if let Some(h) = guard.as_ref() {
-            if winapi::is_running(*h) {
+            if winapi::is_running(h.0) {
                 return true;
             }
             self.log("xray 进程已退出");
@@ -123,12 +122,12 @@ impl State {
         false
     }
 
-    fn take_core(&self) -> Option<HANDLE> {
+    fn take_core(&self) -> Option<winapi::CoreHandle> {
         let mut guard = self.core.lock().unwrap();
         let h = guard.take();
         if let Some(h) = h {
-            if winapi::is_running(h) {
-                winapi::kill(h);
+            if winapi::is_running(h.0) {
+                winapi::kill(h.0);
             }
         }
         None
@@ -270,8 +269,8 @@ fn core_start(st: &State) -> Result<Value, String> {
     // take down any previous instance first
     let mut guard = st.core.lock().unwrap();
     if let Some(h) = guard.take() {
-        if winapi::is_running(h) {
-            winapi::kill(h);
+        if winapi::is_running(h.0) {
+            winapi::kill(h.0);
             std::thread::sleep(Duration::from_millis(300));
         }
     }
@@ -284,7 +283,7 @@ fn core_start(st: &State) -> Result<Value, String> {
         &["run", "-c", cfg_path.to_str().ok_or("配置路径非 UTF-8")?],
         Some(&st.bin_dir),
     )?;
-    *st.core.lock().unwrap() = Some(handle);
+    *st.core.lock().unwrap() = Some(winapi::CoreHandle(handle));
     std::thread::sleep(Duration::from_millis(500));
     if !winapi::is_running(handle) {
         *st.core.lock().unwrap() = None;
@@ -366,7 +365,7 @@ fn h_import(st: &State, v: &Value) -> Result<Value, String> {
         }) {
             let keep_id = p.nodes[pos].id.clone();
             let was_selected = p.selected == keep_id;
-            n.id = keep_id;
+            n.id = keep_id.clone();
             p.nodes[pos] = n;
             if was_selected {
                 p.selected = keep_id;
