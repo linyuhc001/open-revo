@@ -486,15 +486,28 @@ async function checkHealth() {
 }
 
 async function api(path, opts) {
-  const r = await fetchTimeout(API + path, 20000, opts);
+  const timeout = (opts && opts.timeout) || 20000;
+  let r;
+  try {
+    r = await fetchTimeout(API + path, timeout, opts);
+  } catch (e) {
+    // A client-side abort used to surface as the raw browser message
+    // "signal is aborted without reason" — translate it. Long jobs (core /
+    // geo download) keep running server-side after the client gives up.
+    if (e && (e.name === 'AbortError' || /abort/i.test(String(e.message)))) {
+      throw new Error(`请求超时（${Math.round(timeout / 1000)}s），后台可能仍在处理，稍后刷新查看`);
+    }
+    throw e;
+  }
   const j = await r.json().catch(() => ({}));
   if (!r.ok || j.__error || j.error) throw new Error(j.__error || j.error || ('HTTP ' + r.status));
   return j;
 }
-const post = (path, body) => api(path, {
+const post = (path, body, timeout) => api(path, {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(body || {}),
+  timeout,
 });
 
 // ---------------- health → header ----------------
@@ -627,12 +640,12 @@ $('btnClipImport').addEventListener('click', async () => {
 });
 $('btnTcpingAll').addEventListener('click', async () => {
   toast('批量 tcping 中…');
-  try { await post('/api/test/tcping', {}); toast('tcping 完成'); getNodes(); }
+  try { await post('/api/test/tcping', {}, 60000); toast('tcping 完成'); getNodes(); }
   catch (e) { toast(e.message, true); }
 });
 $('btnTestReal').addEventListener('click', async () => {
   toast('真延迟探测中…（走当前节点的完整链路）');
-  try { const j = await post('/api/test/real', {}); toast(`真延迟：${j.ms} ms`); getNodes(); }
+  try { const j = await post('/api/test/real', {}, 30000); toast(`真延迟：${j.ms} ms`); getNodes(); }
   catch (e) { toast(e.message, true); }
 });
 $('btnRefresh').addEventListener('click', () => getNodes());
@@ -669,7 +682,7 @@ $('subBody').addEventListener('click', async (ev) => {
   try {
     if (btn.dataset.act === 'sub-upd') {
       toast('拉取订阅中…');
-      const j = await post('/api/subs/update', { id });
+      const j = await post('/api/subs/update', { id }, 45000);
       toast(`订阅更新：${j.count} 个节点`);
       getSubs(); getNodes();
     } else if (btn.dataset.act === 'sub-del') {
@@ -707,9 +720,9 @@ $('btnCoreRestart').addEventListener('click', async () => {
 $('btnCoreDownload').addEventListener('click', async () => {
   const btn = $('btnCoreDownload');
   btn.disabled = true;
-  toast('下载内核中…（约 16MB，最多等 2 分钟）');
+  toast('下载内核中…（约 16MB，最多等 3 分钟）');
   try {
-    const j = await post('/api/core/download', { mirror: $('mirrorUrl').value.trim() });
+    const j = await post('/api/core/download', { mirror: $('mirrorUrl').value.trim() }, 180000);
     toast(j.skipped ? (j.message || '已是最新') : `内核就绪：${j.version}`);
   } catch (e) { toast(e.message, true); }
   btn.disabled = false;
@@ -719,9 +732,9 @@ $('btnCoreDownload').addEventListener('click', async () => {
 $('btnGeoDownload').addEventListener('click', async () => {
   const btn = $('btnGeoDownload');
   btn.disabled = true;
-  toast('下载 geo 文件中…（geoip + geosite，最多等 3 分钟）');
+  toast('下载 geo 文件中…（geoip + geosite，最多等 4 分钟）');
   try {
-    const j = await post('/api/geo/download', { mirror: $('mirrorUrl').value.trim() });
+    const j = await post('/api/geo/download', { mirror: $('mirrorUrl').value.trim() }, 240000);
     toast(j.skipped ? (j.message || 'geo 文件已完整') : 'geo 文件就绪');
   } catch (e) { toast(e.message, true); }
   btn.disabled = false;
@@ -750,7 +763,7 @@ $('tunSwitch').addEventListener('click', async () => {
   sw.disabled = true;
   toast(on ? '正在开启 TUN（重启核心）…' : '正在关闭 TUN（重启核心）…');
   try {
-    await post('/api/tun', { on });
+    await post('/api/tun', { on }, 30000);
     toast(on ? 'TUN 已开启（全系统流量接管）' : 'TUN 已关闭');
     checkHealth();
   } catch (e) {
@@ -1048,7 +1061,7 @@ async function svcApplyPort() {
   $('btnSvcPortApply').disabled = true;
   svcHint('重启服务中…', 'var(--text-dim)');
   try {
-    await post('/api/service_port/set', { port: p });
+    await post('/api/service_port/set', { port: p }, 30000);
   } catch (e) {
     svcHint('应用失败: ' + e.message, 'var(--status-error)');
     svcUpdateApply();
