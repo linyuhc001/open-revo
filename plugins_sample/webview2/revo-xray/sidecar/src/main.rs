@@ -24,8 +24,10 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-const VERSION: &str = "0.9.4";
+const VERSION: &str = "0.9.5";
 const LOG_RING: usize = 400;
+/// service.log rotates to service.log.old when it grows past this (1 MB).
+const LOG_FILE_MAX: u64 = 1024 * 1024;
 /// v2rayN's geo template: Global.GeoUrl in ServiceLib/Global.cs.
 /// `{0}` is filled with "geoip" / "geosite".
 const GEO_URL_TEMPLATE: &str =
@@ -104,10 +106,20 @@ impl State {
             }
             ring.push_back(line.clone());
         }
+        let log_path = self.data_dir.join("service.log");
+        // rotate: > LOG_FILE_MAX → rename to .old (replacing any previous
+        // .old), keeping the on-disk footprint capped at ~2 MB
+        if let Ok(meta) = std::fs::metadata(&log_path) {
+            if meta.len() > LOG_FILE_MAX {
+                let old = self.data_dir.join("service.log.old");
+                let _ = std::fs::remove_file(&old);
+                let _ = std::fs::rename(&log_path, &old);
+            }
+        }
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(self.data_dir.join("service.log"))
+            .open(&log_path)
         {
             let _ = writeln!(f, "{line}");
         }
