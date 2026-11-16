@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-const VERSION: &str = "0.9.7";
+const VERSION: &str = "0.9.8";
 const LOG_RING: usize = 400;
 /// service.log rotates to service.log.old when it grows past this (1 MB).
 const LOG_FILE_MAX: u64 = 1024 * 1024;
@@ -32,6 +32,17 @@ const LOG_FILE_MAX: u64 = 1024 * 1024;
 /// `{0}` is filled with "geoip" / "geosite".
 const GEO_URL_TEMPLATE: &str =
     "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download";
+/// Loyalsoldier/v2ray-rules-dat release API — tags are timestamps like
+/// "202611152204", directly comparable.
+const GEO_TAG_API: &str = "https://api.github.com/repos/Loyalsoldier/v2ray-rules-dat/releases/latest";
+/// Geo download sources, raced by probe_speed before downloading. jsDelivr
+/// mirrors the repo's `release` branch, which ships both dat files and is
+/// reachable from CN without a proxy.
+const GEO_SOURCES: &[(&str, &str)] = &[
+    ("GitHub", "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/{name}"),
+    ("jsDelivr", "https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/{name}"),
+    ("fastly-jsDelivr", "https://fastly.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/{name}"),
+];
 
 // ---------- persisted state ----------
 
@@ -59,6 +70,11 @@ struct Persist {
     /// core restart (settings save, node switch) keeps the TUN inbound.
     #[serde(default)]
     tun_on: bool,
+    /// Tag of the geo release (Loyalsoldier/v2ray-rules-dat, e.g.
+    /// "202611152204") whose geoip.dat/geosite.dat are in bin/. Empty = unknown
+    /// (pre-0.9.8 files) — compared against the latest release on download.
+    #[serde(default)]
+    geo_tag: String,
 }
 
 fn default_socks() -> u16 { 10808 }
@@ -576,34 +592,126 @@ fn core_download(st: &State, mirror: &str) -> Result<Value, String> {
     res
 }
 
+/// Latest geo release tag from the GitHub API (proxied when the core runs).
+fn latest_geo_tag(st: &State) -> Option<String> {
+    let body = http_get_auto(st, "geo 版本检查", GEO_TAG_API, 20).ok()?;
+    let v: Value = serde_json::from_slice(&body).ok()?;
+    v.get("tag_name")?.as_str().map(|s| s.trim().to_string())
+}
+
+/// True when the stored geo tag is behind `latest`. Unparseable tags compare
+/// by equality only.
+fn geo_outdated(stored: &str, latest: &str) -> bool {
+    match (stored.parse::<u64>().ok(), latest.parse::<u64>().ok()) {
+        (Some(a), Some(b)) => a < b,
+        _ => stored != latest,
+    }
+}
+
 fn geo_download(st: &State, mirror: &str) -> Result<Value, String> {
-    // Loyalsoldier dat files are rolling "latest" builds with no comparable
-    // version, so the preflight is a completeness check only: both files
-    // present and non-empty → skip. Missing/empty → (re)download.
+    // Preflight: skip only when the files are complete AND the stored release
+    // tag matches (or is newer than) the latest release. Unknown stored tag
+    // (pre-0.9.8 files) counts as outdated. API unreachable + complete files
+    // keeps the old skip behavior so a dead API never forces a download.
     let complete = ["geoip.dat", "geosite.dat"].iter().all(|name| {
         std::fs::metadata(st.bin_dir.join(name))
             .map(|m| m.len() > 0)
             .unwrap_or(false)
     });
+    let stored_tag = st.data.lock().unwrap_or_else(|e| e.into_inner()).geo_tag.clone();
+    let latest = latest_geo_tag(st);
     if complete {
-        st.log("geo 文件已完整（geoip.dat + geosite.dat），跳过下载");
-        return Ok(json!({ "ok": true, "skipped": true, "message": "geo 文件已完整（geoip.dat + geosite.dat），无需下载" }));
-    }
-    st.log("geo 文件缺失，开始下载");
-    let base = if mirror.is_empty() {
-        GEO_URL_TEMPLATE.to_string()
+        let must = match &latest {
+            Some(t) => geo_outdated(&stored_tag, t),
+            None => false,
+        };
+        if !must {
+            let why = match &latest {
+                Some(t) => format!("geo 已是最新（release {t}），跳过下载"),
+                None => "geo 文件已完整（geoip.dat + geosite.dat），跳过下载".to_string(),
+            };
+            st.log(&why);
+            return Ok(json!({ "ok": true, "skipped": true, "message": why, "version": latest }));
+        }
+        st.log(&format!(
+            "发现新 geo 版本：{} → {}，开始更新",
+            if stored_tag.is_empty() { "(未知)".to_string() } else { stored_tag.clone() },
+            latest.as_ref().unwrap()
+        ));
     } else {
-        format!("{}{}", mirror.trim_end_matches('/'), "/Loyalsoldier/v2ray-rules-dat/releases/latest/download")
-    };
-    // fetch both files first — proxy path needs the core running
-    let mut fetched = Vec::new();
-    for name in ["geoip.dat", "geosite.dat"] {
-        let url = format!("{base}/{name}");
-        st.log(&format!("下载 {name}：{url}"));
-        let body = http_get_auto(st, name, &url, 180)?;
-        fetched.push((name, body));
+        st.log("geo 文件缺失，开始下载");
     }
-    // then swap them in with the core stopped
+
+    // Source order: user mirror (if set) first, then the built-ins raced by a
+    // direct speed probe (first 256KB of geoip.dat). All probes failing →
+    // keep the declared order and fall back to the proxy path per file.
+    let mut sources: Vec<(String, String)> = Vec::new();
+    if !mirror.is_empty() {
+        let m = mirror.trim_end_matches('/').to_string();
+        sources.push((
+            "镜像".to_string(),
+            format!("{m}/Loyalsoldier/v2ray-rules-dat/releases/latest/download/{{name}}"),
+        ));
+    }
+    for (label, tpl) in GEO_SOURCES {
+        sources.push((label.to_string(), tpl.to_string()));
+    }
+    let handles: Vec<_> = sources
+        .iter()
+        .map(|(label, tpl)| {
+            let url = tpl.replace("{name}", "geoip.dat");
+            let label = label.clone();
+            std::thread::spawn(move || (label, net::probe_speed(&url, 256 * 1024, 8)))
+        })
+        .collect();
+    let mut probed: Vec<(String, Option<u128>)> = handles
+        .into_iter()
+        .map(|h| h.join().unwrap_or((String::new(), None)))
+        .collect();
+    probed.sort_by_key(|(_, ms)| ms.unwrap_or(u128::MAX));
+    let speed_line = probed
+        .iter()
+        .map(|(l, ms)| match ms {
+            Some(t) => format!("{l} {t}ms"),
+            None => format!("{l} 超时"),
+        })
+        .collect::<Vec<_>>()
+        .join(" / ");
+    st.log(&format!("geo 源测速：{speed_line}，按此顺序尝试"));
+
+    // Fetch both files, walking sources fastest-first. Direct downloads —
+    // the CDNs exist precisely because GitHub is unreachable directly; if
+    // every source fails, the old proxy-path (via our own core) is the
+    // final fallback.
+    let mut fetched: Vec<(String, Vec<u8>)> = Vec::new();
+    for name in ["geoip.dat", "geosite.dat"] {
+        let mut body = None;
+        for (label, tpl) in &probed {
+            let url = tpl.replace("{name}", name);
+            st.log(&format!("下载 {name} ← {label}：{url}"));
+            match net::http_get_via(&url, 180, None) {
+                Ok(b) if !b.is_empty() => {
+                    st.log(&format!("{name}：{label} 下载成功 {:.1}MB", b.len() as f64 / 1e6));
+                    body = Some(b);
+                    break;
+                }
+                Ok(_) => st.log(&format!("{name}：{label} 返回空内容，换下一个源")),
+                Err(e) => st.log(&format!("{name}：{label} 失败（{e}），换下一个源")),
+            }
+        }
+        let b = match body {
+            Some(b) => b,
+            None => {
+                // every direct source failed — last resort: via our own proxy
+                let url = format!("{}/{}", GEO_URL_TEMPLATE, name);
+                st.log(&format!("{name}：全部直连源失败，走自身代理兜底"));
+                http_get_auto(st, name, &url, 180)?
+            }
+        };
+        fetched.push((name.to_string(), b));
+    }
+
+    // swap them in with the core stopped
     let res = with_core_stopped(st, "Geo 文件更新", || {
         cleanup_old_files(st);
         std::fs::create_dir_all(&st.bin_dir).ok();
@@ -615,6 +723,13 @@ fn geo_download(st: &State, mirror: &str) -> Result<Value, String> {
         st.log(&format!("Geo 文件就绪：{}", done.join(" / ")));
         Ok(json!({ "ok": true, "files": done }))
     });
+    if res.is_ok() {
+        if let Some(t) = &latest {
+            let mut p = st.data.lock().unwrap_or_else(|e| e.into_inner());
+            p.geo_tag = t.clone();
+            st.persist(&p);
+        }
+    }
     res
 }
 

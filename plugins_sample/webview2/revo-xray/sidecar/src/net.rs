@@ -11,6 +11,32 @@ pub fn http_get(url: &str, timeout_s: u64) -> Result<Vec<u8>, String> {
     http_get_via(url, timeout_s, None)
 }
 
+/// Direct (no-proxy) ranged probe of `url`: fetch the first `bytes` bytes and
+/// return the total elapsed ms (connect + TTFB + transfer). Used to race the
+/// GitHub release URL against jsDelivr CDNs before a geo download. None =
+/// source unusable within the timeout.
+pub fn probe_speed(url: &str, bytes: usize, timeout_s: u64) -> Option<u128> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(timeout_s))
+        .redirects(8)
+        .build();
+    let start = Instant::now();
+    let resp = agent
+        .get(url)
+        .set("Range", &format!("bytes=0-{}", bytes.saturating_sub(1)))
+        .call()
+        .ok()?;
+    let mut buf = Vec::new();
+    resp.into_reader()
+        .take(bytes as u64)
+        .read_to_end(&mut buf)
+        .ok()?;
+    if buf.is_empty() {
+        return None;
+    }
+    Some(start.elapsed().as_millis())
+}
+
 /// GET with an optional local HTTP proxy (our own http inbound). Core/geo/
 /// subscription downloads prefer the running core's tunnel so GitHub is
 /// reachable behind the GFW, and fall back to direct on failure.
