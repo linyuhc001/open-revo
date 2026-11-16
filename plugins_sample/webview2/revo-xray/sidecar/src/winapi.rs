@@ -237,7 +237,10 @@ pub fn system_proxy_state(http_port: u16) -> (bool, bool) {
         let enabled = get_dword(key, "ProxyEnable").unwrap_or(0) == 1;
         let server = get_str(key, "ProxyServer").unwrap_or_default();
         unsafe { RegCloseKey(key) };
-        (enabled, server == format!("127.0.0.1:{http_port}"))
+        // "ours" requires ProxyEnable==1 AND ProxyServer pointing at our http port;
+        // ProxyServer stays in the registry after ProxyEnable=0, so checking the
+        // string alone would report the switch as on even when disabled.
+        (enabled, enabled && server == format!("127.0.0.1:{http_port}"))
     } else {
         (false, false)
     }

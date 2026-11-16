@@ -403,7 +403,7 @@ function applyHealth(j) {
   $('xrayVerTag').className = 'tag ' + (j.xray_installed ? 'ok' : 'warn');
   $('socksPort').textContent = j.socks_port || 10808;
   $('httpPort').textContent = j.http_port || 10809;
-  $('sysProxySwitch').classList.toggle('on', !!j.sysproxy?.ours);
+  $('sysProxySwitch').classList.toggle('on', !!j.sysproxy?.enabled && !!j.sysproxy?.ours);
   // master switch = core running + system proxy pointing at us
   const on = !!j.switch;
   $('masterSwitch').classList.toggle('on', on);
