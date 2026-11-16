@@ -13,8 +13,27 @@ pub struct Ports {
     pub http: u16,
 }
 
-pub fn build_config(node: &Node, ports: &Ports) -> Result<String, String> {
+pub fn build_config(node: &Node, ports: &Ports, geoip_ok: bool, geosite_ok: bool) -> Result<String, String> {
     let outbound = node_outbound(node)?;
+    // Drop rules that reference geo dat files we don't have — xray refuses to
+    // load the whole config otherwise. Plain domain/CIDR rules always survive.
+    let rule_keeps = |r: &Value| -> bool {
+        let ip_ok = r.get("ip").and_then(|v| v.as_array())
+            .map(|a| geoip_ok || !a.iter().any(|x| x.as_str().map_or(false, |s| s.starts_with("geoip:"))))
+            .unwrap_or(true);
+        let dom_ok = r.get("domain").and_then(|v| v.as_array())
+            .map(|a| geosite_ok || !a.iter().any(|x| x.as_str().map_or(false, |s| s.starts_with("geosite:"))))
+            .unwrap_or(true);
+        ip_ok && dom_ok
+    };
+    let default_rules = json!([
+        { "type": "field", "ip": ["geoip:private"], "outboundTag": "direct" },
+        { "type": "field", "domain": ["geosite:private"], "outboundTag": "direct" },
+        { "type": "field", "domain": ["geosite:cn"], "outboundTag": "direct" },
+        { "type": "field", "ip": ["geoip:cn"], "outboundTag": "direct" }
+    ]);
+    let rules: Vec<Value> = default_rules.as_array().unwrap()
+        .iter().filter(|r| rule_keeps(r)).cloned().collect();
     let cfg = json!({
         "log": { "loglevel": "warning" },
         "inbounds": [
@@ -41,12 +60,7 @@ pub fn build_config(node: &Node, ports: &Ports) -> Result<String, String> {
         ],
         "routing": {
             "domainStrategy": "IPIfNonMatch",
-            "rules": [
-                { "type": "field", "ip": ["geoip:private"], "outboundTag": "direct" },
-                { "type": "field", "domain": ["geosite:private"], "outboundTag": "direct" },
-                { "type": "field", "domain": ["geosite:cn"], "outboundTag": "direct" },
-                { "type": "field", "ip": ["geoip:cn"], "outboundTag": "direct" }
-            ]
+            "rules": rules
         }
     });
     Ok(cfg.to_string())

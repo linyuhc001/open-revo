@@ -24,8 +24,12 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-const VERSION: &str = "0.9.0";
+const VERSION: &str = "0.9.1";
 const LOG_RING: usize = 400;
+/// v2rayN's geo template: Global.GeoUrl in ServiceLib/Global.cs.
+/// `{0}` is filled with "geoip" / "geosite".
+const GEO_URL_TEMPLATE: &str =
+    "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download";
 
 // ---------- persisted state ----------
 
@@ -251,6 +255,11 @@ fn core_start(st: &State) -> Result<Value, String> {
     if !st.xray_installed() {
         return Err("Xray 内核未安装，请先在「核心」页下载".into());
     }
+    let geoip_ok = st.bin_dir.join("geoip.dat").is_file();
+    let geosite_ok = st.bin_dir.join("geosite.dat").is_file();
+    if !geoip_ok || !geosite_ok {
+        st.log("注意：缺少 geoip.dat / geosite.dat，已降级为不含 geo 规则的配置（点「下载 Geo 文件」可恢复 CN 直连规则）");
+    }
     let mut p = st.data.lock().unwrap();
     let node = p
         .nodes
@@ -262,7 +271,7 @@ fn core_start(st: &State) -> Result<Value, String> {
         None => return Err("尚未选择节点".into()),
     };
     let ports = xconf::Ports { socks: p.socks_port, http: p.http_port };
-    let cfg = xconf::build_config(&node, &ports)?;
+    let cfg = xconf::build_config(&node, &ports, geoip_ok, geosite_ok)?;
     let cfg_path = st.data_dir.join("config.json");
     std::fs::write(&cfg_path, &cfg).map_err(|e| format!("写配置失败: {e}"))?;
 
@@ -278,10 +287,15 @@ fn core_start(st: &State) -> Result<Value, String> {
     drop(guard);
 
     st.log(&format!("启动 xray：节点「{}」({})", node.name, node.addr_port()));
+    // truncate the child's log, then let the child append its stdout/stderr to
+    // it — the only way to see why xray refuses to start.
+    let log_path = st.data_dir.join("xray.log");
+    std::fs::File::create(&log_path).map_err(|e| format!("创建 xray.log 失败: {e}"))?;
     let handle = winapi::spawn_tracked(
         st.xray_exe().to_str().ok_or("路径含非 UTF-8")?,
         &["run", "-c", cfg_path.to_str().ok_or("配置路径非 UTF-8")?],
         Some(&st.bin_dir),
+        Some(&log_path),
     )?;
     *st.core.lock().unwrap() = Some(winapi::CoreHandle(handle));
     std::thread::sleep(Duration::from_millis(500));
@@ -332,7 +346,55 @@ fn core_download(st: &State, mirror: &str) -> Result<Value, String> {
     let _ = std::fs::remove_file(&zip_path);
     let ver = net::xray_version(&st.xray_exe()).unwrap_or_else(|| "unknown".into());
     st.log(&format!("内核就绪：{}（{} 个文件）", ver, files.len()));
+    // recent Xray zips no longer ship the geo dat files; grab them separately
+    // (best-effort — the panel keeps working without them, just without CN rules)
+    let missing = !st.bin_dir.join("geoip.dat").is_file() || !st.bin_dir.join("geosite.dat").is_file();
+    if missing {
+        match geo_download(st, mirror) {
+            Ok(_) => {}
+            Err(e) => st.log(&format!("geo 文件下载失败（可稍后点「下载 Geo 文件」重试）: {e}")),
+        }
+    }
     Ok(json!({ "ok": true, "version": ver, "files": files.len() }))
+}
+
+fn geo_download(st: &State, mirror: &str) -> Result<Value, String> {
+    let base = if mirror.is_empty() {
+        GEO_URL_TEMPLATE.to_string()
+    } else {
+        format!("{}{}", mirror.trim_end_matches('/'), "/Loyalsoldier/v2ray-rules-dat/releases/latest/download")
+    };
+    std::fs::create_dir_all(&st.bin_dir).ok();
+    let mut done = Vec::new();
+    for name in ["geoip.dat", "geosite.dat"] {
+        let url = format!("{base}/{name}");
+        st.log(&format!("下载 {name}：{url}"));
+        let body = net::http_get(&url, 180)?;
+        std::fs::write(st.bin_dir.join(name), &body).map_err(|e| format!("写 {name} 失败: {e}"))?;
+        done.push(format!("{name} {:.1}MB", body.len() as f64 / 1e6));
+    }
+    st.log(&format!("Geo 文件就绪：{}", done.join(" / ")));
+    Ok(json!({ "ok": true, "files": done }))
+}
+
+/// Master switch, v2rayN style: one toggle = core up + system proxy taken
+/// over (on), or system proxy restored + core stopped (off).
+fn h_proxy_toggle(st: &State, v: &Value) -> Result<Value, String> {
+    let on = v.get("on").and_then(|x| x.as_bool()).ok_or("缺少 on")?;
+    if on {
+        core_start(st)?;
+        let http = st.data.lock().unwrap().http_port;
+        winapi::set_system_proxy(true, http)?;
+        st.log("总开关：代理开启（核心运行 + 系统代理已接管）");
+    } else {
+        let http = st.data.lock().unwrap().http_port;
+        if let Err(e) = winapi::set_system_proxy(false, http) {
+            st.log(&format!("总开关：还原系统代理失败（继续停核心）: {e}"));
+        }
+        st.take_core();
+        st.log("总开关：代理关闭（系统代理已还原，核心已停止）");
+    }
+    Ok(json!({ "ok": true, "on": on }))
 }
 
 // ---------- route handlers ----------
@@ -556,13 +618,19 @@ fn h_health(st: &State) -> Value {
     } else {
         String::new()
     };
+    let running = st.core_running();
     json!({
         "status": "ok",
         "version": VERSION,
         "port": HEALTH_PORT.load(Ordering::Relaxed),
         "xray_installed": st.xray_installed(),
         "xray_version": xray_version,
-        "running": st.core_running(),
+        "geo_ready": {
+            "geoip": st.bin_dir.join("geoip.dat").is_file(),
+            "geosite": st.bin_dir.join("geosite.dat").is_file(),
+        },
+        "running": running,
+        "switch": running && sp_ours,
         "selected": p.selected,
         "nodes": p.nodes.len(),
         "sysproxy": { "enabled": sp_enabled, "ours": sp_ours },
@@ -600,6 +668,8 @@ fn route(st: &Arc<State>, method: &str, path: &str, body: &[u8]) -> Result<Value
             core_start(st)
         }
         ("POST", "/api/core/download") => core_download(st, &jstr(&v, "mirror")),
+        ("POST", "/api/geo/download") => geo_download(st, &jstr(&v, "mirror")),
+        ("POST", "/api/proxy/toggle") => h_proxy_toggle(st, &v),
         ("GET", "/api/log") => {
             let ring = st.logs.lock().unwrap();
             Ok(json!({ "log": ring.iter().cloned().collect::<Vec<_>>().join("\n") }))

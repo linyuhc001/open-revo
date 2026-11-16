@@ -17,7 +17,7 @@ use windows_sys::Win32::System::Registry::{
 };
 use windows_sys::Win32::System::Threading::{
     CreateProcessW, GetExitCodeProcess, ResumeThread, TerminateProcess, WaitForSingleObject,
-    CREATE_NO_WINDOW, CREATE_SUSPENDED, PROCESS_INFORMATION, STARTUPINFOW,
+    CREATE_NO_WINDOW, CREATE_SUSPENDED, PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOW,
 };
 
 /// Sendable wrapper for a child-process HANDLE. The raw pointer is only ever
@@ -30,9 +30,17 @@ unsafe impl Send for CoreHandle {}
 /// kills it when our own process dies — mirrors what v2rayN's
 /// WindowsJobService does so xray.exe never outlives the plugin service.
 /// The child starts suspended so the job assignment can never race a grandchild.
-pub fn spawn_tracked(cmd: &str, args: &[&str], workdir: Option<&std::path::Path>) -> Result<HANDLE, String> {
+/// With `log_path`, the child's stdout+stderr are appended to that file —
+/// the only way to see why xray refuses to start.
+pub fn spawn_tracked(
+    cmd: &str,
+    args: &[&str],
+    workdir: Option<&std::path::Path>,
+    log_path: Option<&std::path::Path>,
+) -> Result<HANDLE, String> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::AsRawHandle;
 
     let mut cmdline = cmd.to_string();
     for a in args {
@@ -43,6 +51,17 @@ pub fn spawn_tracked(cmd: &str, args: &[&str], workdir: Option<&std::path::Path>
 
     let mut si: STARTUPINFOW = unsafe { std::mem::zeroed() };
     si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+
+    // child log redirection (append mode)
+    let log_file = log_path.and_then(|p| {
+        std::fs::OpenOptions::new().create(true).append(true).open(p).ok()
+    });
+    if log_file.is_some() {
+        si.dwFlags = STARTF_USESTDHANDLES;
+        si.hStdInput = std::ptr::null_mut();
+        si.hStdOutput = log_file.as_ref().unwrap().as_raw_handle();
+        si.hStdError = si.hStdOutput;
+    }
 
     let cwd: std::path::PathBuf = match workdir {
         Some(p) => p.to_path_buf(),
@@ -57,7 +76,7 @@ pub fn spawn_tracked(cmd: &str, args: &[&str], workdir: Option<&std::path::Path>
             wcmd.as_mut_ptr(),
             std::ptr::null(),
             std::ptr::null(),
-            false as i32,
+            log_file.is_some() as i32, // inherit the log file handle
             CREATE_NO_WINDOW | CREATE_SUSPENDED,
             std::ptr::null(),
             cwd_w.as_ptr(),

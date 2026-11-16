@@ -108,12 +108,25 @@
   .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--text-dim); transition: all .15s; }
   .switch.on { background: #1f6feb55; border-color: #388bfd66; }
   .switch.on::after { left: 22px; background: var(--accent); }
+  .master {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 6px 16px; border-radius: 18px; font-weight: 600;
+    border: 1px solid var(--border-subtle); background: var(--surface);
+    color: var(--text-dim); cursor: pointer; font: inherit; font-size: 13px;
+    transition: all .15s;
+  }
+  .master .mdot { width: 9px; height: 9px; border-radius: 50%; background: var(--status-err); flex: none; }
+  .master:hover { border-color: var(--accent); }
+  .master.on { background: #23863633; border-color: #3fb95066; color: var(--status-ok); }
+  .master.on .mdot { background: var(--status-ok); box-shadow: 0 0 6px var(--status-ok); }
 </style>
 </head>
 <body>
   <div class="header">
     <h1>Xray 代理调校</h1>
     <div class="svc">
+      <button id="masterSwitch" class="master" title="一键开启/关闭代理：启动核心 + 接管系统代理"><span class="mdot"></span><span id="masterText">代理 关</span></button>
+      <span style="color:#21262d">|</span>
       <span id="coreDot" class="dot"></span><span id="coreText">核心未运行</span>
       <span style="color:#21262d">|</span>
       <span id="svcDot" class="dot"></span><span id="svcText">服务检查中</span>
@@ -186,18 +199,22 @@
   <!-- ===== 核心 ===== -->
   <div class="page" data-page="core">
     <div class="card">
-      <h2>Xray 内核 <span class="tag" id="xrayVerTag">未安装</span></h2>
+      <h2>Xray 内核 <span class="tag" id="xrayVerTag">未安装</span>
+        <span class="tag" id="geoTag">geo 未下载</span>
+      </h2>
       <div class="row">
         <button class="btn primary" id="btnCoreStart">启动核心</button>
         <button class="btn" id="btnCoreStop">停止</button>
         <button class="btn" id="btnCoreRestart">重启</button>
         <span style="flex:1"></span>
         <button class="btn" id="btnCoreDownload">下载 / 更新内核</button>
+        <button class="btn" id="btnGeoDownload">下载 Geo 文件</button>
         <input type="text" id="mirrorUrl" placeholder="镜像前缀（可选，如 https://ghproxy.net）" style="width:280px;" />
       </div>
       <div class="row" style="margin-top:8px;">
         <span class="hint" style="font-size:11px;color:var(--text-dim);">
-          内核来自 XTLS/Xray-core 官方 release，解压到插件 data/bin 目录；国内网络建议填镜像前缀
+          内核来自 XTLS/Xray-core 官方 release，geo 文件来自 Loyalsoldier/v2ray-rules-dat（同 v2rayN）；
+          缺 geo 文件时仍可启动，但没有 CN 直连规则；国内网络建议填镜像前缀
         </span>
       </div>
     </div>
@@ -300,6 +317,14 @@ function applyHealth(j) {
   $('socksPort').textContent = j.socks_port || 10808;
   $('httpPort').textContent = j.http_port || 10809;
   $('sysProxySwitch').classList.toggle('on', !!j.sysproxy?.ours);
+  // master switch = core running + system proxy pointing at us
+  const on = !!j.switch;
+  $('masterSwitch').classList.toggle('on', on);
+  $('masterText').textContent = on ? '代理 开' : '代理 关';
+  const geo = j.geo_ready || {};
+  const geoOk = geo.geoip && geo.geosite;
+  $('geoTag').textContent = geoOk ? 'geo 就绪' : (j.xray_installed ? 'geo 未下载' : 'geo 未下载');
+  $('geoTag').className = 'tag ' + (geoOk ? 'ok' : 'warn');
 }
 
 // ---------------- nodes ----------------
@@ -492,6 +517,32 @@ $('btnCoreDownload').addEventListener('click', async () => {
   try {
     const j = await post('/api/core/download', { mirror: $('mirrorUrl').value.trim() });
     toast(`内核就绪：${j.version}`);
+  } catch (e) { toast(e.message, true); }
+  btn.disabled = false;
+  checkHealth();
+});
+
+$('btnGeoDownload').addEventListener('click', async () => {
+  const btn = $('btnGeoDownload');
+  btn.disabled = true;
+  toast('下载 geo 文件中…（geoip + geosite，最多等 3 分钟）');
+  try {
+    await post('/api/geo/download', { mirror: $('mirrorUrl').value.trim() });
+    toast('geo 文件就绪');
+  } catch (e) { toast(e.message, true); }
+  btn.disabled = false;
+  checkHealth();
+});
+
+// master switch: on = start core + take over system proxy; off = restore + stop
+$('masterSwitch').addEventListener('click', async () => {
+  const on = !$('masterSwitch').classList.contains('on');
+  const btn = $('masterSwitch');
+  btn.disabled = true;
+  toast(on ? '正在开启代理…（启动核心 + 接管系统代理）' : '正在关闭代理…');
+  try {
+    await post('/api/proxy/toggle', { on });
+    toast(on ? '代理已开启' : '代理已关闭');
   } catch (e) { toast(e.message, true); }
   btn.disabled = false;
   checkHealth();
