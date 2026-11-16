@@ -661,17 +661,18 @@ fn geo_download(st: &State, mirror: &str) -> Result<Value, String> {
         .map(|(label, tpl)| {
             let url = tpl.replace("{name}", "geoip.dat");
             let label = label.to_string();
-            std::thread::spawn(move || (label, net::probe_speed(&url, 256 * 1024, 8)))
+            let tpl = tpl.to_string();
+            std::thread::spawn(move || (label, tpl, net::probe_speed(&url, 256 * 1024, 8)))
         })
         .collect();
-    let mut probed: Vec<(String, Option<u128>)> = handles
+    let mut probed: Vec<(String, String, Option<u128>)> = handles
         .into_iter()
-        .map(|h| h.join().unwrap_or((String::new(), None)))
+        .map(|h| h.join().unwrap_or((String::new(), String::new(), None)))
         .collect();
-    probed.sort_by_key(|p| p.1.clone().unwrap_or(u128::MAX));
+    probed.sort_by_key(|p| p.2.clone().unwrap_or(u128::MAX));
     let speed_line = probed
         .iter()
-        .map(|(l, ms)| match ms {
+        .map(|(l, _, ms)| match ms {
             Some(t) => format!("{l} {t}ms"),
             None => format!("{l} 超时"),
         })
@@ -686,7 +687,7 @@ fn geo_download(st: &State, mirror: &str) -> Result<Value, String> {
     let mut fetched: Vec<(String, Vec<u8>)> = Vec::new();
     for name in ["geoip.dat", "geosite.dat"] {
         let mut body = None;
-        for (label, tpl) in &probed {
+        for (label, tpl, _ms) in &probed {
             let url = tpl.replace("{name}", name);
             st.log(&format!("下载 {name} ← {label}：{url}"));
             match net::http_get_via(&url, 180, None) {
