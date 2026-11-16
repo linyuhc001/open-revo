@@ -76,6 +76,26 @@
     border-radius: var(--radius-sm); padding: 6px 10px; font: inherit; font-size: 12px; outline: none;
   }
   input[type="text"]:focus, textarea:focus, select:focus { border-color: var(--accent); }
+  /* editable combobox: input + dropdown that lists ALL options unfiltered (v2rayN ComboBox style) */
+  .combo { position: relative; }
+  .combo .combo-btn {
+    position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+    background: none; border: none; color: var(--text-dim); font-size: 11px;
+    cursor: pointer; padding: 4px 6px; line-height: 1;
+  }
+  .combo .combo-btn:hover { color: var(--text-primary); }
+  .combo-menu {
+    display: none; position: absolute; left: 0; top: calc(100% + 3px); z-index: 50;
+    background: var(--surface-card); border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm); box-shadow: 0 8px 24px #00000066;
+    max-height: 280px; overflow-y: auto; min-width: 500px; padding: 4px 0;
+  }
+  .combo-menu.open { display: block; }
+  .combo-menu > div {
+    padding: 6px 12px; font-size: 12px; white-space: nowrap; cursor: pointer;
+    color: var(--text-primary);
+  }
+  .combo-menu > div:hover { background: var(--accent); color: #fff; }
   textarea { width: 100%; font-family: var(--mono); resize: vertical; min-height: 70px; }
   table { width: 100%; border-collapse: collapse; font-size: 12px; }
   th, td { padding: 6px 8px; text-align: left; border-bottom: 1px solid #21262d; white-space: nowrap; }
@@ -290,48 +310,29 @@
       <div style="margin-top:12px;display:grid;grid-template-columns:130px 1fr;gap:10px 14px;align-items:start;max-width:820px;">
         <span style="padding-top:6px;">直连 DNS</span>
         <div>
-          <input type="text" id="dnsDirect" list="dlDirect" style="width:100%;" placeholder="119.29.29.29" />
-          <datalist id="dlDirect">
-            <option value="119.29.29.29"></option>
-            <option value="223.5.5.5"></option>
-            <option value="119.29.29.29,223.5.5.5,https://doh.pub/dns-query"></option>
-            <option value="https://doh.pub/dns-query"></option>
-            <option value="https://dns.alidns.com/dns-query"></option>
-            <option value="https://doh.pub/dns-query,https://dns.alidns.com/dns-query"></option>
-            <option value="localhost"></option>
-          </datalist>
+          <div class="combo">
+            <input type="text" id="dnsDirect" data-combo="direct" style="width:100%;padding-right:26px;" placeholder="119.29.29.29" />
+            <button type="button" class="combo-btn">▾</button>
+            <div class="combo-menu"></div>
+          </div>
           <div class="hint" style="font-size:11px;color:var(--text-dim);">解析国内域名，请求不走代理。多个地址用英文逗号分隔</div>
         </div>
         <span style="padding-top:6px;">远程 DNS</span>
         <div>
-          <input type="text" id="dnsRemote" list="dlRemote" style="width:100%;" placeholder="https://cloudflare-dns.com/dns-query" />
-          <datalist id="dlRemote">
-            <option value="https://cloudflare-dns.com/dns-query"></option>
-            <option value="https://dns.google/dns-query"></option>
-            <option value="https://cloudflare-dns.com/dns-query,https://dns.google/dns-query,8.8.8.8"></option>
-            <option value="https://dns.cloudflare.com/dns-query"></option>
-            <option value="https://doh.dns.sb/dns-query"></option>
-            <option value="https://doh.opendns.com/dns-query"></option>
-            <option value="https://common.dot.dns.yandex.net/dns-query"></option>
-            <option value="https://1.1.1.1/dns-query"></option>
-            <option value="https://8.8.8.8/dns-query"></option>
-            <option value="https://1.1.1.1/dns-query,https://8.8.8.8/dns-query"></option>
-            <option value="8.8.8.8"></option>
-            <option value="1.1.1.1"></option>
-            <option value="185.222.222.222"></option>
-            <option value="208.67.222.222"></option>
-            <option value="77.88.8.8"></option>
-          </datalist>
+          <div class="combo">
+            <input type="text" id="dnsRemote" data-combo="remote" style="width:100%;padding-right:26px;" placeholder="https://cloudflare-dns.com/dns-query" />
+            <button type="button" class="combo-btn">▾</button>
+            <div class="combo-menu"></div>
+          </div>
           <div class="hint" style="font-size:11px;color:var(--text-dim);">解析国外域名，请求通过代理出站。建议使用 DoH 或可信的远程 DNS 防污染</div>
         </div>
         <span style="padding-top:6px;">Bootstrap DNS</span>
         <div>
-          <input type="text" id="dnsBootstrap" list="dlBoot" style="width:100%;" placeholder="119.29.29.29" />
-          <datalist id="dlBoot">
-            <option value="119.29.29.29"></option>
-            <option value="223.5.5.5"></option>
-            <option value="localhost"></option>
-          </datalist>
+          <div class="combo">
+            <input type="text" id="dnsBootstrap" data-combo="boot" style="width:100%;padding-right:26px;" placeholder="119.29.29.29" />
+            <button type="button" class="combo-btn">▾</button>
+            <div class="combo-menu"></div>
+          </div>
           <div class="hint" style="font-size:11px;color:var(--text-dim);">用于解析 DNS 服务器自身的域名（如 cloudflare-dns.com），需指定为纯 IP</div>
         </div>
         <span style="padding-top:6px;">直连解析策略</span>
@@ -915,6 +916,70 @@ document.querySelectorAll('button[data-preset]').forEach((b) => {
 
 ['dnsSwitch', 'dnsParallel', 'dnsStale', 'dnsNoAAAA'].forEach((id) => {
   $(id).addEventListener('click', () => $(id).classList.toggle('on'));
+});
+
+// DNS option lists — verbatim from v2rayN ServiceLib/Global.cs
+// (DomainDirectDNSAddress / DomainRemoteDNSAddress / DomainPureIPDNSAddress)
+const DNS_OPTIONS = {
+  direct: [
+    '119.29.29.29',
+    '223.5.5.5',
+    '119.29.29.29,223.5.5.5,https://doh.pub/dns-query',
+    'https://doh.pub/dns-query',
+    'https://dns.alidns.com/dns-query',
+    'https://doh.pub/dns-query,https://dns.alidns.com/dns-query',
+    'localhost',
+  ],
+  remote: [
+    'https://cloudflare-dns.com/dns-query',
+    'https://dns.google/dns-query',
+    'https://cloudflare-dns.com/dns-query,https://dns.google/dns-query,8.8.8.8',
+    'https://dns.cloudflare.com/dns-query',
+    'https://doh.dns.sb/dns-query',
+    'https://doh.opendns.com/dns-query',
+    'https://common.dot.dns.yandex.net/dns-query',
+    'https://1.1.1.1/dns-query',
+    'https://8.8.8.8/dns-query',
+    'https://1.1.1.1/dns-query,https://8.8.8.8/dns-query',
+    '8.8.8.8',
+    '1.1.1.1',
+    '185.222.222.222',
+    '208.67.222.222',
+    '77.88.8.8',
+  ],
+  boot: ['119.29.29.29', '223.5.5.5', 'localhost'],
+};
+
+// Editable combobox: dropdown shows ALL options unfiltered (native datalist
+// filters by the typed text and truncates long entries — wrong for multi-DNS
+// strings). Input stays freely editable.
+document.querySelectorAll('.combo').forEach((wrap) => {
+  const input = wrap.querySelector('input');
+  const menu = wrap.querySelector('.combo-menu');
+  const btn = wrap.querySelector('.combo-btn');
+  const opts = DNS_OPTIONS[input.dataset.combo] || [];
+  menu.innerHTML = opts.map((o) => `<div>${esc(o)}</div>`).join('');
+  const close = () => menu.classList.remove('open');
+  const open = () => menu.classList.add('open');
+  // preventDefault on mousedown keeps input focus (no blur) while clicking
+  btn.addEventListener('mousedown', (e) => e.preventDefault());
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    menu.classList.toggle('open');
+  });
+  input.addEventListener('focus', open);
+  menu.addEventListener('mousedown', (e) => e.preventDefault());
+  menu.addEventListener('click', (e) => {
+    const item = e.target.closest('div');
+    if (!item) return;
+    input.value = item.textContent;
+    input.dispatchEvent(new Event('change'));
+    close();
+  });
+  input.addEventListener('blur', close);
+  document.addEventListener('click', (e) => {
+    if (!wrap.contains(e.target)) close();
+  });
 });
 $('btnDnsSave').addEventListener('click', async () => {
   const body = {
