@@ -262,7 +262,10 @@ fn parse_trojan(u: &str, name_fb: &str) -> Option<Node> {
         },
         ..Default::default()
     };
-    n.sni = qget(&q, "sni").or_else(|| qget(&q, "peer")).unwrap_or_default();
+    n.sni = {
+        let s = qget(&q, "sni");
+        if s.is_empty() { qget(&q, "peer") } else { s }
+    };
     n.alpn = qget(&q, "alpn");
     n.fp = qget(&q, "fp");
     n.allow_insecure = qget(&q, "allowInsecure") == "1";
@@ -277,7 +280,7 @@ fn parse_ss(u: &str, name_fb: &str) -> Option<Node> {
     let rest = u.strip_prefix("ss://")?;
     let (body, frag) = match rest.split_once('#') {
         Some((b, f)) => (b, url_decode(f)),
-        None => (rest, ""),
+        None => (rest, String::new()),
     };
     let name = if frag.is_empty() { name_fb.into() } else { frag };
     // SIP002: ss://base64(method:pass)@host:port[?plugin=..]#name

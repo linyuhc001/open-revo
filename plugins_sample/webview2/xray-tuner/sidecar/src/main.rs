@@ -20,7 +20,7 @@ use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use windows_sys::Win32::Foundation::HANDLE;
@@ -353,26 +353,29 @@ fn h_import(st: &State, v: &Value) -> Result<Value, String> {
     let total = parsed.len();
     let mut added = 0usize;
     {
-        let mut p = st.data.lock().unwrap();
-        for mut n in parsed {
-            n.sub_id = sub_id.clone();
-            // refresh in place when the same proto/addr/port/credential/sub
-            // already exists, so re-importing a subscription never piles up
-            if let Some(old) = p.nodes.iter_mut().find(|o| {
-                o.proto == n.proto && o.add == n.add && o.port == n.port && o.uuid == n.uuid && o.sub_id == n.sub_id
-            }) {
-                let keep_id = old.id.clone();
-                let was_selected = p.selected == keep_id;
-                *old = n;
-                old.id = keep_id;
-                if was_selected {
-                    p.selected = old.id.clone();
-                }
-            } else {
-                p.nodes.push(n);
-                added += 1;
+    let mut p = st.data.lock().unwrap();
+    for mut n in parsed {
+        n.sub_id = sub_id.clone();
+        // refresh in place when the same proto/addr/port/credential/sub
+        // already exists, so re-importing a subscription never piles up.
+        // Index-based: reading p.selected while holding an iter_mut() item
+        // would trip E0502 (field borrows through the MutexGuard cover the
+        // whole struct).
+        if let Some(pos) = p.nodes.iter().position(|o| {
+            o.proto == n.proto && o.add == n.add && o.port == n.port && o.uuid == n.uuid && o.sub_id == n.sub_id
+        }) {
+            let keep_id = p.nodes[pos].id.clone();
+            let was_selected = p.selected == keep_id;
+            n.id = keep_id;
+            p.nodes[pos] = n;
+            if was_selected {
+                p.selected = keep_id;
             }
+        } else {
+            p.nodes.push(n);
+            added += 1;
         }
+    }
         st.persist(&p);
         st.log(&format!("导入完成：新增 {added}，刷新 {}（订阅 {}）", total - added, if sub_id.is_empty() { "手动" } else { &sub_id }));
     }
@@ -461,7 +464,8 @@ fn h_real(st: &State) -> Result<Value, String> {
     match net::real_latency(http, 8000) {
         Some(ms) => {
             let mut p = st.data.lock().unwrap();
-            if let Some(n) = p.nodes.iter_mut().find(|n| n.id == p.selected) {
+            let sel = p.selected.clone();
+            if let Some(n) = p.nodes.iter_mut().find(|n| n.id == sel) {
                 n.real_ms = ms;
             }
             st.persist(&p);
@@ -613,7 +617,7 @@ fn route(st: &Arc<State>, method: &str, path: &str, body: &[u8]) -> Result<Value
 
 // ---------- main ----------
 
-static HEALTH_PORT: AtomicU32 = AtomicU32::new(18957);
+static HEALTH_PORT: AtomicU16 = AtomicU16::new(18957);
 
 fn serve(mut stream: TcpStream, st: Arc<State>) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
