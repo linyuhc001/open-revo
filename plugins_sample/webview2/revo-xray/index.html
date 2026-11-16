@@ -255,7 +255,7 @@
       </div>
       <div id="ruleWrap" style="max-height:400px;overflow-y:auto;">
         <table>
-          <thead><tr><th style="width:34px">#</th><th style="width:104px">出站</th><th style="width:42%">域名</th><th style="width:32%">IP</th><th style="width:130px">操作</th></tr></thead>
+          <thead><tr><th style="width:34px">#</th><th style="width:96px">出站</th><th style="width:36%">域名</th><th style="width:24%">IP</th><th style="width:88px">端口</th><th style="width:78px">网络</th><th style="width:118px">操作</th></tr></thead>
           <tbody id="ruleBody"></tbody>
         </table>
         <div class="empty" id="ruleEmpty">未自定义规则（使用默认 CN 直连规则集）</div>
@@ -273,17 +273,19 @@
   <!-- ===== DNS ===== -->
   <div class="page" data-page="dns">
     <div class="card">
-      <h2>DNS 基础设置 <span class="hint">同 v2rayN 基础模式：解析全部由 xray 核心完成，插件只生成配置 · 远程 DNS 查询走代理出站，直连 DNS 走直连</span></h2>
+      <h2>DNS 基础设置 <span class="hint">同 v2rayN 基础模式：解析全部由 xray 核心完成，插件只生成配置 · 会自动按路由规则给直连/远程域名挂对应的 DNS</span></h2>
       <div class="row">
         <span>启用 DNS</span>
         <div id="dnsSwitch" class="switch"></div>
         <span style="color:#21262d">|</span>
-        <span>查询策略</span>
-        <select id="dnsStrategy">
-          <option value="UseIP">UseIP</option>
-          <option value="UseIPv4">UseIPv4</option>
-          <option value="UseIPv6">UseIPv6</option>
-        </select>
+        <span>并行查询</span>
+        <div id="dnsParallel" class="switch" title="对所有 DNS 服务器并发查询"></div>
+        <span style="color:#21262d">|</span>
+        <span>过时缓存</span>
+        <div id="dnsStale" class="switch" title="DNS 记录过期后继续使用旧记录"></div>
+        <span style="color:#21262d">|</span>
+        <span>阻断 AAAA</span>
+        <div id="dnsNoAAAA" class="switch" title="屏蔽 IPv6 解析（queryStrategy=UseIPv4）"></div>
       </div>
       <div style="margin-top:12px;display:grid;grid-template-columns:130px 1fr;gap:10px 14px;align-items:start;max-width:820px;">
         <span style="padding-top:6px;">直连 DNS</span>
@@ -298,7 +300,7 @@
             <option value="https://doh.pub/dns-query,https://dns.alidns.com/dns-query"></option>
             <option value="localhost"></option>
           </datalist>
-          <div class="hint" style="font-size:11px;color:var(--text-dim);">默认仅在路由阶段被调用解析，国内域名用（可下拉选或自行输入）</div>
+          <div class="hint" style="font-size:11px;color:var(--text-dim);">解析国内域名，请求不走代理。多个地址用英文逗号分隔</div>
         </div>
         <span style="padding-top:6px;">远程 DNS</span>
         <div>
@@ -320,7 +322,7 @@
             <option value="208.67.222.222"></option>
             <option value="77.88.8.8"></option>
           </datalist>
-          <div class="hint" style="font-size:11px;color:var(--text-dim);">DoH/远程解析，查询流量经代理出站；请确保远程服务器可访问该 DNS</div>
+          <div class="hint" style="font-size:11px;color:var(--text-dim);">解析国外域名，请求通过代理出站。建议使用 DoH 或可信的远程 DNS 防污染</div>
         </div>
         <span style="padding-top:6px;">Bootstrap DNS</span>
         <div>
@@ -330,12 +332,51 @@
             <option value="223.5.5.5"></option>
             <option value="localhost"></option>
           </datalist>
-          <div class="hint" style="font-size:11px;color:var(--text-dim);">解析 DNS 服务器自身的域名，需指定为纯 IP</div>
+          <div class="hint" style="font-size:11px;color:var(--text-dim);">用于解析 DNS 服务器自身的域名（如 cloudflare-dns.com），需指定为纯 IP</div>
+        </div>
+        <span style="padding-top:6px;">直连解析策略</span>
+        <div>
+          <select id="dnsStratDirect">
+            <option value="">默认（AsIs）</option>
+            <option value="AsIs">AsIs</option>
+            <option value="UseIP">UseIP</option>
+            <option value="UseIPv4v6">UseIPv4v6</option>
+            <option value="UseIPv6v4">UseIPv6v4</option>
+            <option value="UseIPv4">UseIPv4</option>
+            <option value="UseIPv6">UseIPv6</option>
+          </select>
+          <div class="hint" style="font-size:11px;color:var(--text-dim);">直连出站（freedom）按此策略解析域名，AsIs 则原样发域名</div>
+        </div>
+        <span style="padding-top:6px;">远程解析策略</span>
+        <div>
+          <select id="dnsStratRemote">
+            <option value="">默认（AsIs）</option>
+            <option value="AsIs">AsIs</option>
+            <option value="UseIP">UseIP</option>
+            <option value="UseIPv4v6">UseIPv4v6</option>
+            <option value="UseIPv6v4">UseIPv6v4</option>
+            <option value="UseIPv4">UseIPv4</option>
+            <option value="UseIPv6">UseIPv6</option>
+          </select>
+          <div class="hint" style="font-size:11px;color:var(--text-dim);">代理出站在解析节点服务器域名时使用的 IP 策略（targetStrategy）</div>
+        </div>
+        <span style="padding-top:6px;">代理拨号解析策略</span>
+        <div>
+          <select id="dnsStratDial">
+            <option value="">默认（AsIs）</option>
+            <option value="AsIs">AsIs</option>
+            <option value="UseIP">UseIP</option>
+            <option value="UseIPv4v6">UseIPv4v6</option>
+            <option value="UseIPv6v4">UseIPv6v4</option>
+            <option value="UseIPv4">UseIPv4</option>
+            <option value="UseIPv6">UseIPv6</option>
+          </select>
+          <div class="hint" style="font-size:11px;color:var(--text-dim);">代理出站拨号（sockopt.domainStrategy），一般保持默认即可</div>
         </div>
       </div>
       <div class="row" style="margin-top:8px;">
         <button class="btn primary" id="btnDnsSave">保存 DNS 设置</button>
-        <span class="hint" style="font-size:11px;color:var(--text-dim);">保存后若核心在运行会自动重启生效；未启用时配置里不含 dns 段</span>
+        <span class="hint" style="font-size:11px;color:var(--text-dim);">保存后若核心在运行会自动重启生效；直连/远程 DNS 会按路由规则自动挂到对应域名上，未启用的走默认兜底</span>
       </div>
     </div>
   </div>
@@ -358,6 +399,22 @@
         <span class="hint" id="portsHint" style="font-size:11px;color:var(--text-dim);">
           默认 10808 / 10809，范围 1024–65535 且两者不能相同、不能占用插件服务端口；
           保存后若核心在运行会自动重启生效，系统代理始终指向 HTTP 入口
+        </span>
+      </div>
+    </div>
+    <div class="card">
+      <h2>服务端口 <span class="tag">Listen Port</span></h2>
+      <div class="row">
+        <label>xray-service 监听</label>
+        <input type="number" id="svcPortInput" value="" min="1024" max="65535" step="1" style="width:110px;" />
+        <button class="btn" id="btnSvcPortCheck">检测</button>
+        <button class="btn primary" id="btnSvcPortApply" disabled>应用</button>
+        <span class="hint" id="svcPortHint" style="font-size:11px;color:var(--text-dim);">输入端口号后点「检测」查占用</span>
+      </div>
+      <div class="row">
+        <span class="hint" style="font-size:11px;color:var(--text-dim);line-height:1.7;">
+          此端口用于插件伴随服务（面板与本页通信），默认 18957，没有冲突不用改。
+          应用后服务会在新端口重启，代理核心自动恢复，manifest 同步更新（宿主下次启动读取新端口）。
         </span>
       </div>
     </div>
@@ -703,7 +760,7 @@ $('sysProxySwitch').addEventListener('click', async () => {
 });
 
 // ---------------- settings: ports / routing / dns ----------------
-let routingRules = []; // {outbound, domain, ip} — domain/ip are comma strings in the editor
+let routingRules = []; // {outbound, domain, ip, port, network} — comma strings in the editor
 
 async function getSettings() {
   const j = await api('/api/settings');
@@ -713,15 +770,23 @@ async function getSettings() {
     outbound: r.outbound || 'direct',
     domain: (r.domain || []).join(','),
     ip: (r.ip || []).join(','),
+    port: r.port || '',
+    network: r.network || '',
   }));
   renderRules();
   $('routeStrategy').value = j.routing_strategy || 'IPIfNonMatch';
   const d = j.dns || {};
   $('dnsSwitch').classList.toggle('on', !!d.enabled);
-  $('dnsStrategy').value = d.query_strategy || 'UseIP';
   $('dnsDirect').value = d.direct_dns || '119.29.29.29';
   $('dnsRemote').value = d.remote_dns || 'https://cloudflare-dns.com/dns-query';
   $('dnsBootstrap').value = d.bootstrap_dns || '119.29.29.29';
+  $('dnsStratDirect').value = d.strategy_direct || '';
+  $('dnsStratRemote').value = d.strategy_remote || '';
+  $('dnsStratDial').value = d.strategy_dial || '';
+  $('dnsParallel').classList.toggle('on', !!d.parallel_query);
+  $('dnsStale').classList.toggle('on', !!d.serve_stale);
+  $('dnsNoAAAA').classList.toggle('on', !!d.block_aaaa);
+  $('svcPortInput').value = apiPort;
 }
 
 function renderRules() {
@@ -733,12 +798,21 @@ function renderRules() {
     <tr data-i="${i}">
       <td>${i + 1}</td>
       <td>
-        <select data-f="outbound" style="width:88px;">
+        <select data-f="outbound" style="width:80px;">
           ${['proxy', 'direct', 'block'].map((o) => `<option value="${o}"${r.outbound === o ? ' selected' : ''}>${obLabel[o]}</option>`).join('')}
         </select>
       </td>
       <td><input type="text" data-f="domain" value="${esc(r.domain)}" style="width:100%;" placeholder="geosite:cn,domain:xx.com" /></td>
       <td><input type="text" data-f="ip" value="${esc(r.ip)}" style="width:100%;" placeholder="geoip:cn,1.2.3.0/24" /></td>
+      <td><input type="text" data-f="port" value="${esc(r.port)}" style="width:78px;" placeholder="443" /></td>
+      <td>
+        <select data-f="network" style="width:70px;">
+          <option value=""${!r.network ? ' selected' : ''}>—</option>
+          <option value="tcp"${r.network === 'tcp' ? ' selected' : ''}>tcp</option>
+          <option value="udp"${r.network === 'udp' ? ' selected' : ''}>udp</option>
+          <option value="tcp,udp"${r.network === 'tcp,udp' ? ' selected' : ''}>tcp,udp</option>
+        </select>
+      </td>
       <td>
         <button class="btn" data-act="up"${i === 0 ? ' disabled' : ''}>↑</button>
         <button class="btn" data-act="down"${i === routingRules.length - 1 ? ' disabled' : ''}>↓</button>
@@ -772,7 +846,7 @@ $('ruleBody').addEventListener('click', (ev) => {
   renderRules();
 });
 $('btnRuleAdd').addEventListener('click', () => {
-  routingRules.push({ outbound: 'direct', domain: '', ip: '' });
+  routingRules.push({ outbound: 'direct', domain: '', ip: '', port: '', network: '' });
   renderRules();
 });
 $('btnRuleDefault').addEventListener('click', () => {
@@ -790,7 +864,10 @@ $('btnRuleClear').addEventListener('click', () => {
   toast('已清空，点「保存规则」后回到默认 CN 直连规则集');
 });
 $('btnRuleSave').addEventListener('click', async () => {
-  const rules = routingRules.map((r) => ({ outbound: r.outbound, domain: r.domain || '', ip: r.ip || '' }));
+  const rules = routingRules.map((r) => ({
+    outbound: r.outbound, domain: r.domain || '', ip: r.ip || '',
+    port: (r.port || '').trim(), network: r.network || '',
+  }));
   const strategy = $('routeStrategy').value;
   try {
     const j = await post('/api/routing/set', { rules, strategy });
@@ -798,50 +875,140 @@ $('btnRuleSave').addEventListener('click', async () => {
   } catch (e) { toast(e.message, true); }
 });
 
-// v2rayN preset rule sets (V4-Whitelist / Blacklist / Global, simplified)
+// v2rayN preset rule sets, straight from ServiceLib/Sample/custom_routing_*
+// (whitelist = 绕过大陆 / blacklist = 黑名单 / global = 全局代理), condensed
+// to the fields this editor supports (domain / ip / port / network).
 const ROUTE_PRESETS = {
   whitelist: [
-    ['direct', '', 'geoip:private'],
-    ['direct', 'geosite:private', ''],
-    ['block', 'geosite:category-ads-all', ''],
-    ['direct', 'geosite:cn', ''],
-    ['direct', '', 'geoip:cn'],
+    { outbound: 'block', domain: '', ip: '', port: '443', network: 'udp' },   // 阻断udp443
+    { outbound: 'proxy', domain: 'geosite:google', ip: '', port: '', network: '' }, // 代理Google
+    { outbound: 'direct', domain: '', ip: 'geoip:private', port: '', network: '' },
+    { outbound: 'direct', domain: 'geosite:private', ip: '', port: '', network: '' },
+    { outbound: 'direct', domain: 'domain:alidns.com,domain:doh.pub,domain:dot.pub,domain:360.cn,domain:onedns.net', ip: '', port: '', network: '' }, // 绕过中国公共DNS域名
+    { outbound: 'direct', domain: '', ip: 'geoip:cn', port: '', network: '' }, // 绕过中国IP
+    { outbound: 'direct', domain: 'geosite:cn', ip: '', port: '', network: '' }, // 绕过中国域名
   ],
   blacklist: [
-    ['direct', '', 'geoip:private'],
-    ['direct', 'geosite:private', ''],
-    ['block', 'geosite:category-ads-all', ''],
-    ['proxy', 'geosite:geolocation-!cn', ''],
-    ['direct', '', '0.0.0.0/0'],
+    { outbound: 'block', domain: '', ip: '', port: '443', network: 'udp' },
+    { outbound: 'proxy', domain: 'geosite:google', ip: '', port: '', network: '' },
+    { outbound: 'direct', domain: '', ip: 'geoip:private', port: '', network: '' },
+    { outbound: 'direct', domain: 'geosite:private', ip: '', port: '', network: '' },
+    { outbound: 'proxy', domain: 'domain:cloudflare-dns.com,domain:one.one.one.one,domain:dns.google,domain:adguard-dns.com,domain:opendns.com,domain:quad9.net', ip: '1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4,9.9.9.9,149.112.112.112,208.67.222.222,77.88.8.8', port: '', network: '' }, // 代理海外公共DNS
+    { outbound: 'proxy', domain: 'geosite:gfw,geosite:greatfire', ip: '', port: '', network: '' }, // 代理GFW
+    { outbound: 'direct', domain: '', ip: '', port: '0-65535', network: '' }, // 最终直连
   ],
   global: [
-    ['direct', '', 'geoip:private'],
-    ['direct', 'geosite:private', ''],
-    ['block', 'geosite:category-ads-all', ''],
+    { outbound: 'block', domain: '', ip: '', port: '443', network: 'udp' },
+    { outbound: 'direct', domain: '', ip: 'geoip:private', port: '', network: '' },
+    { outbound: 'direct', domain: 'geosite:private', ip: '', port: '', network: '' },
+    { outbound: 'proxy', domain: '', ip: '', port: '0-65535', network: '' }, // 最终代理
   ],
 };
 document.querySelectorAll('button[data-preset]').forEach((b) => {
   b.addEventListener('click', () => {
-    routingRules = (ROUTE_PRESETS[b.dataset.preset] || []).map(([ob, dom, ip]) => ({ outbound: ob, domain: dom, ip }));
+    const tpl = ROUTE_PRESETS[b.dataset.preset] || [];
+    routingRules = tpl.map((r) => ({ ...r }));
     renderRules();
-    toast('已填入规则集模板，点「保存规则」生效');
+    toast('已填入 v2rayN 规则集模板，点「保存规则」生效');
   });
 });
 
-$('dnsSwitch').addEventListener('click', () => $('dnsSwitch').classList.toggle('on'));
+['dnsSwitch', 'dnsParallel', 'dnsStale', 'dnsNoAAAA'].forEach((id) => {
+  $(id).addEventListener('click', () => $(id).classList.toggle('on'));
+});
 $('btnDnsSave').addEventListener('click', async () => {
   const body = {
     enabled: $('dnsSwitch').classList.contains('on'),
     direct_dns: $('dnsDirect').value.trim(),
     remote_dns: $('dnsRemote').value.trim(),
     bootstrap_dns: $('dnsBootstrap').value.trim(),
-    query_strategy: $('dnsStrategy').value,
+    strategy_direct: $('dnsStratDirect').value,
+    strategy_remote: $('dnsStratRemote').value,
+    strategy_dial: $('dnsStratDial').value,
+    parallel_query: $('dnsParallel').classList.contains('on'),
+    serve_stale: $('dnsStale').classList.contains('on'),
+    block_aaaa: $('dnsNoAAAA').classList.contains('on'),
   };
   try {
     const j = await post('/api/dns/set', body);
     toast(j.restarted ? 'DNS 已保存并重启核心' : 'DNS 已保存');
   } catch (e) { toast(e.message, true); }
 });
+
+// ---------------- settings: service (listen) port ----------------
+let svcPortState = null;
+function svcHint(text, color) {
+  const h = $('svcPortHint');
+  h.textContent = text;
+  h.style.color = color || '';
+}
+function svcUpdateApply() {
+  $('btnSvcPortApply').disabled = !(svcPortState && svcPortState.free);
+}
+async function svcCheckPort() {
+  const p = parseInt($('svcPortInput').value, 10);
+  if (!p || p < 1024 || p > 65535) {
+    svcPortState = null;
+    svcHint('请输入 1024–65535 的端口号', 'var(--status-error)');
+    svcUpdateApply();
+    return;
+  }
+  svcHint('检测中…', 'var(--text-dim)');
+  try {
+    const d = await post('/api/service_port/check', { port: p });
+    svcPortState = d;
+    if (d.free) {
+      svcHint(d.self ? `✅ 端口 ${p} 可用（当前端口）` : `✅ 端口 ${p} 可用`, 'var(--status-ok)');
+    } else {
+      const who = d.owner ? `${d.owner}${d.pid ? ' (PID ' + d.pid + ')' : ''}` : '其他进程';
+      svcHint(`❌ 端口 ${p} 已被 ${who} 占用`, 'var(--status-error)');
+    }
+  } catch (e) {
+    svcPortState = null;
+    svcHint('检测失败: ' + e.message, 'var(--status-error)');
+  }
+  svcUpdateApply();
+}
+async function svcApplyPort() {
+  if (!svcPortState || !svcPortState.free) return;
+  const p = svcPortState.port;
+  $('btnSvcPortApply').disabled = true;
+  svcHint('重启服务中…', 'var(--text-dim)');
+  try {
+    await post('/api/service_port/set', { port: p });
+  } catch (e) {
+    svcHint('应用失败: ' + e.message, 'var(--status-error)');
+    svcUpdateApply();
+    return;
+  }
+  // Old instance hands over to a fresh one on the new port; poll health there.
+  setApiPort(p);
+  let ok = false;
+  for (let i = 0; i < 25 && !ok; i++) {
+    await new Promise((r) => setTimeout(r, 400));
+    try {
+      const res = await fetchTimeout(`http://127.0.0.1:${apiPort}/api/health`, 2000);
+      if (res.ok) {
+        const j = await res.json();
+        if (j.port && j.port !== apiPort) setApiPort(j.port);
+        ok = true;
+      }
+    } catch (_) { /* not up yet */ }
+  }
+  if (ok) {
+    svcHint(`✅ 已切换到端口 ${apiPort}`, 'var(--status-ok)');
+    $('svcPortInput').value = apiPort;
+    toast(`服务已切换到端口 ${apiPort}` + (svcPortState.resume_core ? '，核心恢复中' : ''));
+    checkHealth();
+    getSettings();
+  } else {
+    svcHint('服务未在新端口上线 — 重开面板重试', 'var(--status-error)');
+  }
+  svcUpdateApply();
+}
+$('btnSvcPortCheck').addEventListener('click', svcCheckPort);
+$('btnSvcPortApply').addEventListener('click', svcApplyPort);
+$('svcPortInput').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') svcCheckPort(); });
 
 async function portsCheck(socks, http) {
   return post('/api/ports/check', { socks, http });

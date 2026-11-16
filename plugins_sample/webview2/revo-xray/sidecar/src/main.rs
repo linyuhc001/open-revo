@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-const VERSION: &str = "0.9.3";
+const VERSION: &str = "0.9.4";
 const LOG_RING: usize = 400;
 /// v2rayN's geo template: Global.GeoUrl in ServiceLib/Global.cs.
 /// `{0}` is filled with "geoip" / "geosite".
@@ -48,6 +48,11 @@ struct Persist {
     routing_strategy: String,
     #[serde(default)]
     dns: xconf::DnsCfg,
+    /// Set right before the port-switch handover: the replacement process
+    /// auto-starts the core once it is up, so switching the service port
+    /// doesn't leave the browser pointed at a dead local proxy.
+    #[serde(default)]
+    resume_core: bool,
 }
 
 fn default_socks() -> u16 { 10808 }
@@ -644,6 +649,160 @@ fn h_ports_set(st: &State, v: &Value) -> Result<Value, String> {
     Ok(r)
 }
 
+// ---------- service (listen) port: check / set / manifest rewrite ----------
+
+fn h_service_port_check(st: &State, v: &Value) -> Result<Value, String> {
+    let p = v
+        .get("port")
+        .and_then(|x| x.as_u64())
+        .or_else(|| v.get("port").and_then(|x| x.as_str()).and_then(|s| s.trim().parse().ok()))
+        .ok_or("缺少或无效的 port")?;
+    if !(1024..=65535).contains(&p) {
+        return Err("端口需在 1024–65535 之间".into());
+    }
+    let p = p as u16;
+    let cur = HEALTH_PORT.load(Ordering::Relaxed);
+    let (socks, http) = {
+        let g = st.data.lock().unwrap();
+        (g.socks_port, g.http_port)
+    };
+    if p == socks || p == http {
+        return Ok(json!({ "port": p, "free": false, "owner": "本插件代理入站端口" }));
+    }
+    if p == cur {
+        // Our own listener holds it — usable by definition.
+        return Ok(json!({ "port": p, "free": true, "self": true }));
+    }
+    match std::net::TcpListener::bind(("127.0.0.1", p)) {
+        Ok(l) => drop(l),
+        Err(_) => {
+            let (owner, pid) = winapi::listener_owner(p);
+            let who = if owner.is_empty() { format!("未知进程(pid {pid:?})") } else { owner };
+            return Ok(json!({ "port": p, "free": false, "owner": who, "pid": pid }));
+        }
+    }
+    Ok(json!({ "port": p, "free": true }))
+}
+
+fn h_service_port_set(st: &State, v: &Value) -> Result<Value, String> {
+    let p = v
+        .get("port")
+        .and_then(|x| x.as_u64())
+        .or_else(|| v.get("port").and_then(|x| x.as_str()).and_then(|s| s.trim().parse().ok()))
+        .ok_or("缺少或无效的 port")?;
+    if !(1024..=65535).contains(&p) {
+        return Err("端口需在 1024–65535 之间".into());
+    }
+    let p = p as u16;
+    let cur = HEALTH_PORT.load(Ordering::Relaxed);
+    let (socks, http) = {
+        let g = st.data.lock().unwrap();
+        (g.socks_port, g.http_port)
+    };
+    if p == socks || p == http {
+        return Err(format!("端口 {p} 与代理入站端口冲突（socks:{socks} / http:{http}）"));
+    }
+    if p != cur && TcpListener::bind(("127.0.0.1", p)).is_err() {
+        return Err(format!("端口 {p} 已被占用，无法应用"));
+    }
+
+    update_manifest_port(p)?;
+
+    if p == cur {
+        // Same port: manifest is now consistent, nothing to restart.
+        return Ok(json!({ "ok": true, "port": p, "restarting": false }));
+    }
+
+    // Handover: remember whether the core was running so the replacement
+    // restores it — otherwise the system proxy would point at a dead port.
+    let was_running = st.core_running();
+    {
+        let mut g = st.data.lock().unwrap();
+        g.resume_core = was_running;
+        st.persist(&g);
+    }
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    st.log(&format!("服务端口切换 {cur} → {p}，重启伴随服务（核心{}）", if was_running { "将在新实例恢复" } else { "未运行" }));
+    std::process::Command::new(&exe)
+        .args(["--serve", "--port", &p.to_string()])
+        .spawn()
+        .map_err(|e| format!("manifest 已更新但新进程启动失败: {e}"))?;
+    // Let the HTTP response flush before terminating; xray (if any) dies with
+    // this process via the Job Object and is restarted by the replacement.
+    std::thread::spawn(|| {
+        std::thread::sleep(Duration::from_millis(400));
+        std::process::exit(0);
+    });
+    Ok(json!({ "ok": true, "port": p, "restarting": true, "resume_core": was_running }))
+}
+
+/// Rewrite <plugin>/manifest.json so `service.port`, `service.health_url` and
+/// `service.args` all point at `new_port` — the host re-reads it next launch.
+fn update_manifest_port(new_port: u16) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+    // Layout: <plugin>/sidecar/xray-service.exe -> <plugin>/manifest.json
+    let manifest_path = exe
+        .parent()
+        .and_then(|d| d.parent())
+        .map(|d| d.join("manifest.json"))
+        .ok_or_else(|| "cannot resolve plugin dir".to_string())?;
+
+    let raw = std::fs::read_to_string(&manifest_path)
+        .map_err(|e| format!("read {}: {e}", manifest_path.display()))?;
+    let mut v: Value = serde_json::from_str(&raw).map_err(|e| format!("parse manifest: {e}"))?;
+
+    let cur = HEALTH_PORT.load(Ordering::Relaxed);
+    let svc = v
+        .get_mut("service")
+        .and_then(|s| s.as_object_mut())
+        .ok_or("manifest has no service object")?;
+
+    svc.insert("port".into(), json!(new_port));
+
+    if let Some(hu) = svc
+        .get("health_url")
+        .and_then(|x| x.as_str())
+        .map(String::from)
+    {
+        let updated =
+            hu.replace(&format!("127.0.0.1:{cur}"), &format!("127.0.0.1:{new_port}"));
+        svc.insert("health_url".into(), json!(updated));
+    }
+
+    // Rebuild args: keep everything except port tokens, then ensure --serve
+    // and the new --port are present.
+    let old_args: Vec<String> = svc
+        .get("args")
+        .and_then(|a| a.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let mut kept: Vec<String> = Vec::new();
+    let mut skip_next = false;
+    for a in &old_args {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if a == "--port" {
+            skip_next = true;
+            continue;
+        }
+        if a.starts_with("--port=") || a == "--serve" {
+            continue;
+        }
+        kept.push(a.clone());
+    }
+    let mut args = vec!["--serve".to_string()];
+    args.extend(kept);
+    args.push("--port".to_string());
+    args.push(new_port.to_string());
+    svc.insert("args".into(), json!(args));
+
+    let out = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
+    std::fs::write(&manifest_path, out).map_err(|e| format!("write manifest: {e}"))?;
+    Ok(())
+}
+
 fn parse_rules(v: &Value) -> Result<Vec<xconf::Rule>, String> {
     let arr = v.get("rules").and_then(|x| x.as_array()).ok_or("缺少 rules")?;
     let mut out = Vec::new();
@@ -661,10 +820,17 @@ fn parse_rules(v: &Value) -> Result<Vec<xconf::Rule>, String> {
         };
         let domain = split("domain");
         let ip = split("ip");
-        if domain.is_empty() && ip.is_empty() {
-            return Err("存在既无域名也无 IP 的规则".into());
+        let port = r.get("port").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+        let network = r.get("network").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+        let protocol: Vec<String> = r
+            .get("protocol")
+            .and_then(|x| x.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.trim().to_string())).filter(|s| !s.is_empty()).collect())
+            .unwrap_or_default();
+        if domain.is_empty() && ip.is_empty() && port.is_empty() && protocol.is_empty() {
+            return Err("存在没有任何匹配条件的规则".into());
         }
-        out.push(xconf::Rule { outbound: ob, domain, ip });
+        out.push(xconf::Rule { outbound: ob, domain, ip, port, network, protocol });
     }
     if out.len() > 64 {
         return Err("规则过多（上限 64 条）".into());
@@ -697,17 +863,35 @@ fn h_dns_set(st: &State, v: &Value) -> Result<Value, String> {
     if enabled && direct.is_empty() && remote.is_empty() {
         return Err("启用 DNS 时至少填一个 DNS 服务器".into());
     }
-    let mut strat = jstr(v, "query_strategy");
-    if !matches!(strat.as_str(), "UseIP" | "UseIPv4" | "UseIPv6") {
-        strat = "UseIP".into();
+    // per-outbound resolve strategies, v2rayN DomainStrategy values; "" = default
+    let ok_strat = |s: &str| matches!(s, "" | "AsIs" | "UseIP" | "UseIPv4v6" | "UseIPv6v4" | "UseIPv4" | "UseIPv6");
+    let strategy_direct = jstr(v, "strategy_direct");
+    let strategy_remote = jstr(v, "strategy_remote");
+    let strategy_dial = jstr(v, "strategy_dial");
+    for (name, s) in [
+        ("直连解析策略", &strategy_direct),
+        ("远程解析策略", &strategy_remote),
+        ("代理拨号解析策略", &strategy_dial),
+    ] {
+        if !ok_strat(s) {
+            return Err(format!("未知的{name}: {s}"));
+        }
     }
+    let block_aaaa = v.get("block_aaaa").and_then(|x| x.as_bool()).unwrap_or(false);
+    let parallel_query = v.get("parallel_query").and_then(|x| x.as_bool()).unwrap_or(false);
+    let serve_stale = v.get("serve_stale").and_then(|x| x.as_bool()).unwrap_or(false);
     let r = save_and_restart(st, |p| {
         p.dns = xconf::DnsCfg {
             enabled,
             direct_dns: direct.clone(),
             remote_dns: remote.clone(),
             bootstrap_dns: bootstrap.clone(),
-            query_strategy: strat.clone(),
+            strategy_direct: strategy_direct.clone(),
+            strategy_remote: strategy_remote.clone(),
+            strategy_dial: strategy_dial.clone(),
+            block_aaaa,
+            parallel_query,
+            serve_stale,
         };
     })?;
     st.log(&format!(
@@ -996,6 +1180,8 @@ fn route(st: &Arc<State>, method: &str, path: &str, body: &[u8]) -> Result<Value
         ("GET", "/api/settings") => Ok(h_settings(st)),
         ("POST", "/api/ports/check") => Ok(h_ports_check(st, &v)),
         ("POST", "/api/ports/set") => h_ports_set(st, &v),
+        ("POST", "/api/service_port/check") => h_service_port_check(st, &v),
+        ("POST", "/api/service_port/set") => h_service_port_set(st, &v),
         ("POST", "/api/routing/set") => h_routing_set(st, &v),
         ("POST", "/api/dns/set") => h_dns_set(st, &v),
         ("GET", "/api/log") => {
@@ -1105,24 +1291,60 @@ fn main() {
         });
     }
 
-    st.log(&format!("xray-service {VERSION} starting on 127.0.0.1:{port}"));
-
-    match TcpListener::bind(("127.0.0.1", port)) {
-        Ok(listener) => {
-            eprintln!("xray-service {VERSION} listening on 127.0.0.1:{port}");
-            for stream in listener.incoming() {
-                match stream {
-                    Ok(s) => {
-                        let st2 = st.clone();
-                        std::thread::spawn(move || serve(s, st2));
-                    }
-                    Err(_) => continue,
-                }
-            }
-        }
+    // Port handover: /api/service_port/set spawns a replacement before the
+    // old process releases the listener, so retry the bind briefly to absorb
+    // the gap. Cold starts succeed on the first attempt.
+    let listener = match bind_with_retry(port) {
+        Ok(l) => l,
         Err(e) => {
             st.log(&format!("端口 {port} 绑定失败: {e}"));
             eprintln!("bind {port} failed: {e}");
+            std::process::exit(2);
+        }
+    };
+
+    // Resume the core after a port-switch handover (or if the flag was left
+    // set by an unclean exit while the core was running).
+    if st.data.lock().unwrap().resume_core {
+        let st3 = st.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(800));
+            match core_start(&st3) {
+                Ok(_) => {
+                    st3.log("服务重启后核心已自动恢复");
+                    let mut p = st3.data.lock().unwrap();
+                    p.resume_core = false;
+                    st3.persist(&p);
+                }
+                Err(e) => st3.log(&format!("核心自动恢复失败: {e}")),
+            }
+        });
+    }
+
+    eprintln!("xray-service {VERSION} listening on 127.0.0.1:{port}");
+    for stream in listener.incoming() {
+        match stream {
+            Ok(s) => {
+                let st2 = st.clone();
+                std::thread::spawn(move || serve(s, st2));
+            }
+            Err(_) => continue,
         }
     }
+}
+
+/// Retry the listener bind for up to 5s — covers the port-handover gap where
+/// the previous instance is still shutting down.
+fn bind_with_retry(port: u16) -> std::io::Result<TcpListener> {
+    let mut last: Option<std::io::Error> = None;
+    for _ in 0..25 {
+        match TcpListener::bind(("127.0.0.1", port)) {
+            Ok(l) => return Ok(l),
+            Err(e) => {
+                last = Some(e);
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| std::io::Error::other("bind failed")))
 }
