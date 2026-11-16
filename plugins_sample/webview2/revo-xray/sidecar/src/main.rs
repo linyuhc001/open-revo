@@ -660,7 +660,7 @@ fn geo_download(st: &State, mirror: &str) -> Result<Value, String> {
         .iter()
         .map(|(label, tpl)| {
             let url = tpl.replace("{name}", "geoip.dat");
-            let label = label.clone();
+            let label = label.to_string();
             std::thread::spawn(move || (label, net::probe_speed(&url, 256 * 1024, 8)))
         })
         .collect();
@@ -668,7 +668,7 @@ fn geo_download(st: &State, mirror: &str) -> Result<Value, String> {
         .into_iter()
         .map(|h| h.join().unwrap_or((String::new(), None)))
         .collect();
-    probed.sort_by_key(|(_, ms)| ms.unwrap_or(u128::MAX));
+    probed.sort_by_key(|p| p.1.clone().unwrap_or(u128::MAX));
     let speed_line = probed
         .iter()
         .map(|(l, ms)| match ms {
