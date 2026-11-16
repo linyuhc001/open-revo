@@ -637,10 +637,20 @@ fn serve(mut stream: TcpStream, st: Arc<State>) {
 }
 
 fn load_state(data_dir: &Path) -> Persist {
-    std::fs::read_to_string(data_dir.join("state.json"))
+    let mut p: Persist = std::fs::read_to_string(data_dir.join("state.json"))
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    // Persist::default() zeroes the ports (serde(default=) only fires for
+    // missing fields in an existing file, not for a wholly absent file), so
+    // re-anchor them here — a fresh install must get 10808/10809.
+    if p.socks_port == 0 {
+        p.socks_port = default_socks();
+    }
+    if p.http_port == 0 {
+        p.http_port = default_http();
+    }
+    p
 }
 
 fn main() {
