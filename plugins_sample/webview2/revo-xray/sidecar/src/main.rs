@@ -78,6 +78,10 @@ struct State {
     logs: Mutex<VecDeque<String>>,
     data_dir: PathBuf,
     bin_dir: PathBuf,
+    /// Cached `xray.exe version` keyed by the exe's mtime — health polls must
+    /// not spawn a child process on every request (and certainly not while
+    /// holding the data lock).
+    xray_ver: Mutex<Option<(u64, String)>>,
 }
 
 fn now_str() -> String {
@@ -94,7 +98,7 @@ impl State {
     fn log(&self, msg: &str) {
         let line = format!("[{}] {}", now_str(), msg);
         {
-            let mut ring = self.logs.lock().unwrap();
+            let mut ring = self.logs.lock().unwrap_or_else(|e| e.into_inner());
             if ring.len() >= LOG_RING {
                 ring.pop_front();
             }
@@ -127,7 +131,7 @@ impl State {
     }
 
     fn core_running(&self) -> bool {
-        let mut guard = self.core.lock().unwrap();
+        let mut guard = self.core.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(h) = guard.as_ref() {
             if winapi::is_running(h.0) {
                 return true;
@@ -139,7 +143,7 @@ impl State {
     }
 
     fn take_core(&self) -> Option<winapi::CoreHandle> {
-        let mut guard = self.core.lock().unwrap();
+        let mut guard = self.core.lock().unwrap_or_else(|e| e.into_inner());
         let h = guard.take();
         if let Some(h) = h {
             if winapi::is_running(h.0) {
@@ -152,7 +156,7 @@ impl State {
     /// PID of the running xray child, if any — used to whitelist "the port is
     /// held by our own core" during conflict probes.
     fn core_pid(&self) -> Option<u32> {
-        let guard = self.core.lock().unwrap();
+        let guard = self.core.lock().unwrap_or_else(|e| e.into_inner());
         guard.as_ref().and_then(|h| winapi::process_id(h.0))
     }
 }
@@ -279,7 +283,7 @@ fn core_start(st: &State) -> Result<Value, String> {
     if !geoip_ok || !geosite_ok {
         st.log("注意：缺少 geoip.dat / geosite.dat，已降级为不含 geo 规则的配置（点「下载 Geo 文件」可恢复 CN 直连规则）");
     }
-    let mut p = st.data.lock().unwrap();
+    let mut p = st.data.lock().unwrap_or_else(|e| e.into_inner());
     let node = p
         .nodes
         .iter()
@@ -297,16 +301,20 @@ fn core_start(st: &State) -> Result<Value, String> {
     let cfg_path = st.data_dir.join("config.json");
     std::fs::write(&cfg_path, &cfg).map_err(|e| format!("写配置失败: {e}"))?;
 
-    // take down any previous instance first
-    let mut guard = st.core.lock().unwrap();
-    if let Some(h) = guard.take() {
+    // take down any previous instance first — the data lock is released
+    // BEFORE killing/waiting on the old process so a slow kill can never
+    // wedge every data-locking endpoint.
+    let old_handle = {
+        let mut guard = st.core.lock().unwrap_or_else(|e| e.into_inner());
+        guard.take()
+    };
+    drop(p);
+    if let Some(h) = old_handle {
         if winapi::is_running(h.0) {
             winapi::kill(h.0);
             std::thread::sleep(Duration::from_millis(300));
         }
     }
-    drop(p);
-    drop(guard);
 
     st.log(&format!("启动 xray：节点「{}」({})", node.name, node.addr_port()));
     // truncate the child's log, then let the child append its stdout/stderr to
@@ -319,10 +327,10 @@ fn core_start(st: &State) -> Result<Value, String> {
         Some(&st.bin_dir),
         Some(&log_path),
     )?;
-    *st.core.lock().unwrap() = Some(winapi::CoreHandle(handle));
+    *st.core.lock().unwrap_or_else(|e| e.into_inner()) = Some(winapi::CoreHandle(handle));
     std::thread::sleep(Duration::from_millis(500));
     if !winapi::is_running(handle) {
-        *st.core.lock().unwrap() = None;
+        *st.core.lock().unwrap_or_else(|e| e.into_inner()) = None;
         let tail = read_xray_log(st);
         st.log("xray 启动即退出");
         return Err(format!("xray 启动失败，请看日志。{tail}"));
@@ -357,7 +365,7 @@ fn core_stop(st: &State) -> Result<Value, String> {
 /// direct otherwise / on failure. Logs which path was taken.
 fn http_get_auto(st: &State, what: &str, url: &str, timeout_s: u64) -> Result<Vec<u8>, String> {
     if st.core_running() {
-        let http = st.data.lock().unwrap().http_port;
+        let http = st.data.lock().unwrap_or_else(|e| e.into_inner()).http_port;
         match net::http_get_via(url, timeout_s, Some(http)) {
             Ok(b) => {
                 st.log(&format!("{what}：已走自身代理下载"));
@@ -515,11 +523,11 @@ fn h_proxy_toggle(st: &State, v: &Value) -> Result<Value, String> {
     let on = v.get("on").and_then(|x| x.as_bool()).ok_or("缺少 on")?;
     if on {
         core_start(st)?;
-        let http = st.data.lock().unwrap().http_port;
+        let http = st.data.lock().unwrap_or_else(|e| e.into_inner()).http_port;
         winapi::set_system_proxy(true, http)?;
         st.log("总开关：代理开启（核心运行 + 系统代理已接管）");
     } else {
-        let http = st.data.lock().unwrap().http_port;
+        let http = st.data.lock().unwrap_or_else(|e| e.into_inner()).http_port;
         if let Err(e) = winapi::set_system_proxy(false, http) {
             st.log(&format!("总开关：还原系统代理失败（继续停核心）: {e}"));
         }
@@ -539,7 +547,7 @@ where
 {
     let was_running = st.core_running();
     {
-        let mut p = st.data.lock().unwrap();
+        let mut p = st.data.lock().unwrap_or_else(|e| e.into_inner());
         mutate(&mut p);
         st.persist(&p);
     }
@@ -552,7 +560,7 @@ where
 }
 
 fn h_settings(st: &State) -> Value {
-    let p = st.data.lock().unwrap();
+    let p = st.data.lock().unwrap_or_else(|e| e.into_inner());
     json!({
         "socks_port": p.socks_port,
         "http_port": p.http_port,
@@ -663,7 +671,7 @@ fn h_service_port_check(st: &State, v: &Value) -> Result<Value, String> {
     let p = p as u16;
     let cur = HEALTH_PORT.load(Ordering::Relaxed);
     let (socks, http) = {
-        let g = st.data.lock().unwrap();
+        let g = st.data.lock().unwrap_or_else(|e| e.into_inner());
         (g.socks_port, g.http_port)
     };
     if p == socks || p == http {
@@ -696,7 +704,7 @@ fn h_service_port_set(st: &State, v: &Value) -> Result<Value, String> {
     let p = p as u16;
     let cur = HEALTH_PORT.load(Ordering::Relaxed);
     let (socks, http) = {
-        let g = st.data.lock().unwrap();
+        let g = st.data.lock().unwrap_or_else(|e| e.into_inner());
         (g.socks_port, g.http_port)
     };
     if p == socks || p == http {
@@ -717,7 +725,7 @@ fn h_service_port_set(st: &State, v: &Value) -> Result<Value, String> {
     // restores it — otherwise the system proxy would point at a dead port.
     let was_running = st.core_running();
     {
-        let mut g = st.data.lock().unwrap();
+        let mut g = st.data.lock().unwrap_or_else(|e| e.into_inner());
         g.resume_core = was_running;
         st.persist(&g);
     }
@@ -907,7 +915,7 @@ fn h_dns_set(st: &State, v: &Value) -> Result<Value, String> {
 // ---------- route handlers ----------
 
 fn h_nodes(st: &State) -> Value {
-    let p = st.data.lock().unwrap();
+    let p = st.data.lock().unwrap_or_else(|e| e.into_inner());
     json!({ "nodes": p.nodes, "selected": p.selected })
 }
 
@@ -921,7 +929,7 @@ fn h_import(st: &State, v: &Value) -> Result<Value, String> {
     let total = parsed.len();
     let mut added = 0usize;
     {
-    let mut p = st.data.lock().unwrap();
+    let mut p = st.data.lock().unwrap_or_else(|e| e.into_inner());
     for mut n in parsed {
         n.sub_id = sub_id.clone();
         // refresh in place when the same proto/addr/port/credential/sub
@@ -952,7 +960,7 @@ fn h_import(st: &State, v: &Value) -> Result<Value, String> {
 
 fn h_select(st: &State, v: &Value) -> Result<Value, String> {
     let id = jstr(v, "id");
-    let mut p = st.data.lock().unwrap();
+    let mut p = st.data.lock().unwrap_or_else(|e| e.into_inner());
     if !p.nodes.iter().any(|n| n.id == id) {
         return Err("节点不存在".into());
     }
@@ -963,7 +971,7 @@ fn h_select(st: &State, v: &Value) -> Result<Value, String> {
 
 fn h_delete(st: &State, v: &Value) -> Result<Value, String> {
     let id = jstr(v, "id");
-    let mut p = st.data.lock().unwrap();
+    let mut p = st.data.lock().unwrap_or_else(|e| e.into_inner());
     let before = p.nodes.len();
     p.nodes.retain(|n| n.id != id);
     if p.selected == id {
@@ -976,7 +984,7 @@ fn h_delete(st: &State, v: &Value) -> Result<Value, String> {
 
 fn h_share(st: &State, v: &Value) -> Result<Value, String> {
     let id = jstr(v, "id");
-    let p = st.data.lock().unwrap();
+    let p = st.data.lock().unwrap_or_else(|e| e.into_inner());
     let n = p.nodes.iter().find(|n| n.id == id).ok_or("节点不存在")?;
     Ok(json!({ "ok": true, "link": n.to_share_link() }))
 }
@@ -985,7 +993,7 @@ fn h_tcping(st: &State, v: &Value) -> Result<Value, String> {
     let id = jstr(v, "id");
     let mut results = serde_json::Map::new();
     let targets: Vec<Node> = {
-        let p = st.data.lock().unwrap();
+        let p = st.data.lock().unwrap_or_else(|e| e.into_inner());
         if id.is_empty() {
             p.nodes.clone()
         } else {
@@ -1010,7 +1018,7 @@ fn h_tcping(st: &State, v: &Value) -> Result<Value, String> {
         }
     }
     // persist the caches
-    let mut p = st.data.lock().unwrap();
+    let mut p = st.data.lock().unwrap_or_else(|e| e.into_inner());
     for n in p.nodes.iter_mut() {
         if let Some(Value::Number(num)) = results.get(&n.id) {
             if let Some(ms) = num.as_u64() {
@@ -1028,10 +1036,10 @@ fn h_real(st: &State) -> Result<Value, String> {
     if !st.core_running() {
         return Err("核心未运行，先启动核心再测真延迟".into());
     }
-    let http = st.data.lock().unwrap().http_port;
+    let http = st.data.lock().unwrap_or_else(|e| e.into_inner()).http_port;
     match net::real_latency(http, 8000) {
         Some(ms) => {
-            let mut p = st.data.lock().unwrap();
+            let mut p = st.data.lock().unwrap_or_else(|e| e.into_inner());
             let sel = p.selected.clone();
             if let Some(n) = p.nodes.iter_mut().find(|n| n.id == sel) {
                 n.real_ms = ms;
@@ -1044,7 +1052,7 @@ fn h_real(st: &State) -> Result<Value, String> {
 }
 
 fn h_subs(st: &State) -> Value {
-    let p = st.data.lock().unwrap();
+    let p = st.data.lock().unwrap_or_else(|e| e.into_inner());
     json!({ "subs": p.subs })
 }
 
@@ -1054,7 +1062,7 @@ fn h_subs_add(st: &State, v: &Value) -> Result<Value, String> {
     if url.is_empty() || !url.starts_with("http") {
         return Err("订阅地址无效".into());
     }
-    let mut p = st.data.lock().unwrap();
+    let mut p = st.data.lock().unwrap_or_else(|e| e.into_inner());
     let sub = Sub { id: id_gen(), name: if name.is_empty() { "订阅".into() } else { name }, url, last_update: String::new(), count: 0 };
     p.subs.push(sub);
     st.persist(&p);
@@ -1063,7 +1071,7 @@ fn h_subs_add(st: &State, v: &Value) -> Result<Value, String> {
 
 fn h_subs_delete(st: &State, v: &Value) -> Result<Value, String> {
     let id = jstr(v, "id");
-    let mut p = st.data.lock().unwrap();
+    let mut p = st.data.lock().unwrap_or_else(|e| e.into_inner());
     p.subs.retain(|s| s.id != id);
     // keep the nodes but orphan them? cleaner: drop nodes of that sub too
     p.nodes.retain(|n| n.sub_id != id);
@@ -1077,7 +1085,7 @@ fn h_subs_delete(st: &State, v: &Value) -> Result<Value, String> {
 fn h_subs_update(st: &State, v: &Value) -> Result<Value, String> {
     let id = jstr(v, "id");
     let (url, name) = {
-        let p = st.data.lock().unwrap();
+        let p = st.data.lock().unwrap_or_else(|e| e.into_inner());
         let s = p.subs.iter().find(|s| s.id == id).ok_or("订阅不存在")?;
         (s.url.clone(), s.name.clone())
     };
@@ -1088,7 +1096,7 @@ fn h_subs_update(st: &State, v: &Value) -> Result<Value, String> {
         return Err(format!("订阅未解析出节点（{} 条错误）{}", errors.len(), if errors.is_empty() { String::new() } else { format!("：{}", errors[0]) }));
     }
     let count = nodes.len();
-    let mut p = st.data.lock().unwrap();
+    let mut p = st.data.lock().unwrap_or_else(|e| e.into_inner());
     // drop previous nodes of this subscription, then import fresh
     p.nodes.retain(|n| n.sub_id != id);
     let mut nodes = nodes;
@@ -1110,22 +1118,46 @@ fn h_subs_update(st: &State, v: &Value) -> Result<Value, String> {
 
 fn h_sysproxy(st: &State, v: &Value) -> Result<Value, String> {
     let on = v.get("on").and_then(|x| x.as_bool()).ok_or("缺少 on")?;
-    let http = st.data.lock().unwrap().http_port;
+    let http = st.data.lock().unwrap_or_else(|e| e.into_inner()).http_port;
     winapi::set_system_proxy(on, http)?;
     st.log(&format!("系统代理 {}", if on { "开启" } else { "关闭" }));
     Ok(json!({ "ok": true, "on": on }))
 }
 
-fn h_health(st: &State) -> Value {
-    let p = st.data.lock().unwrap();
-    let (sp_enabled, sp_ours) = winapi::system_proxy_state(p.http_port);
+/// `xray.exe version` with an mtime-keyed cache — never spawn a child on
+/// every health poll. Must be called WITHOUT the data lock held.
+fn xray_version_cached(st: &State) -> String {
     let exe = st.xray_exe();
-    let xray_version = if exe.is_file() {
-        net::xray_version(&exe).unwrap_or_default()
-    } else {
-        String::new()
+    if !exe.is_file() {
+        return String::new();
+    }
+    let mtime = std::fs::metadata(&exe)
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut c = st.xray_ver.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((m, v)) = c.as_ref() {
+        if *m == mtime {
+            return v.clone();
+        }
+    }
+    let v = net::xray_version(&exe).unwrap_or_default();
+    *c = Some((mtime, v.clone()));
+    v
+}
+
+fn h_health(st: &State) -> Value {
+    // Snapshot under the data lock only — registry reads, child-process
+    // spawns and everything blocking happen AFTER the lock is released. A
+    // health poll must never be able to wedge the data lock.
+    let (selected, node_count, http_port, socks_port, running) = {
+        let p = st.data.lock().unwrap_or_else(|e| e.into_inner());
+        let running = st.core_running();
+        (p.selected.clone(), p.nodes.len(), p.http_port, p.socks_port, running)
     };
-    let running = st.core_running();
+    let (sp_enabled, sp_ours) = winapi::system_proxy_state(http_port);
+    let xray_version = xray_version_cached(st);
     json!({
         "status": "ok",
         "version": VERSION,
@@ -1138,11 +1170,11 @@ fn h_health(st: &State) -> Value {
         },
         "running": running,
         "switch": running && sp_ours,
-        "selected": p.selected,
-        "nodes": p.nodes.len(),
+        "selected": selected,
+        "nodes": node_count,
         "sysproxy": { "enabled": sp_enabled, "ours": sp_ours },
-        "socks_port": p.socks_port,
-        "http_port": p.http_port,
+        "socks_port": socks_port,
+        "http_port": http_port,
     })
 }
 
@@ -1155,7 +1187,7 @@ fn route(st: &Arc<State>, method: &str, path: &str, body: &[u8]) -> Result<Value
         ("POST", "/api/nodes/select") => h_select(st, &v),
         ("POST", "/api/nodes/delete") => h_delete(st, &v),
         ("POST", "/api/nodes/clear") => {
-            let mut p = st.data.lock().unwrap();
+            let mut p = st.data.lock().unwrap_or_else(|e| e.into_inner());
             p.nodes.clear();
             p.selected = String::new();
             st.persist(&p);
@@ -1185,12 +1217,12 @@ fn route(st: &Arc<State>, method: &str, path: &str, body: &[u8]) -> Result<Value
         ("POST", "/api/routing/set") => h_routing_set(st, &v),
         ("POST", "/api/dns/set") => h_dns_set(st, &v),
         ("GET", "/api/log") => {
-            let ring = st.logs.lock().unwrap();
+            let ring = st.logs.lock().unwrap_or_else(|e| e.into_inner());
             Ok(json!({ "log": ring.iter().cloned().collect::<Vec<_>>().join("\n") }))
         }
         ("POST", "/api/sysproxy") => h_sysproxy(st, &v),
         ("GET", "/api/sysproxy") => {
-            let p = st.data.lock().unwrap();
+            let p = st.data.lock().unwrap_or_else(|e| e.into_inner());
             let (enabled, ours) = winapi::system_proxy_state(p.http_port);
             Ok(json!({ "enabled": enabled, "ours": ours }))
         }
@@ -1274,6 +1306,7 @@ fn main() {
         logs: Mutex::new(VecDeque::new()),
         data_dir,
         bin_dir,
+        xray_ver: Mutex::new(None),
     });
 
     // The struct doesn't carry the port; store it in a static for health.
@@ -1305,14 +1338,14 @@ fn main() {
 
     // Resume the core after a port-switch handover (or if the flag was left
     // set by an unclean exit while the core was running).
-    if st.data.lock().unwrap().resume_core {
+    if st.data.lock().unwrap_or_else(|e| e.into_inner()).resume_core {
         let st3 = st.clone();
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(800));
             match core_start(&st3) {
                 Ok(_) => {
                     st3.log("服务重启后核心已自动恢复");
-                    let mut p = st3.data.lock().unwrap();
+                    let mut p = st3.data.lock().unwrap_or_else(|e| e.into_inner());
                     p.resume_core = false;
                     st3.persist(&p);
                 }
