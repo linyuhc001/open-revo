@@ -1154,7 +1154,50 @@ pub fn apply_turbo_profile(
 
     // A failure here emits nothing; the target stays persisted as the user's
     // preference for the next mode-3 entry.
-    let state = apply_turbo_submode_and_persist(silent)?;
-    emit_confirmed_turbo_submode(&state);
+    let state = match apply_turbo_submode_and_persist(silent) {
+        Ok(st) => {
+            emit_confirmed_turbo_submode(&st);
+            st
+        }
+        Err(e) => {
+            crate::log_warn!("POWER_CMD", "apply_turbo_submode_and_persist failed: {}", e);
+            TurboSubmodeState {
+                supported: true,
+                silent,
+            }
+        }
+    };
     Ok(state)
+}
+
+#[tauri::command]
+pub fn set_turbo_oc_enabled(enabled: bool, app: AppHandle) -> Result<bool, String> {
+    let mut cfg = crate::system::config::load_config();
+    cfg.turbo_oc_enabled = enabled;
+    crate::system::config::save_config(&cfg);
+
+    if cfg.power_mode == 3 && crate::driver::gpu_bridge::is_nvidia_dgpu_available() {
+        let (core, mem) = if enabled {
+            (
+                cfg.gpu_oc_core_mhz.clamp(0, 250),
+                cfg.gpu_oc_mem_mhz.clamp(0, 1000),
+            )
+        } else {
+            (0, 0)
+        };
+        let _ = crate::commands::tuning_cmd::apply_gpu_oc(core, mem);
+        let _ = app.emit(
+            "gpu-clock-offsets-changed",
+            serde_json::json!({
+                "core_offset_mhz": core,
+                "mem_offset_mhz": mem
+            }),
+        );
+    }
+    let _ = app.emit(
+        "turbo-oc-changed",
+        serde_json::json!({ "enabled": enabled }),
+    );
+    crate::system::slint_window::sync::sync_slint_power_state();
+    Ok(enabled)
 }

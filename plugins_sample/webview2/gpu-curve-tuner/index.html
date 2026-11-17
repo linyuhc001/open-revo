@@ -885,7 +885,13 @@
           // 编辑缓冲区只在缺失或点数不符时初始化。已经存在的方案不会被一次刷新抹掉，
           // 否则「写入后刷新」会把你刚画的曲线清成 0。
           if (!STATE.plannedDeltas || STATE.plannedDeltas.length !== pts.length) {
-            STATE.plannedDeltas = pts.map(p => p.delta_mhz || 0);
+            // 上游修复：硬件全出厂态但仍有活动预设时重算预设曲线（刷新页面后恢复方案）
+            const hasActiveHardwareDeltas = pts.some(p => (p.delta_mhz || 0) !== 0);
+            if (!hasActiveHardwareDeltas && STATE.targetVolt && STATE.targetFreq && STATE.activeMode !== '出厂默认') {
+              calculatePlannedCurve(STATE.targetVolt, STATE.targetFreq, STATE.activeMode);
+            } else {
+              STATE.plannedDeltas = pts.map(p => p.delta_mhz || 0);
+            }
           }
         }
 
@@ -983,6 +989,8 @@
         if (diff < minDiff) { minDiff = diff; targetIdx = i; }
       }
 
+      // 本地闭环算法：以读回的当前曲线为基准逐点 deltaFor（内部已 clamp 到 ±DELTA），
+      // 因此不存在上游「名义 targetFreq 超出可达范围」的锁频电压不匹配问题。
       // 3. 低压段整段平移，让目标锚点正好落在目标频率；高压段削平到目标频率
       const shift = targetFreq - cur[targetIdx];
       const newDeltas = new Array(points.length).fill(0);
@@ -1179,6 +1187,18 @@
       return step;
     }
 
+    // Shift + 下拉：把选中点压到目标频率，右侧所有锚点钉在同一频率（水平削平）。
+    // 左侧（i < idx）完全不动。用本地 deltaFor（固定出厂基线 + ±1000 clamp）。
+    function setFollowFlatten(idx, wantFreq) {
+      const newD = deltaFor(idx, wantFreq);
+      STATE.plannedDeltas[idx] = newD;
+      const pinnedFreq = getStockFreq(idx) + newD;
+      for (let i = idx + 1; i < STATE.plannedDeltas.length; i++) {
+        STATE.plannedDeltas[i] = deltaFor(i, pinnedFreq);
+      }
+      snapInfo = null;
+    }
+
     // 统计右侧有多少锚点因为 -500MHz 单点下限压不到目标（触底后曲线会重新上翘）。
     function countFloored(fromIdx, level) {
       let n = 0, first = -1;
@@ -1242,13 +1262,22 @@
 
       // Restore snapshot from drag start to calculate relative offset cleanly
       STATE.plannedDeltas = drag.snapshot.slice();
-      const dy = y - drag.startY; // Downward is positive (lower frequency)
-      const mhzPerPx = Math.min((g.yMax - g.yMin) / g.plotH, 8);
-      const targetFreq = drag.startFreq - dy * mhzPerPx;
+      const isShift = drag.shift || ev.shiftKey || ev.altKey;
+      const targetFreq = Math.round(g.yToF(y));
 
-      if (drag.shift) {
-        setFollowShift(drag.index, targetFreq);
+      // Shift 按下时按拖动方向二选一（左侧始终不动）：
+      //   上拉（目标频率高于按下时）→ 右侧整段同幅平移，保持曲线形状
+      //   下拉（目标频率低于按下时）→ 右侧削平到选中点频率，水平锁频
+      if (isShift) {
+        if (targetFreq > drag.startFreq) {
+          drag.shiftMode = 'shift';
+          setFollowShift(drag.index, targetFreq);
+        } else {
+          drag.shiftMode = 'flatten';
+          setFollowFlatten(drag.index, targetFreq);
+        }
       } else {
+        drag.shiftMode = null;
         setSinglePoint(drag.index, targetFreq);
       }
 
@@ -1270,13 +1299,35 @@
         const p = STATE.vfPoints[idx];
         const knee = Math.round(getEffFreq(idx));
         const tail = Math.round(getEffFreq(STATE.vfPoints.length - 1));
-        const how = drag.shift ? 'Shift 右侧整段同幅平移' : '单点微调';
-        log(`[✎] ${how}：锚点 #${idx} (${p.volt_mv}mV) → ${knee}MHz，右侧末端 ${tail}MHz（缓冲已更新，点「一键写入」下发）`);
+        const shiftMode = drag.shiftMode; // shift=右侧整段平移 / flatten=右侧削平 / null=单点
+        const how = shiftMode === 'shift' ? 'Shift 上拉·右侧整段同幅平移'
+                  : shiftMode === 'flatten' ? 'Shift 下拉·右侧削平锁频'
+                  : '单点微调';
+        log(`[✎] ${how}：锚点 #${idx} (${p.volt_mv}mV) → ${knee}MHz，右侧末端 ${tail}MHz（缓冲已更新，点「一键写入」下发生效）`);
 
-        if (!drag.shift) {
+        // Shift 拖动后同步目标锚点到输入框，并取消预设高亮（目标标记会随之吸附到该锚点）
+        if (shiftMode) {
+          STATE.targetVolt = p.volt_mv;
+          STATE.targetFreq = knee;
+          document.getElementById('inputTargetVolt').value = STATE.targetVolt;
+          document.getElementById('inputTargetFreq').value = STATE.targetFreq;
+          document.querySelectorAll('.preset-btn').forEach(btn => btn.classList.remove('active'));
+        }
+
+        if (!shiftMode) {
           const left = idx > 0 ? Math.round(getEffFreq(idx - 1)) : null;
           if (left !== null && knee < left - 1) {
             log(`[!] 该点比左侧 ${left}MHz 低 ${left - knee}MHz，驱动 running-max 会把它抬回；要连右侧一起压低请用 Shift+拖动`);
+          }
+        } else if (shiftMode === 'flatten') {
+          // 削平：右侧钉在选中点频率；若左邻更高，驱动 running-max 会把整段抬回左邻高度
+          const effF = knee;
+          let leftHigher = -1;
+          for (let i = idx - 1; i >= 1; i--) {
+            if (getEffFreq(i) > effF + 1) { leftHigher = i; break; }
+          }
+          if (leftHigher >= 0) {
+            log(`[!] 左侧 ${STATE.vfPoints[leftHigher].volt_mv}mV 仍高于 ${effF}MHz，写入后驱动 running-max 会把削平段抬回该高度；如需整体压低请先压低左侧锚点`);
           }
         } else {
           // 整段同幅平移不按左邻截断；压过左邻时提示写入后的真实形状
@@ -1549,21 +1600,34 @@
 
       // 6. Highlight Target Anchor Point Indicator
       if (STATE.targetVolt && STATE.targetFreq) {
-        const targetX = toX(STATE.targetVolt);
-        const targetY = toY(STATE.targetFreq);
-        if (targetX >= padL && targetX <= w - padR) {
-          ctx.fillStyle = '#10b981';
-          ctx.beginPath();
-          ctx.arc(targetX, targetY, 4, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.strokeStyle = '#fff';
-          ctx.lineWidth = 1.5;
-          ctx.stroke();
+        let targetIdx = -1;
+        let minDiff = Infinity;
+        for (let i = 0; i < points.length; i++) {
+          const diff = Math.abs(points[i].volt_mv - STATE.targetVolt);
+          if (diff < minDiff) {
+            minDiff = diff;
+            targetIdx = i;
+          }
+        }
+        if (targetIdx >= 0) {
+          const actualV = points[targetIdx].volt_mv;
+          const actualF = Math.round(getEffFreq(targetIdx));
+          const targetX = toX(actualV);
+          const targetY = toY(actualF);
+          if (targetX >= padL && targetX <= w - padR) {
+            ctx.fillStyle = '#10b981';
+            ctx.beginPath();
+            ctx.arc(targetX, targetY, 5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
 
-          ctx.fillStyle = '#10b981';
-          ctx.font = 'bold 10px monospace';
-          ctx.textAlign = 'center';
-          ctx.fillText(`[${STATE.targetVolt}mV, ${STATE.targetFreq}MHz]`, targetX, targetY - 10);
+            ctx.fillStyle = '#10b981';
+            ctx.font = 'bold 10px monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText(`[${actualV}mV, ${actualF}MHz]`, targetX, targetY - 10);
+          }
         }
       }
     }

@@ -349,11 +349,15 @@ pub fn sync_slint_power_state() {
     let cfg = crate::system::config::load_config();
     sync_slint_power_targets(cfg.power_mode);
 
-    // GPU OC 实时状态：来自驱动的 core/mem 偏移（与 React get_gpu_oc_state 同源），
-    // 无 NVAPI / 读取失败时按关闭处理。
-    let gpu_oc_on = crate::driver::nvapi::get_gpu_clock_offsets()
-        .map(|(core, mem)| core != 0 || mem != 0)
-        .unwrap_or(false);
+    // GPU OC 实时状态：狂暴档时直接根据 cfg.turbo_oc_enabled 判定（避免 Optimus 显卡休眠回读失败导致跳回），
+    // 其它模式下跟随实际 NVAPI 驱动回读。
+    let gpu_oc_on = if cfg.power_mode == 3 {
+        cfg.turbo_oc_enabled
+    } else {
+        crate::driver::nvapi::get_gpu_clock_offsets()
+            .map(|(core, mem)| core != 0 || mem != 0)
+            .unwrap_or(false)
+    };
 
     let app_opt = SLINT_APP_HANDLE.lock().ok().and_then(|g| g.clone());
     if let Some(app) = app_opt {
@@ -361,6 +365,7 @@ pub fn sync_slint_power_state() {
         let info = crate::commands::power_cmd::read_power_settings(ec_state.inner());
         send_slint_ipc_message(serde_json::json!({
             "action": "sync_power_settings",
+            "power_mode": cfg.power_mode,
             "battery_percent": info.battery_percent,
             "is_ac_online": info.is_ac_online,
             "is_dc_online": crate::commands::power_cmd::is_dc_round_plugged_in(),
@@ -395,6 +400,7 @@ pub fn sync_slint_power_state() {
         };
         send_slint_ipc_message(serde_json::json!({
             "action": "sync_power_settings",
+            "power_mode": cfg.power_mode,
             "battery_percent": percent,
             "is_ac_online": is_ac,
             "is_dc_online": crate::commands::power_cmd::is_dc_round_plugged_in(),
