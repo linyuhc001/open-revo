@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-const VERSION: &str = "0.9.10";
+const VERSION: &str = "0.9.11";
 const LOG_RING: usize = 400;
 /// service.log rotates to service.log.old when it grows past this (1 MB).
 const LOG_FILE_MAX: u64 = 1024 * 1024;
@@ -57,6 +57,10 @@ struct Persist {
     routing_strategy: String,
     #[serde(default)]
     dns: xconf::DnsCfg,
+    /// User's proxy switch state: the core is auto-started when the service
+    /// (re)starts, so a panel/service restart keeps the proxy running.
+    #[serde(default)]
+    proxy_on: bool,
     /// Set right before the port-switch handover: the replacement process
     /// auto-starts the core once it is up, so switching the service port
     /// doesn't leave the browser pointed at a dead local proxy.
@@ -365,6 +369,15 @@ fn core_start(st: &State) -> Result<Value, String> {
         return Err(format!("xray 启动失败，请看日志。{tail}"));
     }
     st.log(&format!("xray 已启动，socks :{}，http :{}", ports.socks, ports.http));
+    // remember the user's intent: any successful start (manual, restart,
+    // node switch, download restore) means the proxy should be ON next boot
+    {
+        let mut p = st.data.lock().unwrap_or_else(|e| e.into_inner());
+        if !p.proxy_on {
+            p.proxy_on = true;
+            st.persist(&p);
+        }
+    }
     Ok(json!({ "ok": true, "running": true, "node": node.name }))
 }
 
@@ -385,6 +398,11 @@ fn read_xray_log(st: &State) -> String {
 
 fn core_stop(st: &State) -> Result<Value, String> {
     st.take_core();
+    {
+        let mut p = st.data.lock().unwrap_or_else(|e| e.into_inner());
+        p.proxy_on = false;
+        st.persist(&p);
+    }
     st.log("xray 已停止");
     Ok(json!({ "ok": true, "running": false }))
 }
@@ -763,6 +781,11 @@ fn h_proxy_toggle(st: &State, v: &Value) -> Result<Value, String> {
             st.log(&format!("总开关：还原系统代理失败（继续停核心）: {e}"));
         }
         st.take_core();
+        {
+            let mut p = st.data.lock().unwrap_or_else(|e| e.into_inner());
+            p.proxy_on = false;
+            st.persist(&p);
+        }
         st.log("总开关：代理关闭（系统代理已还原，核心已停止）");
     }
     Ok(json!({ "ok": true, "on": on }))
@@ -1604,9 +1627,14 @@ fn main() {
         }
     };
 
-    // Resume the core after a port-switch handover (or if the flag was left
-    // set by an unclean exit while the core was running).
-    if st.data.lock().unwrap_or_else(|e| e.into_inner()).resume_core {
+    // Restore the proxy switch state on every service (re)start. `resume_core`
+    // is the transient port-switch handover flag; `proxy_on` is the persisted
+    // user choice. Either one means "start the core once we're listening".
+    let should_resume = {
+        let p = st.data.lock().unwrap_or_else(|e| e.into_inner());
+        p.proxy_on || p.resume_core
+    };
+    if should_resume {
         let st3 = st.clone();
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(800));
