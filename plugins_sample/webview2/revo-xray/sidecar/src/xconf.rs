@@ -41,8 +41,7 @@ pub struct Rule {
 /// xray core — the plugin only writes the `dns` block and routing rules.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct DnsCfg {
-    #[serde(default)]
-    pub enabled: bool,
+    // No "enabled" flag: v2rayN's basic DNS settings are always active.
     #[serde(default)]
     pub direct_dns: String, // v2rayN default: 119.29.29.29
     #[serde(default)]
@@ -70,7 +69,6 @@ pub struct DnsCfg {
 impl Default for DnsCfg {
     fn default() -> Self {
         DnsCfg {
-            enabled: false,
             direct_dns: DEFAULT_DIRECT_DNS.into(),
             remote_dns: DEFAULT_REMOTE_DNS.into(),
             bootstrap_dns: DEFAULT_BOOTSTRAP_DNS.into(),
@@ -394,30 +392,30 @@ pub fn build_config(
     // catch-all is appended), matching FillDnsServers' input.
     let mut dns_block: Option<Value> = None;
     let mut dns_direct_rule: Option<Value> = None;
-    if dns.enabled {
-        let (servers, direct_tags) = fill_dns_servers(dns, &rule_list);
-        if !servers.is_empty() {
-            if !direct_tags.is_empty() {
-                dns_direct_rule = Some(json!({
-                    "type": "field",
-                    "inboundTag": direct_tags,
-                    "outboundTag": "direct",
-                }));
-            }
-            let mut d = serde_json::Map::new();
-            d.insert("tag".into(), json!("dns-module"));
-            d.insert("servers".into(), Value::Array(servers));
-            if dns.block_aaaa {
-                d.insert("queryStrategy".into(), json!("UseIPv4"));
-            }
-            if dns.serve_stale {
-                d.insert("serveStale".into(), json!(true));
-            }
-            if dns.parallel_query {
-                d.insert("enableParallelQuery".into(), json!(true));
-            }
-            dns_block = Some(Value::Object(d));
+    // v2rayN basic mode has no DNS on/off switch — the dns block is always
+    // generated whenever we have at least one server.
+    let (servers, direct_tags) = fill_dns_servers(dns, &rule_list);
+    if !servers.is_empty() {
+        if !direct_tags.is_empty() {
+            dns_direct_rule = Some(json!({
+                "type": "field",
+                "inboundTag": direct_tags,
+                "outboundTag": "direct",
+            }));
         }
+        let mut d = serde_json::Map::new();
+        d.insert("tag".into(), json!("dns-module"));
+        d.insert("servers".into(), Value::Array(servers));
+        if dns.block_aaaa {
+            d.insert("queryStrategy".into(), json!("UseIPv4"));
+        }
+        if dns.serve_stale {
+            d.insert("serveStale".into(), json!(true));
+        }
+        if dns.parallel_query {
+            d.insert("enableParallelQuery".into(), json!(true));
+        }
+        dns_block = Some(Value::Object(d));
     }
 
     // Final catch-all rule, v2rayN BuildFinalRule: everything unmatched goes

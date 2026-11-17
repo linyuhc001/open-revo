@@ -285,11 +285,8 @@
   <!-- ===== DNS ===== -->
   <div class="page" data-page="dns">
     <div class="card">
-      <h2>DNS 基础设置 <span class="hint">同 v2rayN 基础模式：解析全部由 xray 核心完成，插件只生成配置 · 会自动按路由规则给直连/远程域名挂对应的 DNS</span></h2>
+      <h2>DNS 基础设置 <span class="hint">同 v2rayN 基础模式：DNS 始终生效（无总开关），解析全部由 xray 核心完成，插件只生成配置 · 会自动按路由规则给直连/远程域名挂对应的 DNS</span></h2>
       <div class="row">
-        <span>启用 DNS</span>
-        <div id="dnsSwitch" class="switch"></div>
-        <span style="color:#21262d">|</span>
         <span>并行查询</span>
         <div id="dnsParallel" class="switch" title="对所有 DNS 服务器并发查询"></div>
         <span style="color:#21262d">|</span>
@@ -802,7 +799,6 @@ async function getSettings() {
   renderRules();
   $('routeStrategy').value = j.routing_strategy || 'IPIfNonMatch';
   const d = j.dns || {};
-  $('dnsSwitch').classList.toggle('on', !!d.enabled);
   $('dnsDirect').value = d.direct_dns || '119.29.29.29';
   $('dnsRemote').value = d.remote_dns || 'https://cloudflare-dns.com/dns-query';
   $('dnsBootstrap').value = d.bootstrap_dns || '119.29.29.29';
@@ -935,7 +931,7 @@ document.querySelectorAll('button[data-preset]').forEach((b) => {
   });
 });
 
-['dnsSwitch', 'dnsParallel', 'dnsStale', 'dnsNoAAAA'].forEach((id) => {
+['dnsParallel', 'dnsStale', 'dnsNoAAAA'].forEach((id) => {
   $(id).addEventListener('click', () => $(id).classList.toggle('on'));
 });
 
@@ -1004,7 +1000,6 @@ document.querySelectorAll('.combo').forEach((wrap) => {
 });
 $('btnDnsSave').addEventListener('click', async () => {
   const body = {
-    enabled: $('dnsSwitch').classList.contains('on'),
     direct_dns: $('dnsDirect').value.trim(),
     remote_dns: $('dnsRemote').value.trim(),
     bootstrap_dns: $('dnsBootstrap').value.trim(),

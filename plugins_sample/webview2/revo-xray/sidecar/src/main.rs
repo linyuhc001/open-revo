@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-const VERSION: &str = "0.9.11";
+const VERSION: &str = "0.9.12";
 const LOG_RING: usize = 400;
 /// service.log rotates to service.log.old when it grows past this (1 MB).
 const LOG_FILE_MAX: u64 = 1024 * 1024;
@@ -1118,13 +1118,10 @@ fn h_routing_set(st: &State, v: &Value) -> Result<Value, String> {
 }
 
 fn h_dns_set(st: &State, v: &Value) -> Result<Value, String> {
-    let enabled = v.get("enabled").and_then(|x| x.as_bool()).unwrap_or(false);
+    // v2rayN basic DNS mode is always on; there is no enable switch to persist.
     let direct = jstr(v, "direct_dns");
     let remote = jstr(v, "remote_dns");
     let bootstrap = jstr(v, "bootstrap_dns");
-    if enabled && direct.is_empty() && remote.is_empty() {
-        return Err("启用 DNS 时至少填一个 DNS 服务器".into());
-    }
     // per-outbound resolve strategies, v2rayN DomainStrategy values; "" = default
     let ok_strat = |s: &str| matches!(s, "" | "AsIs" | "UseIP" | "UseIPv4v6" | "UseIPv6v4" | "UseIPv4" | "UseIPv6");
     let strategy_direct = jstr(v, "strategy_direct");
@@ -1144,7 +1141,6 @@ fn h_dns_set(st: &State, v: &Value) -> Result<Value, String> {
     let serve_stale = v.get("serve_stale").and_then(|x| x.as_bool()).unwrap_or(false);
     let r = save_and_restart(st, |p| {
         p.dns = xconf::DnsCfg {
-            enabled,
             direct_dns: direct.clone(),
             remote_dns: remote.clone(),
             bootstrap_dns: bootstrap.clone(),
@@ -1157,8 +1153,7 @@ fn h_dns_set(st: &State, v: &Value) -> Result<Value, String> {
         };
     })?;
     st.log(&format!(
-        "DNS 设置已保存（{}，直连 {} / 远程 {} / bootstrap {}）",
-        if enabled { "启用" } else { "停用" },
+        "DNS 设置已保存（直连 {} / 远程 {} / bootstrap {}）",
         if direct.is_empty() { "默认" } else { &direct },
         if remote.is_empty() { "默认" } else { &remote },
         if bootstrap.is_empty() { "默认" } else { &bootstrap },

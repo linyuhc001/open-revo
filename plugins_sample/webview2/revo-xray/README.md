@@ -81,7 +81,7 @@ POST /api/ports/set           {socks, http}            校验 + 冲突复检后�
 POST /api/service_port/check  {port}                   服务监听端口占用检测（自身端口返回 self）
 POST /api/service_port/set    {port}                   改服务端口：写 manifest → 生成新进程交接 → 旧进程退出，核心自动恢复
 POST /api/routing/set         {rules[{outbound, domain, ip}], strategy?}   strategy = AsIs/IPIfNonMatch/IPOnDemand；空数组 = 回到默认规则集
-POST /api/dns/set             {enabled, direct_dns?, remote_dns?, bootstrap_dns?, query_strategy?}
+POST /api/dns/set             {direct_dns?, remote_dns?, bootstrap_dns?, strategy_direct?, strategy_remote?, strategy_dial?, parallel_query?, serve_stale?, block_aaaa?}   DNS 基础设置始终生效（同 v2rayN，无启用开关）
 GET  /api/log                 {log}
 POST /api/sysproxy            {on}
 POST /api/tun                 {on}                     切换 TUN 入站并持久化；核心运行中则自动重启
