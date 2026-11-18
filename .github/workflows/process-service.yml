@@ -8,6 +8,10 @@ name: Build Process Service
 on:
   workflow_dispatch:
   push:
+    # Branch-only: GitHub ignores `paths` for tag pushes, so without a branch
+    # filter a release tag would rebuild this sidecar. Keep sidecar CI decoupled
+    # from host releases (release.yml handles v* tags).
+    branches: [dev, main, 'feat/**']
     # Only source inputs rebuild. The built process-service.exe also lives
     # under sidecar/, and matching it here would make every artifact commit
     # trigger another build.
