@@ -178,14 +178,15 @@ impl EcBridge {
                             }
                         }
 
-                        // 4. Fan RPMs (Always update with real RPM readings)
+                        // 4. Fan RPMs (Always update with real RPM readings, including 0 = stopped)
+                        // Allow 0 through so the panel shows '--' on fan stop instead of a stale RPM.
                         let cpu_rpm = (cpu_rpm_high << 8) | cpu_rpm_low;
-                        if cpu_rpm > 0 && cpu_rpm < 8000 {
+                        if cpu_rpm < 8000 {
                             c.cpu_fan_rpm = cpu_rpm;
                         }
 
                         let gpu_rpm = (gpu_rpm_high << 8) | gpu_rpm_low;
-                        if gpu_rpm > 0 && gpu_rpm < 8000 {
+                        if gpu_rpm < 8000 {
                             c.gpu_fan_rpm = gpu_rpm;
                         }
 
