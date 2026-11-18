@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-const VERSION: &str = "0.9.12";
+const VERSION: &str = "0.9.13";
 const LOG_RING: usize = 400;
 /// service.log rotates to service.log.old when it grows past this (1 MB).
 const LOG_FILE_MAX: u64 = 1024 * 1024;
@@ -1209,13 +1209,31 @@ fn h_import(st: &State, v: &Value) -> Result<Value, String> {
 
 fn h_select(st: &State, v: &Value) -> Result<Value, String> {
     let id = jstr(v, "id");
-    let mut p = st.data.lock().unwrap_or_else(|e| e.into_inner());
-    if !p.nodes.iter().any(|n| n.id == id) {
-        return Err("节点不存在".into());
+    // Validate before touching anything, so a bad id never restarts the core.
+    // Selecting the already-active node is a no-op (idempotent) — this avoids
+    // double restarts on double-click, where two click events fire first.
+    {
+        let p = st.data.lock().unwrap_or_else(|e| e.into_inner());
+        if !p.nodes.iter().any(|n| n.id == id) {
+            return Err("节点不存在".into());
+        }
+        if p.selected == id {
+            return Ok(json!({ "ok": true, "selected": id, "restarted": false, "unchanged": true }));
+        }
     }
-    p.selected = id;
-    st.persist(&p);
-    Ok(json!({ "ok": true, "selected": p.selected }))
+    // Switching nodes must regenerate config.json and restart the running core,
+    // otherwise traffic keeps going through the previously selected node.
+    let r = save_and_restart(st, |p| {
+        p.selected = id;
+    })?;
+    let restarted = r.get("restarted").and_then(|x| x.as_bool()).unwrap_or(false);
+    let selected = st
+        .data
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .selected
+        .clone();
+    Ok(json!({ "ok": true, "selected": selected, "restarted": restarted }))
 }
 
 fn h_delete(st: &State, v: &Value) -> Result<Value, String> {

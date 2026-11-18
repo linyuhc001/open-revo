@@ -597,11 +597,13 @@ $('nodeBody').addEventListener('click', async (ev) => {
     return;
   }
   if (tr) {
-    // click row = select; double-click handled below
+    // click row = select; the backend hot-restarts the core if it is running.
     try {
-      await post('/api/nodes/select', { id: tr.dataset.id });
+      const j = await post('/api/nodes/select', { id: tr.dataset.id });
       selectedId = tr.dataset.id;
       renderNodes();
+      toast(j.restarted ? '已切换节点并重启核心' : '已切换节点（核心未运行）');
+      checkHealth();
     } catch (e) { toast(e.message, true); }
   }
 });
@@ -609,10 +611,11 @@ $('nodeBody').addEventListener('dblclick', async (ev) => {
   const tr = ev.target.closest('tr.node-row');
   if (!tr) return;
   try {
-    await post('/api/nodes/select', { id: tr.dataset.id });
+    // Backend selects and hot-restarts when running. If stopped, start it here.
+    const j = await post('/api/nodes/select', { id: tr.dataset.id });
     selectedId = tr.dataset.id;
     renderNodes();
-    if (!healthCache.running) await post('/api/core/start');
+    if (!j.restarted && !healthCache.running) await post('/api/core/start');
     toast('已选中并启动核心');
     checkHealth();
   } catch (e) { toast(e.message, true); }

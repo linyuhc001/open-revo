@@ -283,42 +283,65 @@ fn parse_ss(u: &str, name_fb: &str) -> Option<Node> {
         None => (rest, String::new()),
     };
     let name = if frag.is_empty() { name_fb.into() } else { frag };
-    // SIP002: ss://base64(method:pass)@host:port[?plugin=..]#name
-    // legacy: ss://base64(method:pass@host:port)#name
-    let node = if let Some((cred, hostport)) = body.split_once('@') {
-        let (hostport, _plugin) = hostport.split_once('?').unwrap_or((hostport, ""));
-        let decoded = b64_decode(cred)?;
-        let cred = String::from_utf8_lossy(&decoded);
-        let (method, pass) = cred.split_once(':')?;
+    // Supported forms:
+    //   SIP002 plaintext: ss://method:pass@host:port[?type=..]#name
+    //   SIP002 base64:    ss://base64(method:pass)@host:port[?plugin=..]#name
+    //   legacy:           ss://base64(method:pass@host:port)#name
+    // The credential may contain extra colons — SS2022 multi-user uses
+    // `method:serverKey:userPassword`, and the whole tail after the first
+    // colon is the password. Percent-encoding (%3D, %2F, ...) is decoded.
+    fn build(method: &str, pass: &str, hostport: &str, query: &str, name: &str) -> Option<Node> {
         let (add, port) = hostport.rsplit_once(':')?;
-        Node {
+        let net = if query.to_ascii_lowercase().contains("type=udp") {
+            "udp"
+        } else {
+            "tcp"
+        };
+        Some(Node {
             id: id_gen(),
-            name,
+            name: name.into(),
             proto: "ss".into(),
             add: add.trim_matches(['[', ']']).into(),
             port: port.parse().ok()?,
             security: method.into(),
             password: pass.into(),
-            net: "tcp".into(),
+            net: net.into(),
             ..Default::default()
-        }
+        })
+    }
+
+    // Split `method:rest-of-password` at the FIRST colon only, keeping any
+    // further colons in the password (SS2022 serverKey:userPassword).
+    fn split_cred(cred: &str) -> Option<(&str, &str)> {
+        let (m, p) = cred.split_once(':')?;
+        Some((m, p))
+    }
+
+    let node = if let Some((cred, hostport_full)) = body.split_once('@') {
+        let (hostport, query) = hostport_full.split_once('?').unwrap_or((hostport_full, ""));
+        // Try base64 first (classic SIP002); if that fails, the userinfo is
+        // plaintext and only needs percent-decoding.
+        let decoded = b64_decode(cred);
+        let cred_owned;
+        let cred = match decoded {
+            Some(d) if !d.is_empty() => {
+                cred_owned = String::from_utf8_lossy(&d).into_owned();
+                cred_owned.as_str()
+            }
+            _ => {
+                cred_owned = url_decode(cred);
+                cred_owned.as_str()
+            }
+        };
+        let (method, pass) = split_cred(cred)?;
+        build(method, pass, hostport, query, &name)?
     } else {
         let decoded = b64_decode(body)?;
         let s = String::from_utf8_lossy(&decoded);
-        let (cred, hostport) = s.split_once('@')?;
-        let (method, pass) = cred.split_once(':')?;
-        let (add, port) = hostport.rsplit_once(':')?;
-        Node {
-            id: id_gen(),
-            name,
-            proto: "ss".into(),
-            add: add.trim_matches(['[', ']']).into(),
-            port: port.parse().ok()?,
-            security: method.into(),
-            password: pass.into(),
-            net: "tcp".into(),
-            ..Default::default()
-        }
+        let (cred, hostport_full) = s.split_once('@')?;
+        let (hostport, query) = hostport_full.split_once('?').unwrap_or((hostport_full, ""));
+        let (method, pass) = split_cred(cred)?;
+        build(method, pass, hostport, query, &name)?
     };
     Some(node)
 }
