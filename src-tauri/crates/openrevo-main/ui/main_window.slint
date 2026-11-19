@@ -37,6 +37,9 @@ export component MainWindow inherits Window {
     in-out property <string> igpu_lock_reason: "";
     in-out property <int> refresh_rate: 240;    // 60, 144, 240
     in-out property <bool> auto_min_hz: true;
+    in-out property <int> min_refresh_rate: 60;
+    in-out property <int> max_refresh_rate: 240;
+    in-out property <[int]> intermediate_rates: [144];
     in-out property <int> brightness: 76;       // 0 - 100
     in-out property <string> kbd_effect: "极客波浪";
     in-out property <string> kbd_color_name: "自定义";
@@ -196,6 +199,7 @@ export component MainWindow inherits Window {
     in-out property <bool> is_mode_locked: false;
 
     in-out property <bool> fan_custom_curve: true;
+    in-out property <bool> single_fan_channel: false;
     in-out property <string> fan_boost_mode: "none";
     in-out property <bool> is_direct_clamp: false;
     in-out property <int> fan_min_duty: 0;
@@ -601,6 +605,9 @@ export component MainWindow inherits Window {
         is_tri_mode: root.is_tri_mode;
         refresh_rate: root.refresh_rate;
         auto_min_hz: root.auto_min_hz;
+        min_refresh_rate: root.min_refresh_rate;
+        max_refresh_rate: root.max_refresh_rate;
+        intermediate_rates: root.intermediate_rates;
         monitor_name: root.monitor_name;
         has_secondary_monitor: root.has_secondary_monitor;
         primary_monitor_name: root.primary_monitor_name;
@@ -642,6 +649,11 @@ export component MainWindow inherits Window {
         apply_turbo_silent(silent) => { root.apply_turbo_silent(silent); }
         toggle_gpu_oc => { root.toggle_gpu_oc(); }
         gpu_mode_clicked(m, r) => { root.gpu_mode_clicked(m, r); }
+        open_gpu_page => {
+            root.active_tab = 1;
+            root.is_expanded = true;
+            root.expand_dashboard_clicked();
+        }
         refresh_rate_switched(hz) => { root.refresh_rate_switched(hz); }
         auto_min_hz_toggled => { root.auto_min_hz_toggled(); }
         select_monitor_index(idx) => { root.select_monitor_index(idx); }
@@ -935,6 +947,7 @@ export component MainWindow inherits Window {
         is_mode_locked <=> root.is_mode_locked;
 
         fan_custom_curve <=> root.fan_custom_curve;
+        single_fan_channel <=> root.single_fan_channel;
         fan_boost_mode <=> root.fan_boost_mode;
         is_direct_clamp <=> root.is_direct_clamp;
         fan_min_duty <=> root.fan_min_duty;
@@ -1022,12 +1035,16 @@ export component MainWindow inherits Window {
             root.tuning_change_smooth_time(st);
         }
         tuning_toggle_isolated => {
-            root.fan_isolated_output = !root.fan_isolated_output;
-            root.tuning_toggle_isolated();
+            if !root.single_fan_channel {
+                root.fan_isolated_output = !root.fan_isolated_output;
+                root.tuning_toggle_isolated();
+            }
         }
         tuning_toggle_link => {
-            root.fan_linked = !root.fan_linked;
-            root.tuning_toggle_link();
+            if !root.single_fan_channel {
+                root.fan_linked = !root.fan_linked;
+                root.tuning_toggle_link();
+            }
         }
         tuning_select_fan_tab(tab) => {
             root.active_fan_tab = tab;

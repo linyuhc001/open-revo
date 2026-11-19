@@ -352,13 +352,42 @@ pub fn apply_fan_curve_live_internal(
         }
     }
 
-    crate::driver::wmi_ec::set_custom_mode_ec(true);
-    crate::driver::wmi_ec::set_fan_isolated_output(true);
+    let linked_channels = !crate::hal::declarative::load_matched_manifest()
+        .map(|m| m.capabilities.fan_independent_channels)
+        .unwrap_or(true);
 
-    let table = crate::system::power_mode::build_custom_fan_table(&cpu_curve, &gpu_curve);
+    crate::driver::wmi_ec::set_custom_mode_ec(true);
+    // 联动通道机型（无独显薄本）：保持清除隔离位，副扇才会跟随 CPU 表
+    // 独立通道机型：置起隔离位（主副扇各走各的表）
+    crate::driver::wmi_ec::set_fan_isolated_output(!linked_channels);
+
+    let (cpu_ref, gpu_ref) = if linked_channels {
+        (&cpu_curve, &cpu_curve)
+    } else {
+        (&cpu_curve, &gpu_curve)
+    };
+    let table = crate::system::power_mode::build_custom_fan_table(cpu_ref, gpu_ref);
     crate::system::power_mode::apply_fan_table_to_ec(&table);
 
     Ok(())
+}
+
+/// 联动风扇曲线（不置隔离位）。
+///
+/// 无独显机型（`discrete_gpu: false`）没有可用的第二通道温度源 —— 本机
+/// `0x044F` 恒为 0。一旦 `0x07C5` bit7（独立输出）被置起，EC 会用 GPU 表驱动
+/// 副扇，而 GPU 表永远停在第 0 档；第 0 档按固件硬规则必须是 0x00（零转待机），
+/// 于是副扇停转且再也起不来。
+///
+/// 本命令把同一条曲线同时写进两个通道，统一走 `apply_fan_curve_live_internal` 下发，
+/// 其内部已自适应机型 `fan_independent_channels`，单通道机型自动保持清除隔离位。
+#[tauri::command]
+pub fn apply_fan_curve_linked(
+    app: AppHandle,
+    _ec_state: State<'_, SharedEcBridge>,
+    curve: Vec<crate::system::config::FanCurvePoint>,
+) -> Result<(), String> {
+    apply_fan_curve_live_internal(Some(&app), curve.clone(), curve)
 }
 
 #[tauri::command]
@@ -414,6 +443,15 @@ pub fn toggle_fan_isolated_output_internal(
             let _ = app.emit("fan-boost-changed", false);
             let _ = app.emit("physical-fan-boost-switched", false);
         }
+    }
+
+    let linked_channels = !crate::hal::declarative::load_matched_manifest()
+        .map(|m| m.capabilities.fan_independent_channels)
+        .unwrap_or(true);
+    if linked_channels {
+        crate::log_warn!("EC_TUNING", "toggle_fan_isolated_output: Ignored isolated toggle for linked fan channel model to prevent secondary fan stall");
+        crate::driver::wmi_ec::set_fan_isolated_output(false);
+        return Ok(false);
     }
 
     if enable {
