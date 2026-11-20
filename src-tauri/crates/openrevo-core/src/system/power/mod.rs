@@ -258,7 +258,10 @@ pub fn spawn_hardware_state_restore(ec_for_restore: crate::driver::ec_bridge::Sh
             }
         };
 
-        crate::event::power_mode_changed_global(effective_power_mode);
+        crate::event::emit_global(
+            "power-mode-changed",
+            serde_json::json!({ "mode": effective_power_mode }),
+        );
         if is_thin_light {
             let hal = crate::hal::get_hardware_driver();
             let hw_mode = match effective_power_mode {
@@ -587,7 +590,7 @@ pub fn set_windows_power_overlay(ui_mode: u8) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn restore_ec_power_options(cfg: &crate::system::config::AppConfig) {
+pub fn restore_ec_power_options(cfg: &crate::system::config::AppConfig) {
     if let Err(error) = crate::system::config::ensure_config_writable() {
         crate::log_warn!(
             "POWER_RESTORE",
@@ -596,7 +599,7 @@ pub(crate) fn restore_ec_power_options(cfg: &crate::system::config::AppConfig) {
         );
         return;
     }
-    if !crate::driver::wmi_ec::is_acpi_driver_available() {
+    if !crate::driver::wmi_ec::is_acpi_driver_available() && !crate::hal::platform_probe::is_tongfang_family() {
         return;
     }
     for (option, enable) in [

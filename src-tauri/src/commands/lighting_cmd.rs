@@ -70,10 +70,14 @@ pub fn apply_lighting_hardware_override_internal(
 ) -> Result<crate::driver::ite_lighting::LightingRuntimeStatus, String> {
     lighting_state.apply_hardware_override_and_reinit(override_cfg)?;
     let status = lighting_state.get_runtime_status();
+    let hw_info = get_keyboard_hardware_info_internal(lighting_state);
     if let Some(app) = app_handle {
         let _ = app.emit("lighting://runtime_status_changed", &status);
         let _ = app.emit("lighting://hardware_info_changed", ());
+        let _ = app.emit("lighting://topology_rehashed", &hw_info);
     }
+    // Synchronize native Slint GUI window if active
+    crate::system::slint_window::sync::sync_slint_lighting_state();
     Ok(status)
 }
 
@@ -128,9 +132,9 @@ pub fn get_keyboard_hardware_info_internal(
     let (has_logo, has_usb_logo, is_ec_logo) = if !contract.has_logo {
         (false, false, false)
     } else {
-        let ec_logo = crate::driver::lighting::IteLightingManager::is_ec_logo_supported();
-        let usb_logo = !ec_logo && crate::driver::lighting::IteLightingManager::probe_usb_logo_supported();
-        (ec_logo || usb_logo, usb_logo, ec_logo)
+        let usb_logo = crate::driver::lighting::IteLightingManager::probe_usb_logo_supported();
+        let ec_logo = !usb_logo && crate::driver::lighting::IteLightingManager::is_ec_logo_supported();
+        (usb_logo || ec_logo, usb_logo, ec_logo)
     };
 
     // 4. Keyboard Backlight Matrix: Routed by Constitution
@@ -189,7 +193,11 @@ pub fn get_keyboard_hardware_info_internal(
         }
         "SingleZone" | "SingleZone_RGB" => {
             let hal = crate::hal::get_hardware_driver();
-            let (is_hw_on, effective_br) = if hal.kind() != crate::hal::DriverKind::TongfangAcpi {
+            let is_tongfang = crate::driver::wmi_ec::is_acpi_driver_available()
+                || crate::hal::platform_probe::is_tongfang_family()
+                || hal.kind() == crate::hal::DriverKind::TongfangAcpi;
+
+            let (is_hw_on, effective_br) = if !is_tongfang {
                 let lvl = hal.get_monochrome_backlight().unwrap_or(cfg_brightness);
                 (is_on_cfg && lvl > 0, lvl)
             } else {
@@ -218,9 +226,17 @@ pub fn get_keyboard_hardware_info_internal(
         }
         "MonochromeWhite" => {
             let hal = crate::hal::get_hardware_driver();
-            let (is_hw_on, effective_br) = if let Some(lvl) = hal.get_monochrome_backlight() {
-                let on = !is_sleep && lvl > 0;
-                (on, if on { lvl } else { 0 })
+            let is_tongfang = crate::driver::wmi_ec::is_acpi_driver_available()
+                || crate::hal::platform_probe::is_tongfang_family()
+                || hal.kind() == crate::hal::DriverKind::TongfangAcpi;
+
+            let (is_hw_on, effective_br) = if !is_tongfang {
+                if let Some(lvl) = hal.get_monochrome_backlight() {
+                    let on = !is_sleep && lvl > 0;
+                    (on, if on { lvl } else { 0 })
+                } else {
+                    (false, 0)
+                }
             } else {
                 let raw_backlight_status = crate::driver::wmi_ec::wmi_read_ec(crate::driver::wmi_ec::ADDR_BACKLIGHT_WHITE).unwrap_or(0);
                 let on = !is_sleep && (raw_backlight_status & 0x02) == 0;

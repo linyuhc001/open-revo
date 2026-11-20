@@ -19,7 +19,7 @@ export component MainWindow inherits Window {
 
     // Expand state: false = Mini Drawer (395x632), true = Full Dashboard (1120x760)
     in-out property <bool> is_expanded: false;
-    in-out property <string> app_version: "v0.9.7";
+    in-out property <string> app_version: "v0.9.8";
     in-out property <string> update_channel: "stable";
     in-out property <string> update_feedback: "";
     in-out property <string> update_feedback_type: "";
@@ -197,6 +197,15 @@ export component MainWindow inherits Window {
     in-out property <int> ctgp_max_watts: 115;
     in-out property <int> max_db_watts: 25;
     in-out property <bool> is_mode_locked: false;
+
+    // Factory Power Presets (模具原厂建议功耗参考)
+    in-out property <int> factory_office_pl1: 45;
+    in-out property <int> factory_balance_pl1: 75;
+    in-out property <int> factory_turbo_pl1: 115;
+    in-out property <int> factory_base_tgp: 115;
+    in-out property <int> factory_max_db: 25;
+    in-out property <bool> factory_hardware_read: true;
+    in-out property <bool> is_declarative: false;
 
     in-out property <bool> fan_custom_curve: true;
     in-out property <bool> single_fan_channel: false;
@@ -474,10 +483,14 @@ export component MainWindow inherits Window {
     in-out property <color> logo_color: #00ffff;
 
     in-out property <bool> topology_override_enabled: false;
-    in-out property <int> topology_kb_idx: 0;
-    in-out property <int> topology_lb_idx: 0;
-    in-out property <int> topology_ambient_idx: 0;
-    in-out property <int> topology_logo_idx: 0;
+    in-out property <string> topology_ov_keyboard: "auto";
+    in-out property <string> topology_ov_front_bar: "auto";
+    in-out property <string> topology_ov_ambient: "auto";
+    in-out property <string> topology_ov_logo: "auto";
+    in-out property <string> topology_base_keyboard: "per_key";
+    in-out property <string> topology_base_front_bar: "present";
+    in-out property <string> topology_base_ambient: "none";
+    in-out property <string> topology_base_logo: "shield";
 
     // Lighting Studio Callbacks
     callback set_lighting_sleep_timer(int);
@@ -522,7 +535,7 @@ export component MainWindow inherits Window {
     callback set_logo_brightness(int);
     callback set_logo_color(string, color);
 
-    callback apply_lighting_topology(bool, int, int, int, int);
+    callback apply_lighting_topology(string, string, string, string);
     callback reset_lighting_topology();
 
     // Water Cooler Props & Callbacks
@@ -714,6 +727,7 @@ export component MainWindow inherits Window {
         is_tuning_enabled <=> root.is_tuning_enabled;
         is_lighting_enabled <=> root.is_lighting_enabled;
         is_water_enabled <=> root.is_water_enabled;
+        is_thin_and_light: root.is_thin_and_light;
         custom_plugins <=> root.custom_plugins;
         active_plugin_id <=> root.active_plugin_id;
         plugin_items: root.plugin_items;
@@ -945,6 +959,13 @@ export component MainWindow inherits Window {
         ctgp_max_watts <=> root.ctgp_max_watts;
         max_db_watts <=> root.max_db_watts;
         is_mode_locked <=> root.is_mode_locked;
+        factory_office_pl1 <=> root.factory_office_pl1;
+        factory_balance_pl1 <=> root.factory_balance_pl1;
+        factory_turbo_pl1 <=> root.factory_turbo_pl1;
+        factory_base_tgp <=> root.factory_base_tgp;
+        factory_max_db <=> root.factory_max_db;
+        factory_hardware_read <=> root.factory_hardware_read;
+        is_declarative <=> root.is_declarative;
 
         fan_custom_curve <=> root.fan_custom_curve;
         single_fan_channel <=> root.single_fan_channel;
@@ -1149,10 +1170,14 @@ export component MainWindow inherits Window {
         logo_color <=> root.logo_color;
 
         topology_override_enabled <=> root.topology_override_enabled;
-        topology_kb_idx <=> root.topology_kb_idx;
-        topology_lb_idx <=> root.topology_lb_idx;
-        topology_ambient_idx <=> root.topology_ambient_idx;
-        topology_logo_idx <=> root.topology_logo_idx;
+        topology_ov_keyboard <=> root.topology_ov_keyboard;
+        topology_ov_front_bar <=> root.topology_ov_front_bar;
+        topology_ov_ambient <=> root.topology_ov_ambient;
+        topology_ov_logo <=> root.topology_ov_logo;
+        topology_base_keyboard: root.topology_base_keyboard;
+        topology_base_front_bar: root.topology_base_front_bar;
+        topology_base_ambient: root.topology_base_ambient;
+        topology_base_logo: root.topology_base_logo;
 
         set_lighting_sleep_timer(mins) => { root.set_lighting_sleep_timer(mins); }
         toggle_ceremony => { root.toggle_ceremony(); }
@@ -1193,7 +1218,7 @@ export component MainWindow inherits Window {
         set_logo_brightness(b) => { root.set_logo_brightness(b); }
         set_logo_color(hex, c) => { root.set_logo_color(hex, c); }
 
-        apply_lighting_topology(en, kb, lb, amb, logo) => { root.apply_lighting_topology(en, kb, lb, amb, logo); }
+        apply_lighting_topology(kb, lb, amb, logo) => { root.apply_lighting_topology(kb, lb, amb, logo); }
         reset_lighting_topology => { root.reset_lighting_topology(); }
 
         // Water Cooler (BLE)

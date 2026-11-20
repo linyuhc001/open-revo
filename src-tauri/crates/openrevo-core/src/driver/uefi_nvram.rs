@@ -604,6 +604,25 @@ pub fn probe_gpu_capabilities() -> GpuCapabilities {
         (name, has_physical_dgpu)
     };
 
+    // Fast-path: Ultrabook / Thin-and-light pure iGPU platform guard
+    if crate::system::power::status::is_thin_and_light_or_pure_igpu() {
+        return GpuCapabilities {
+            supports_dgpu: false,
+            supports_hybrid: false,
+            supports_igpu_only: false,
+            reason_igpu_unsupported: Some("当前机型为纯核显轻薄架构（无物理独立显卡与 MUX 切换芯片），无需且不支持显卡模式切换。".to_string()),
+            platform: if is_amd { "amd".to_string() } else { "intel".to_string() },
+            is_50_series: false,
+            is_30_series: false,
+            baseboard: baseboard.clone(),
+            gpu_name: gpu_name.clone(),
+            is_safety_locked: false,
+            user_unlocked: false,
+            supports_hotswitch: false,
+            acpi_igpu_active: false,
+        };
+    }
+
     // 0. Declarative Driver Contract First (Level 0 Architecture - e.g. Baolongda Jiaolong 16 Pro)
     if let Some(manifest) = crate::hal::declarative::load_matched_manifest() {
         let platform_str = manifest.capabilities.cpu_vendor.clone().unwrap_or_else(|| if is_amd { "amd".to_string() } else { "intel".to_string() });
@@ -684,7 +703,7 @@ pub fn evaluate_gpu_capabilities(
     gpu_name: &str,
     has_dgpu: bool,
     is_amd: bool,
-    is_50_nvram: bool,
+    _is_50_nvram: bool,
     _project_id: u8,
     allow_geek_unlock: bool,
 ) -> GpuCapabilities {
@@ -738,25 +757,11 @@ pub fn evaluate_gpu_capabilities(
         };
     }
 
-    // 3. Autonomous Next-Gen Architecture Detection (via NVRAM truth)
-    let is_50 = is_50_nvram || crate::driver::wmi_ec::is_nextgen_oem_magic_ec();
+    let tier = crate::hal::platform_probe::get_chassis_architecture_tier();
 
-    // 4. Legacy Dual-Mode Architecture Detection (Legacy dual-mode chassis lacking iGPU bypass)
-    // Physical circuit in legacy dual-mode chassis lacked iGPU power bypass. Disabling dGPU causes screen blackout.
-    let is_30 = if is_50 {
-        false
-    } else {
-        crate::driver::wmi_ec::is_legacy_dual_mode_ec()
-    };
-
-    // 5. High-Risk Dual-Mode Architecture Detection:
-    // a. AMD Dragon Range (7745HX / 7945HX): Desktop AM5 chiplet transplants featuring only 2CU display iGPU (Radeon 610M).
-    let is_dragon_range_hx = is_amd && (cpu_upper.contains("7745HX") || cpu_upper.contains("7945HX"));
-
-    // Ground Truth: If it is a legacy chassis lacking any UEFI NVRAM control variables entirely (e.g. GTX 10-series / RTX 20-series like GK5NR0O),
-    // the laptop physically lacks MUX hardware switching circuits. Output is permanently hardwired to Optimus MSHybrid!
-    let has_nvram = read_active_nvram().is_ok();
-    if is_30 && !has_nvram {
+    // 3. Pre-APVersion Legacy Tongfang (10/16/20-Series, e.g. GK5CP / GK5CN):
+    // Lacks physical MUX hardware switching circuits. Output is permanently hardwired to Optimus MSHybrid!
+    if tier == crate::hal::platform_probe::ChassisArchitectureTier::LegacyPascalTuring {
         return GpuCapabilities {
             supports_dgpu: false,
             supports_hybrid: true,
@@ -773,6 +778,13 @@ pub fn evaluate_gpu_capabilities(
             acpi_igpu_active: false,
         };
     }
+
+    let is_50 = tier == crate::hal::platform_probe::ChassisArchitectureTier::NextGenBlackwell;
+    let is_30 = tier == crate::hal::platform_probe::ChassisArchitectureTier::DualModeAmpere;
+
+    // 4. High-Risk Dual-Mode Architecture Detection:
+    // a. AMD Dragon Range (7745HX / 7945HX): Desktop AM5 chiplet transplants featuring only 2CU display iGPU (Radeon 610M).
+    let is_dragon_range_hx = is_amd && (cpu_upper.contains("7745HX") || cpu_upper.contains("7945HX"));
 
     let is_dual_mode_guard = is_30 || is_dragon_range_hx;
 

@@ -1213,12 +1213,10 @@ pub fn probe_gpu_tuning_capabilities() -> GpuTuningCapabilities {
     // physically lack Dynamic Boost / cTGP EC protocol support!
     // In legacy chassis, EC registers 1859..1863 are MyFan2 fan speed PWM tables.
     // Writing DB commands to them corrupts the fan curve and causes violent RPM surging!
-    if crate::hal::platform_probe::is_legacy_pascal_turing_tongfang() || (gen <= 20 && gen > 0) {
+    if crate::hal::platform_probe::is_legacy_pascal_turing_tongfang() {
         crate::log_info!(
             "GPU_TUNING",
-            "Legacy architecture detected (chassis_legacy={}, gpu_gen={}): DB/cTGP EC tuning permanently bypassed to protect fan table.",
-            crate::hal::platform_probe::is_legacy_pascal_turing_tongfang(),
-            gen
+            "Legacy architecture detected (Chassis Tier signed as LegacyPascalTuring): DB/cTGP EC tuning permanently bypassed to protect fan table."
         );
         return GpuTuningCapabilities {
             gpu_generation: gen,
@@ -1238,13 +1236,29 @@ pub fn probe_gpu_tuning_capabilities() -> GpuTuningCapabilities {
     let (def_w, max_w) = query_nvidia_power_limits_static().unwrap_or((0, 0));
 
     // Authoritative Hardware Physical DB Capacity:
-    // When total capacity max_w <= 115W (standard 115W tier, e.g. RTX 5060/4060 115W), hardware physical envelope is strictly 100W Base + 15W DB.
-    // When total capacity max_w > 115W (e.g. 140W full-power tier), hardware physical envelope is 115W Base + 25W DB.
+    // 1. RTX 30-series / Ampere Architecture:
+    //    Prioritize the centrally signed ChassisArchitectureTier::DualModeAmpere (from SPI Flash NVRAM ground truth).
+    //    NVIDIA Dynamic Boost 2.0 physical hardware cap is strictly 15W across mainstream GA106/GA104 mobile silicon:
+    //    - RTX 3060 (130W max): 115W Base + 15W DB (never 105W + 25W!).
+    //    - RTX 3070 (140W max): 125W Base + 15W DB (never 115W + 25W!).
+    //    Only extreme high-end Ampere cards (RTX 3070 Ti / 3080 / 3080 Ti with max_w >= 150W) feature 25W DB.
+    // 2. RTX 40-series (ModernAda) & RTX 50-series (NextGenBlackwell):
+    //    - Full-power tier (max_w >= 140W, e.g. 140W RTX 4060/4070/5060, 175W RTX 4080/4090/5080): 25W DB.
+    //    - Sub-140W tiers (e.g. 130W tier with 115W Base + 15W DB, 115W tier with 100W Base + 15W DB): 15W DB.
     // NEVER read dynamic runtime setpoint register ADDR_DB_WATTS1 (which holds the active user/system slider value, e.g. 5W when DB is OFF)!
-    let hardware_db_cap: u32 = if max_w <= 115 && max_w > 0 {
-        15
-    } else {
+    let tier = crate::hal::get_chassis_architecture_tier();
+    let is_ampere_30_series = tier == crate::hal::ChassisArchitectureTier::DualModeAmpere || gen == 30;
+
+    let hardware_db_cap: u32 = if is_ampere_30_series {
+        if max_w >= 150 {
+            25
+        } else {
+            15
+        }
+    } else if max_w >= 140 {
         25
+    } else {
+        15
     };
 
     if def_w > 0 && max_w > 0 {
