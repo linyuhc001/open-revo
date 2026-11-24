@@ -1,0 +1,64 @@
+name: Build Battery Health Plugin
+
+on:
+  push:
+    paths:
+      - 'plugins_sample/webview2/battery-health/**'
+      - '.github/workflows/build-battery-health.yml'
+    branches: [main, dev]
+  pull_request:
+    paths:
+      - 'plugins_sample/webview2/battery-health/**'
+      - '.github/workflows/build-battery-health.yml'
+    branches: [main, dev]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-sidecar:
+    name: Build BatteryHealthService (win-x64)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore dependencies
+        working-directory: plugins_sample/webview2/battery-health/sidecar/BatteryHealthService
+        run: dotnet restore
+
+      - name: Build (Release)
+        working-directory: plugins_sample/webview2/battery-health/sidecar/BatteryHealthService
+        run: dotnet build --no-restore -c Release
+
+      - name: Publish self-contained executable
+        working-directory: plugins_sample/webview2/battery-health/sidecar/BatteryHealthService
+        run: >
+          dotnet publish -c Release -r win-x64 --self-contained true
+          -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+          -o ./publish
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BatteryHealthService-win-x64
+          path: plugins_sample/webview2/battery-health/sidecar/BatteryHealthService/publish/BatteryHealthService.exe
+          retention-days: 7
+
+      - name: Create GitHub Release (on main push)
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: battery-health-v${{ github.run_number }}
+          name: Battery Health Plugin v${{ github.run_number }}
+          files: plugins_sample/webview2/battery-health/sidecar/BatteryHealthService/publish/BatteryHealthService.exe
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

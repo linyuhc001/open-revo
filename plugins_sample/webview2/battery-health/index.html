@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="dark" />
+  <title>电池健康看板</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --surface-base: #0b0f17;
+      --surface-card: rgba(255, 255, 255, 0.035);
+      --surface-overlay: rgba(255, 255, 255, 0.06);
+      --surface-hover: rgba(255, 255, 255, 0.09);
+      --border-subtle: rgba(255, 255, 255, 0.08);
+      --border-medium: rgba(255, 255, 255, 0.16);
+      --text-primary: #f8fafc;
+      --text-secondary: #cbd5e1;
+      --text-dim: #94a3b8;
+      --status-ok: #10b981;
+      --status-ok-dim: rgba(16, 185, 129, 0.15);
+      --status-warn: #f59e0b;
+      --status-warn-dim: rgba(245, 158, 11, 0.15);
+      --status-error: #ef4444;
+      --status-error-dim: rgba(239, 68, 68, 0.15);
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 14px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
+    html { color-scheme: dark; background: #0b0f17; }
+    body {
+      color-scheme: dark;
+      background: #0b0f17;
+      color: var(--text-primary);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      padding: 16px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      min-height: 100vh;
+    }
+
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.15); border-radius: 9999px; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.25); }
+
+    .container { max-width: 980px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+
+    /* Header */
+    .header-card {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 18px; background: var(--surface-card);
+      border: 1px solid var(--border-subtle); border-radius: var(--radius-lg);
+      backdrop-filter: blur(12px);
+    }
+    .header-left { display: flex; align-items: center; gap: 12px; }
+    .header-icon {
+      width: 36px; height: 36px; border-radius: var(--radius-md);
+      background: var(--status-ok-dim); border: 1px solid rgba(16, 185, 129, 0.4);
+      display: flex; align-items: center; justify-content: center; color: var(--status-ok); flex-shrink: 0;
+    }
+    .header-title-box h1 {
+      font-size: 15px; font-weight: 700; letter-spacing: -0.2px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .header-badge {
+      font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 4px;
+      background: var(--status-ok-dim); color: var(--status-ok);
+      border: 1px solid rgba(16, 185, 129, 0.4); line-height: 1;
+    }
+    .header-desc { font-size: 11.5px; color: var(--text-dim); margin-top: 3px; }
+    .header-actions { display: flex; align-items: center; gap: 8px; }
+
+    /* Buttons */
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+      padding: 6px 14px; font-size: 12px; font-weight: 500; border-radius: var(--radius-sm);
+      border: 1px solid var(--border-medium); background: var(--surface-overlay);
+      color: var(--text-primary); cursor: pointer; transition: all 0.15s ease; white-space: nowrap;
+    }
+    .btn:hover { background: var(--surface-hover); border-color: rgba(255, 255, 255, 0.28); }
+    .btn:active { transform: scale(0.98); }
+    .btn-sm { padding: 4px 10px; font-size: 11px; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none !important; }
+
+    /* Health Ring */
+    .health-ring-section {
+      display: flex; align-items: center; gap: 24px;
+      padding: 24px; background: var(--surface-card);
+      border: 1px solid var(--border-subtle); border-radius: var(--radius-lg);
+    }
+    .ring-container { position: relative; width: 160px; height: 160px; flex-shrink: 0; }
+    .ring-svg { width: 160px; height: 160px; transform: rotate(-90deg); }
+    .ring-bg { fill: none; stroke: rgba(255, 255, 255, 0.08); stroke-width: 10; }
+    .ring-fill {
+      fill: none; stroke-width: 10; stroke-linecap: round;
+      transition: stroke-dashoffset 0.6s ease, stroke 0.3s ease;
+    }
+    .ring-center {
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      text-align: center;
+    }
+    .ring-percent { font-size: 32px; font-weight: 800; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; line-height: 1; }
+    .ring-label { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
+
+    .health-details { flex: 1; display: flex; flex-direction: column; gap: 10px; }
+    .detail-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 12px; background: var(--surface-overlay);
+      border-radius: var(--radius-sm);
+    }
+    .detail-label { font-size: 12px; color: var(--text-dim); }
+    .detail-value {
+      font-size: 14px; font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      color: var(--text-primary);
+    }
+
+    /* Stat Grid */
+    .stat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .stat-card {
+      background: var(--surface-card); border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md); padding: 12px 14px;
+      display: flex; flex-direction: column; gap: 6px; position: relative; overflow: hidden;
+    }
+    .stat-label { font-size: 11px; color: var(--text-dim); display: flex; align-items: center; justify-content: space-between; }
+    .stat-val {
+      font-size: 20px; font-weight: 700; color: var(--text-primary);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      display: flex; align-items: baseline; gap: 3px;
+    }
+    .stat-val small { font-size: 11px; font-weight: 500; color: var(--text-dim); }
+    .stat-hint {
+      font-size: 10.5px; color: var(--text-secondary);
+      display: flex; align-items: center; gap: 4px; white-space: nowrap;
+      overflow: hidden; text-overflow: ellipsis;
+    }
+
+    /* Indicator Dot */
+    .indicator-dot {
+      width: 6px; height: 6px; border-radius: 50%; background: var(--text-dim);
+      display: inline-block; flex-shrink: 0;
+    }
+    .indicator-dot.active { background: var(--status-ok); box-shadow: 0 0 6px rgba(16, 185, 129, 0.6); }
+    .indicator-dot.warn { background: var(--status-warn); box-shadow: 0 0 6px rgba(245, 158, 11, 0.6); }
+    .indicator-dot.error { background: var(--status-error); box-shadow: 0 0 6px rgba(239, 68, 68, 0.6); }
+
+    /* Wear Progress */
+    .wear-section {
+      padding: 18px 20px; background: var(--surface-card);
+      border: 1px solid var(--border-subtle); border-radius: var(--radius-lg);
+      display: flex; flex-direction: column; gap: 14px;
+    }
+    .wear-header { font-size: 13.5px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+    .wear-bar-track {
+      height: 12px; background: rgba(255, 255, 255, 0.08);
+      border-radius: 9999px; overflow: hidden; position: relative;
+    }
+    .wear-bar-fill {
+      height: 100%; border-radius: 9999px;
+      transition: width 0.6s ease, background 0.3s ease;
+    }
+    .wear-labels {
+      display: flex; justify-content: space-between; font-size: 11px; color: var(--text-dim);
+    }
+
+    /* Service Status */
+    .service-status {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 14px; background: var(--surface-overlay);
+      border-radius: var(--radius-sm); font-size: 12px;
+    }
+    .service-left { display: flex; align-items: center; gap: 8px; }
+    .service-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .service-dot.connected { background: var(--status-ok); box-shadow: 0 0 6px rgba(16, 185, 129, 0.5); }
+    .service-dot.disconnected { background: var(--status-error); box-shadow: 0 0 6px rgba(239, 68, 68, 0.5); }
+    .service-dot.checking { background: var(--status-warn); animation: pulse 1s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+    /* Toast */
+    .toast {
+      position: fixed; bottom: 24px; right: 24px;
+      background: rgba(15, 23, 42, 0.95); border: 1px solid var(--border-subtle);
+      color: var(--text-secondary); padding: 10px 18px; border-radius: var(--radius-md);
+      font-size: 12px; font-weight: 600; box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+      backdrop-filter: blur(8px); transform: translateY(60px); opacity: 0;
+      visibility: hidden; transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+      pointer-events: none; z-index: 1000;
+    }
+    .toast.show { transform: translateY(0); opacity: 1; visibility: visible; }
+
+    /* Loading skeleton */
+    .skeleton {
+      background: linear-gradient(90deg, rgba(255,255,255,0.04) 25%, rgba(255,255,255,0.08) 50%, rgba(255,255,255,0.04) 75%);
+      background-size: 200% 100%;
+      animation: shimmer 1.5s infinite;
+      border-radius: var(--radius-sm);
+    }
+    @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <!-- Header -->
+    <div class="header-card">
+      <div class="header-left">
+        <div class="header-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z"></path>
+            <path d="M12 6v6l4 2"></path>
+          </svg>
+        </div>
+        <div class="header-title-box">
+          <h1>
+            电池健康看板
+            <span class="header-badge" id="badgeVersion">v1.0.0</span>
+          </h1>
+          <div class="header-desc">实时监控电池健康度、循环次数与充放电状态</div>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button class="btn btn-sm" onclick="refreshAll()">🔄 立即刷新</button>
+      </div>
+    </div>
+
+    <!-- Health Ring + Details -->
+    <div class="health-ring-section">
+      <div class="ring-container">
+        <svg class="ring-svg" viewBox="0 0 160 160">
+          <circle class="ring-bg" cx="80" cy="80" r="65"></circle>
+          <circle class="ring-fill" id="healthRing" cx="80" cy="80" r="65"
+            stroke-dasharray="408.41" stroke-dashoffset="408.41"></circle>
+        </svg>
+        <div class="ring-center">
+          <div class="ring-percent" id="healthPercentText">--%</div>
+          <div class="ring-label" id="healthLabel">健康度</div>
+        </div>
+      </div>
+      <div class="health-details">
+        <div class="detail-row">
+          <span class="detail-label">电池名称</span>
+          <span class="detail-value" id="detailName" style="font-size:12px;">--</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">制造商</span>
+          <span class="detail-value" id="detailManufacturer" style="font-size:12px;">--</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">设计容量</span>
+          <span class="detail-value" id="detailDesignedCapacity">-- mWh</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">满充容量</span>
+          <span class="detail-value" id="detailFullChargedCapacity">-- mWh</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">损耗容量</span>
+          <span class="detail-value" id="detailWearCapacity">-- mWh</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Telemetry Cards -->
+    <div class="stat-grid">
+      <div class="stat-card">
+        <div class="stat-label"><span>当前电量</span></div>
+        <div class="stat-val"><span id="statChargePct">--</span><small>%</small></div>
+        <div class="stat-hint" id="statChargeHint">
+          <span class="indicator-dot" id="chargeDot"></span>
+          <span id="chargeText">读取中...</span>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label"><span>循环次数</span></div>
+        <div class="stat-val"><span id="statCycleCount">--</span><small>次</small></div>
+        <div class="stat-hint" id="statCycleHint">出厂已循环次数</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label"><span>充电功率</span></div>
+        <div class="stat-val"><span id="statChargePower">--</span><small>W</small></div>
+        <div class="stat-hint" id="statPowerHint">实时充电速率</div>
+      </div>
+    </div>
+
+    <!-- Wear Progress -->
+    <div class="wear-section">
+      <div class="wear-header">📊 电池损耗进度</div>
+      <div class="wear-bar-track">
+        <div class="wear-bar-fill" id="wearBarFill" style="width: 0%; background: var(--status-ok);"></div>
+      </div>
+      <div class="wear-labels">
+        <span>全新 (100%)</span>
+        <span id="wearPercentText">健康度 --%</span>
+        <span>报废 (60%)</span>
+      </div>
+    </div>
+
+    <!-- Service Status -->
+    <div class="service-status">
+      <div class="service-left">
+        <span class="service-dot checking" id="serviceDot"></span>
+        <span id="serviceText">正在连接后台服务...</span>
+      </div>
+      <span style="font-size:11px; color: var(--text-dim);" id="lastUpdate">--</span>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script>
+    const SIDEcar_URL = 'http://localhost:58732';
+    const RING_CIRCUMFERENCE = 2 * Math.PI * 65; // ~408.41
+
+    let refreshTimer = null;
+    let serviceConnected = false;
+
+    // --- Color helpers ---
+    function healthColor(pct) {
+      if (pct >= 80) return '#10b981';
+      if (pct >= 60) return '#f59e0b';
+      return '#ef4444';
+    }
+
+    function healthColorDim(pct) {
+      if (pct >= 80) return 'rgba(16, 185, 129, 0.15)';
+      if (pct >= 60) return 'rgba(245, 158, 11, 0.15)';
+      return 'rgba(239, 68, 68, 0.15)';
+    }
+
+    // --- Toast ---
+    function showToast(msg) {
+      const toast = document.getElementById('toast');
+      toast.textContent = msg;
+      toast.classList.add('show');
+      setTimeout(() => toast.classList.remove('show'), 3000);
+    }
+
+    // --- Fetch from sidecar ---
+    async function fetchHealth() {
+      try {
+        const resp = await fetch(`${SIDEcar_URL}/health`, { signal: AbortSignal.timeout(3000) });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        return await resp.json();
+      } catch (e) {
+        console.warn('[BatteryHealth] 侧车服务不可用:', e.message);
+        return null;
+      }
+    }
+
+    async function fetchStatus() {
+      try {
+        const resp = await fetch(`${SIDEcar_URL}/status`, { signal: AbortSignal.timeout(2000) });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        return await resp.json();
+      } catch (e) {
+        return null;
+      }
+    }
+
+    // --- Update UI ---
+    function updateHealthRing(snapshot) {
+      const healthPct = snapshot.HealthPercent;
+      const label = snapshot.HealthLabel || '未知';
+      const color = healthColor(healthPct ?? 0);
+
+      // Ring
+      const ring = document.getElementById('healthRing');
+      const offset = healthPct != null ? RING_CIRCUMFERENCE * (1 - healthPct / 100) : RING_CIRCUMFERENCE;
+      ring.style.strokeDashoffset = offset;
+      ring.style.stroke = color;
+
+      // Center text
+      document.getElementById('healthPercentText').textContent = healthPct != null ? `${healthPct.toFixed(1)}%` : '--%';
+      document.getElementById('healthPercentText').style.color = color;
+      document.getElementById('healthLabel').textContent = label;
+
+      // Details
+      document.getElementById('detailName').textContent = snapshot.Name || '--';
+      document.getElementById('detailManufacturer').textContent = snapshot.Manufacturer || '--';
+      document.getElementById('detailDesignedCapacity').textContent =
+        snapshot.DesignedCapacity != null ? `${snapshot.DesignedCapacity.toLocaleString()} mWh` : '-- mWh';
+      document.getElementById('detailFullChargedCapacity').textContent =
+        snapshot.FullChargedCapacity != null ? `${snapshot.FullChargedCapacity.toLocaleString()} mWh` : '-- mWh';
+      document.getElementById('detailWearCapacity').textContent =
+        snapshot.WearCapacity != null ? `${snapshot.WearCapacity.toLocaleString()} mWh` : '-- mWh';
+
+      // Wear bar (inverted: 100% health = 0% wear)
+      const wearPct = healthPct != null ? Math.max(0, 100 - healthPct) : 0;
+      const wearBar = document.getElementById('wearBarFill');
+      wearBar.style.width = `${wearPct}%`;
+      wearBar.style.background = color;
+      document.getElementById('wearPercentText').textContent = `健康度 ${healthPct != null ? healthPct.toFixed(1) : '--'}%`;
+    }
+
+    function updateTelemetry(snapshot) {
+      // Charge percent + power state
+      const chargePct = snapshot.ChargePercent;
+      document.getElementById('statChargePct').textContent = chargePct != null ? chargePct : '--';
+
+      const dot = document.getElementById('chargeDot');
+      const text = document.getElementById('chargeText');
+      if (snapshot.PowerState === 'Charging') {
+        dot.className = 'indicator-dot active';
+        text.textContent = '正在充电中...';
+      } else if (snapshot.PowerState === 'Discharging') {
+        dot.className = 'indicator-dot';
+        text.textContent = '放电中 (使用电池)';
+      } else if (snapshot.PowerState === 'PluggedIn') {
+        dot.className = 'indicator-dot warn';
+        text.textContent = '已接通电源';
+      } else {
+        dot.className = 'indicator-dot';
+        text.textContent = '未知状态';
+      }
+
+      // Cycle count
+      document.getElementById('statCycleCount').textContent =
+        snapshot.CycleCount != null ? snapshot.CycleCount : '--';
+
+      // Charge power
+      const powerW = snapshot.ChargePowerWatts;
+      document.getElementById('statChargePower').textContent =
+        powerW != null ? powerW.toFixed(1) : '--';
+    }
+
+    function updateServiceStatus(connected) {
+      const dot = document.getElementById('serviceDot');
+      const text = document.getElementById('serviceText');
+      if (connected) {
+        dot.className = 'service-dot connected';
+        text.textContent = '后台服务运行中';
+      } else {
+        dot.className = 'service-dot disconnected';
+        text.textContent = '后台服务未连接';
+      }
+    }
+
+    function updateLastUpdate() {
+      const now = new Date();
+      document.getElementById('lastUpdate').textContent =
+        `最后更新: ${now.toLocaleTimeString('zh-CN', { hour12: false })}`;
+    }
+
+    // --- Main refresh ---
+    async function refreshAll() {
+      const [snapshot, status] = await Promise.all([fetchHealth(), fetchStatus()]);
+
+      if (snapshot) {
+        updateHealthRing(snapshot);
+        updateTelemetry(snapshot);
+        updateServiceStatus(true);
+        updateLastUpdate();
+      } else {
+        updateServiceStatus(false);
+        showToast('⚠️ 无法连接后台服务，请确认 BatteryHealthService 已启动');
+      }
+
+      if (status) {
+        console.log('[BatteryHealth] Service status:', status);
+      }
+    }
+
+    // --- Init ---
+    window.addEventListener('DOMContentLoaded', () => {
+      refreshAll();
+      refreshTimer = setInterval(refreshAll, 5000);
+    });
+  </script>
+</body>
+
+</html>

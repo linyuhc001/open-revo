@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 import { HardwareState } from '../types/hardware';
 
-export type BuiltinTabId = 'overview' | 'gpu' | 'tuning' | 'lighting' | 'water' | 'system' | 'plugins' | 'sponsor';
+export type BuiltinTabId = 'overview' | 'gpu' | 'tuning' | 'lighting' | 'water' | 'system' | 'plugins' | 'sponsor' | 'batteryHealth';
 
 export interface ModelCapabilities {
   id?: string;
@@ -87,6 +87,15 @@ export const BUILTIN_MODULE_SLOTS: BuiltinModuleSlot[] = [
     order: 10,
     icon: Gauge,
     description: '整机实时传感器监控、模式切换仪表盘与电池健康看板',
+    isVisible: () => true,
+  },
+  {
+    id: 'batteryHealth',
+    name: '电池健康',
+    tabClassName: 'tab-battery-health',
+    order: 15,
+    icon: BatteryCharging,
+    description: '电池健康度监控、循环次数统计与充放电状态实时看板',
     isVisible: () => true,
   },
   {
