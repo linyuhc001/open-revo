@@ -79,7 +79,8 @@ public static class BatteryReader
 
     private static BatterySnapshot? ReadNative()
     {
-        var set = SetupDiGetClassDevs(ref BatteryClassGuid, null, IntPtr.Zero, DigcfPresent | DigcfDeviceInterface);
+        var guid = BatteryClassGuid;
+        var set = SetupDiGetClassDevs(ref guid, null, IntPtr.Zero, DigcfPresent | DigcfDeviceInterface);
         if (set == new IntPtr(-1)) throw new Win32Exception(Marshal.GetLastWin32Error());
 
         try
@@ -87,7 +88,7 @@ public static class BatteryReader
             for (uint index = 0; ; index++)
             {
                 var data = new SP_DEVICE_INTERFACE_DATA { cbSize = Marshal.SizeOf<SP_DEVICE_INTERFACE_DATA>() };
-                if (!SetupDiEnumDeviceInterfaces(set, IntPtr.Zero, ref BatteryClassGuid, index, ref data))
+                if (!SetupDiEnumDeviceInterfaces(set, IntPtr.Zero, ref guid, index, ref data))
                 {
                     if (Marshal.GetLastWin32Error() == 259) break;
                     continue;
@@ -129,7 +130,7 @@ public static class BatteryReader
         if (!DeviceIoControl(handle, IoctlQueryTag, ref wait, sizeof(uint), out uint tag, sizeof(uint), out _, IntPtr.Zero) || tag == 0) return null;
 
         var query = new BATTERY_QUERY_INFORMATION { BatteryTag = tag, InformationLevel = BatteryQueryInformationLevel.BatteryInformation };
-        if (!DeviceIoControl(handle, IoctlQueryInformation, ref query, Marshal.SizeOf(), out BATTERY_INFORMATION info, Marshal.SizeOf(), out _, IntPtr.Zero))
+        if (!DeviceIoControl(handle, IoctlQueryInformation, ref query, Marshal.SizeOf<BATTERY_QUERY_INFORMATION>(), out BATTERY_INFORMATION info, Marshal.SizeOf<BATTERY_INFORMATION>(), out _, IntPtr.Zero))
             throw new Win32Exception(Marshal.GetLastWin32Error());
 
         var name = QueryString(handle, tag, BatteryQueryInformationLevel.BatteryDeviceName);
@@ -137,7 +138,7 @@ public static class BatteryReader
 
         var waitStatus = new BATTERY_WAIT_STATUS { BatteryTag = tag };
         BATTERY_STATUS? status = null;
-        if (DeviceIoControl(handle, 0x0029404C, ref waitStatus, Marshal.SizeOf(), out BATTERY_STATUS batteryStatus, Marshal.SizeOf(), out _, IntPtr.Zero))
+        if (DeviceIoControl(handle, 0x0029404C, ref waitStatus, Marshal.SizeOf<BATTERY_WAIT_STATUS>(), out BATTERY_STATUS batteryStatus, Marshal.SizeOf<BATTERY_STATUS>(), out _, IntPtr.Zero))
             status = batteryStatus;
 
         var charge = status is { Capacity: var current } && info.FullChargedCapacity > 0
@@ -177,7 +178,7 @@ public static class BatteryReader
         var buffer = Marshal.AllocHGlobal(512);
         try
         {
-            if (!DeviceIoControl(handle, IoctlQueryInformation, ref query, Marshal.SizeOf(), buffer, 512, out _, IntPtr.Zero)) return null;
+            if (!DeviceIoControl(handle, IoctlQueryInformation, ref query, Marshal.SizeOf<BATTERY_QUERY_INFORMATION>(), buffer, 512, out _, IntPtr.Zero)) return null;
             return Marshal.PtrToStringUni(buffer)?.TrimEnd('\0');
         }
         finally { Marshal.FreeHGlobal(buffer); }
