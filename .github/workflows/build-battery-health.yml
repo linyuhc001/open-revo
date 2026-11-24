@@ -38,11 +38,12 @@ jobs:
         working-directory: plugins_sample/webview2/battery-health/sidecar/BatteryHealthService
         run: dotnet build --no-restore -c Release
 
-      - name: Publish framework-dependent executable
+      - name: Publish self-contained executable (optimized)
         working-directory: plugins_sample/webview2/battery-health/sidecar/BatteryHealthService
         run: >
-          dotnet publish -c Release -r win-x64 --no-self-contained
-          -p:PublishSingleFile=true
+          dotnet publish -c Release -r win-x64 --self-contained true
+          -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:PublishTrimmed=false -p:StripSymbols=false
           -o ./publish
 
       - name: Upload artifact
