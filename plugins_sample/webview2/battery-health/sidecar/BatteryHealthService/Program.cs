@@ -101,10 +101,11 @@ public static class BatteryReader
                     if (!SetupDiGetDeviceInterfaceDetail(set, ref data, detail, needed, out _, IntPtr.Zero)) continue;
 
                     var path = Marshal.PtrToStringUni(detail + 4) ?? string.Empty;
-                    using var handle = OpenBattery(path);
-                    if (handle.IsInvalid) continue;
+                    var rawHandle = OpenBattery(path);
+                    if (rawHandle == IntPtr.Zero || rawHandle.ToInt64() == -1) continue;
+                    using var handle = new Microsoft.Win32.SafeHandles.SafeFileHandle(rawHandle, false);
 
-                    var snapshot = ReadFromHandle(handle);
+                    var snapshot = ReadFromHandle(handle.DangerousGetHandle());
                     if (snapshot is not null) return snapshot;
                 }
                 finally { Marshal.FreeHGlobal(detail); }
@@ -114,14 +115,12 @@ public static class BatteryReader
         return null;
     }
 
-    private static SafeFileHandle OpenBattery(string path)
+    private static IntPtr OpenBattery(string path)
     {
         var handle = CreateFile(path, GenericRead | GenericWrite, FileShareRead | FileShareWrite, IntPtr.Zero, OpenExisting, 0, IntPtr.Zero);
-        var sfh = new SafeFileHandle(handle, false);
-        if (!sfh.IsInvalid) return sfh;
-        sfh.Dispose();
+        if (handle != IntPtr.Zero && handle.ToInt64() != -1) return handle;
         var handle2 = CreateFile(path, GenericRead, FileShareRead | FileShareWrite, IntPtr.Zero, OpenExisting, 0, IntPtr.Zero);
-        return new SafeFileHandle(handle2, false);
+        return handle2;
     }
 
     private static BatterySnapshot? ReadFromHandle(IntPtr handle)
