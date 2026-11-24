@@ -117,12 +117,14 @@ public static class BatteryReader
     private static SafeFileHandle OpenBattery(string path)
     {
         var handle = CreateFile(path, GenericRead | GenericWrite, FileShareRead | FileShareWrite, IntPtr.Zero, OpenExisting, 0, IntPtr.Zero);
-        if (!handle.IsInvalid) return handle;
-        handle.Dispose();
-        return CreateFile(path, GenericRead, FileShareRead | FileShareWrite, IntPtr.Zero, OpenExisting, 0, IntPtr.Zero);
+        var sfh = new SafeFileHandle(handle, false);
+        if (!sfh.IsInvalid) return sfh;
+        sfh.Dispose();
+        var handle2 = CreateFile(path, GenericRead, FileShareRead | FileShareWrite, IntPtr.Zero, OpenExisting, 0, IntPtr.Zero);
+        return new SafeFileHandle(handle2, false);
     }
 
-    private static BatterySnapshot? ReadFromHandle(SafeFileHandle handle)
+    private static BatterySnapshot? ReadFromHandle(IntPtr handle)
     {
         uint wait = 0;
         if (!DeviceIoControl(handle, IoctlQueryTag, ref wait, sizeof(uint), out uint tag, sizeof(uint), out _, IntPtr.Zero) || tag == 0) return null;
@@ -170,7 +172,7 @@ public static class BatteryReader
 
     private static uint? ValidCapacity(uint value) => value is 0 or uint.MaxValue ? null : value;
 
-    private static string? QueryString(SafeFileHandle handle, uint tag, BatteryQueryInformationLevel level)
+    private static string? QueryString(IntPtr handle, uint tag, BatteryQueryInformationLevel level)
     {
         var query = new BATTERY_QUERY_INFORMATION { BatteryTag = tag, InformationLevel = level };
         var buffer = Marshal.AllocHGlobal(512);
@@ -312,19 +314,19 @@ public static class BatteryReader
     private static extern bool SetupDiDestroyDeviceInfoList(IntPtr set);
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern SafeFileHandle CreateFile(string name, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
+    private static extern IntPtr CreateFile(string name, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
 
     [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool DeviceIoControl(SafeFileHandle handle, uint code, ref uint input, int inputSize, out uint output, int outputSize, out uint returned, IntPtr overlapped);
+    private static extern bool DeviceIoControl(IntPtr handle, uint code, ref uint input, int inputSize, out uint output, int outputSize, out uint returned, IntPtr overlapped);
 
     [DllImport("kernel32.dll", EntryPoint = "DeviceIoControl", SetLastError = true)]
-    private static extern bool DeviceIoControl(SafeFileHandle handle, uint code, ref BATTERY_QUERY_INFORMATION input, int inputSize, out BATTERY_INFORMATION output, int outputSize, out uint returned, IntPtr overlapped);
+    private static extern bool DeviceIoControl(IntPtr handle, uint code, ref BATTERY_QUERY_INFORMATION input, int inputSize, out BATTERY_INFORMATION output, int outputSize, out uint returned, IntPtr overlapped);
 
     [DllImport("kernel32.dll", EntryPoint = "DeviceIoControl", SetLastError = true)]
-    private static extern bool DeviceIoControl(SafeFileHandle handle, uint code, ref BATTERY_QUERY_INFORMATION input, int inputSize, IntPtr output, int outputSize, out uint returned, IntPtr overlapped);
+    private static extern bool DeviceIoControl(IntPtr handle, uint code, ref BATTERY_QUERY_INFORMATION input, int inputSize, IntPtr output, int outputSize, out uint returned, IntPtr overlapped);
 
     [DllImport("kernel32.dll", EntryPoint = "DeviceIoControl", SetLastError = true)]
-    private static extern bool DeviceIoControl(SafeFileHandle handle, uint code, ref BATTERY_WAIT_STATUS input, int inputSize, out BATTERY_STATUS output, int outputSize, out uint returned, IntPtr overlapped);
+    private static extern bool DeviceIoControl(IntPtr handle, uint code, ref BATTERY_WAIT_STATUS input, int inputSize, out BATTERY_STATUS output, int outputSize, out uint returned, IntPtr overlapped);
 }
 
 public static class Program
