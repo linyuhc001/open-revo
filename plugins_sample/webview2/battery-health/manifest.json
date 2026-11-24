@@ -5,6 +5,7 @@
   "author": "OpenRevo Community",
   "description": "实时监控电池健康度、循环次数、磨损容量等关键指标，基于 Windows WMI/IOCTL 原生读取。",
   "type": "tab",
+  "entry": "index.html",
   "min_host_version": "0.9.4",
   "window": {
     "width": 800,
@@ -14,11 +15,14 @@
     "transparent": false,
     "always_on_top": false
   },
-  "sidecar": {
-    "name": "BatteryHealthService",
-    "executable": "BatteryHealthService.exe",
+  "service": {
+    "executable": "sidecar/BatteryHealthService.exe",
+    "args": [],
+    "elevated": true,
+    "auto_start": true,
+    "auto_stop": true,
     "port": 58732,
-    "description": "电池健康度后台服务，通过 WMI/IOCTL 读取电池遥测数据并暴露 HTTP API。"
+    "health_url": "http://127.0.0.1:58732/health"
   },
   "telemetry": {
     "enabled": true,

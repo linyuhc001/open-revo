@@ -1897,7 +1897,18 @@ pub fn bootstrap_enabled_plugins() {
                                 if let Some(ref srv) = manifest.service {
                                     if srv.auto_start {
                                         crate::log_info!("PLUGIN", "Auto-starting companion service for '{}'", id);
-                                        let _ = crate::system::plugin_service::start_service(&id);
+                                        match crate::system::plugin_service::start_service(&id) {
+                                            Ok(status) => {
+                                                if status.status == "running" || status.status == "starting" {
+                                                    crate::log_info!("PLUGIN", "Service '{}' started successfully (status: {})", id, status.status);
+                                                } else {
+                                                    crate::log_warn!("PLUGIN", "Service '{}' failed to start: code={}, message={}", id, status.code.as_deref().unwrap_or("unknown"), status.message.as_deref().unwrap_or("unknown"));
+                                                }
+                                            }
+                                            Err(e) => {
+                                                crate::log_error!("PLUGIN", "Service '{}' start_service returned error: {}", id, e);
+                                            }
+                                        }
                                     }
                                 }
                             }

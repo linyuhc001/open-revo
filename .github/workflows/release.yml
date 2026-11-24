@@ -25,11 +25,41 @@ jobs:
     name: Build & Package Windows (x64)
     runs-on: windows-latest
 
+    env:
+      # SOCKS5 proxy for crates.io / npm registry / git (runtime guarantees reachability)
+      ALL_PROXY: socks5://127.0.0.1:20808
+      HTTP_PROXY: socks5://127.0.0.1:20808
+      HTTPS_PROXY: socks5://127.0.0.1:20808
+      CARGO_HTTP_ALL_PROXY: socks5://127.0.0.1:20808
+      # Keep cargo's libcurl from failing on self-signed CI TLS roots behind the proxy
+      CARGO_HTTP_CHECK_REVOKE: "false"
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Configure SOCKS5 Proxy
+        shell: pwsh
+        run: |
+          $proxy = 'socks5://127.0.0.1:20808'
+          # git (checkout / submodule fetch)
+          git config --global http.proxy $proxy
+          # npm / pnpm (make-fetch-happen honors socks5 URLs)
+          npm config set proxy $proxy
+          npm config set https-proxy $proxy
+          Write-Host "::notice::SOCKS5 proxy configured: $proxy"
+
+      - name: Probe Proxy Reachability
+        shell: pwsh
+        timeout-minutes: 2
+        run: |
+          $ok = Test-NetConnection -ComputerName '127.0.0.1' -Port 20808 -WarningAction SilentlyContinue
+          if (-not $ok.TcpTestSucceeded) {
+            throw 'SOCKS5 proxy 127.0.0.1:20808 is not reachable from the runner'
+          }
+          Write-Host "::notice::Proxy 127.0.0.1:20808 reachable"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
