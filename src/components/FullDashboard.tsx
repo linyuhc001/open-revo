@@ -11,6 +11,7 @@ import { WaterCoolerView, CoolerTelemetry } from './WaterCoolerView';
 import { SystemSettingsView, OsdConfig } from './SystemSettingsView';
 import { PluginsView, CustomPluginItem } from './PluginsView';
 import { PluginTabHost } from './PluginTabHost';
+import { BatteryHealthView } from './BatteryHealthView';
 import { ModuleErrorBoundary } from './ModuleErrorBoundary';
 import { BUILTIN_MODULE_SLOTS, BuiltinTabId, isSlotActive, ModelCapabilities } from '../plugins/plugin_manifest';
 import logoImg from '../assets/logo.png';
@@ -659,6 +660,12 @@ export const FullDashboard: React.FC<FullDashboardProps> = ({
               checkOemGuard={checkOemGuard}
               profileVersion={profileVersion}
             />
+          </ModuleErrorBoundary>
+        )}
+
+        {activeTab === 'batteryHealth' && (
+          <ModuleErrorBoundary moduleName="电池健康" onNavigateToOverview={() => setActiveTab('overview')}>
+            <BatteryHealthView />
           </ModuleErrorBoundary>
         )}
 

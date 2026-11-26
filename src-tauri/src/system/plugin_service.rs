@@ -7,7 +7,24 @@ use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
+use std::ffi::OsStr;
+use std::os::windows::ffi::OsStrExt;
 use serde::{Deserialize, Serialize};
+
+// Windows API: ShellExecuteW for UAC elevation
+#[cfg(windows)]
+#[link(name = "shell32")]
+extern "system" {
+    #[allow(non_snake_case)]
+    fn ShellExecuteW(
+        hwnd: *mut core::ffi::c_void,
+        lpOperation: *const u16,
+        lpFile: *const u16,
+        lpParameters: *const u16,
+        lpDirectory: *const u16,
+        nShow: i32,
+    ) -> isize;
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginServiceConfig {
@@ -227,6 +244,74 @@ pub fn start_service(plugin_id: &str) -> Result<PluginServiceStatus, String> {
 
     // Launch process silently without opening black console windows
     let working_dir = canon_exe.parent().unwrap_or(&canon_dir);
+    
+    // UAC Elevation: use ShellExecuteW "runas" when elevated=true
+    #[cfg(windows)]
+    {
+        if svc.elevated {
+            use std::os::windows::ffi::OsStrExt;
+            
+            let exe_path = canon_exe.to_string_lossy();
+            let args_str: String = svc.args.iter().flat_map(|a| {
+                // Quote arguments containing spaces
+                if a.contains(' ') || a.contains('"') {
+                    format!(" \"{}\"", a.replace('"', "\"\""))
+                } else {
+                    format!(" {}", a)
+                }
+            }).collect();
+            
+            let exe_wide: Vec<u16> = OsStr::new(&*exe_path).encode_wide().collect();
+            let args_wide: Vec<u16> = OsStr::new(&args_str).encode_wide().collect();
+            let dir_wide: Vec<u16> = OsStr::new(working_dir.to_string_lossy().as_ref()).encode_wide().collect();
+            
+            // ShellExecuteW with "runas" verb triggers UAC elevation prompt
+            let result = unsafe {
+                ShellExecuteW(
+                    std::ptr::null_mut(),       // hwnd
+                    "runas\0" as *const u16,     // lpOperation (UAC elevation)
+                    &exe_wide[0],                // lpFile
+                    if args_wide.is_empty() { std::ptr::null() } else { &args_wide[0] }, // lpParameters
+                    if dir_wide.is_empty() { std::ptr::null() } else { &dir_wide[0] },   // lpDirectory
+                    0,                           // nShow (SW_HIDE)
+                )
+            };
+            
+            // ShellExecuteW returns HINSTANCE; success > 32, errors <= 32
+            if result <= 32 {
+                let error_code = result as u32;
+                let (code, msg) = match error_code {
+                    2 => ("FILE_NOT_FOUND", "服务文件不存在".to_string()),
+                    31 => ("ASSOCIATION_FAILED", "系统关联失败，请检查文件格式".to_string()),
+                    _ => ("ELEVATION_FAILED", format!("UAC 提权失败 (错误码: {})", error_code)),
+                };
+                
+                return Ok(PluginServiceStatus {
+                    plugin_id: plugin_id.to_string(),
+                    status: "error".to_string(),
+                    pid: None,
+                    port: svc.port,
+                    code: Some(code.to_string()),
+                    message: Some(msg),
+                    detail: Some(format!("执行目标: {:?}, 错误码: {}", canon_exe, error_code)),
+                });
+            }
+            
+            // ShellExecuteW is asynchronous — we can't get PID directly.
+            // Return success and let health polling verify the service is running.
+            return Ok(PluginServiceStatus {
+                plugin_id: plugin_id.to_string(),
+                status: "starting".to_string(),
+                pid: None,
+                port: svc.port,
+                code: Some("ELEVATED_LAUNCH".to_string()),
+                message: Some("伴随服务正在启动（UAC 提权）".to_string()),
+                detail: Some(format!("已请求管理员权限，请稍候...")),
+            });
+        }
+    }
+    
+    // Non-elevated path: use Command::spawn directly
     let mut cmd = std::process::Command::new(&canon_exe);
     cmd.args(&svc.args);
     cmd.current_dir(working_dir);
