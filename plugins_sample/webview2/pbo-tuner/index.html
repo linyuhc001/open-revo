@@ -304,6 +304,14 @@
       color: var(--accent);
       box-shadow: inset 0 0 0 1px var(--accent);
     }
+    /* Slot that owns boot-time auto-apply: dark chip with amber outline/text.
+       Declared after .active-slot so yellow wins when the same slot is both. */
+    button.slot-btn.auto-slot {
+      background: #1b1b1b;
+      border: 2px solid #f2c14e;
+      color: #f5d477;
+      box-shadow: none;
+    }
     button.mini {
       padding: 2px 9px;
       font-size: 13px;
@@ -408,11 +416,12 @@
       <button class="secondary slot-btn" data-slot="1">槽位 1</button>
       <button class="secondary slot-btn" data-slot="2">槽位 2</button>
       <button class="secondary slot-btn" data-slot="3">槽位 3</button>
-      <span class="hint" id="slotHint">切换即载入该槽到界面（不写硬件），点「应用」才下发并同步顶层</span>
+      <span class="hint" id="slotHint">切换即载入该槽到界面（不写硬件），点「应用」才下发并同步顶层 · 黄色边框=开机自启生效</span>
     </div>
     <div class="row">
       <button id="btnSaveProfile" class="secondary">保存 Profile</button>
       <button id="btnLoadProfile" class="secondary">读取 Profile</button>
+      <button id="btnClearProfile" class="secondary">清空 Profile</button>
       <span class="hint" id="profileHint">尚未保存</span>
     </div>
     <div class="row">
@@ -570,6 +579,7 @@
       source: 'none',     // 'smu' | 'profile' | 'none'
       activeSlot: 1,      // 1..3, currently selected profile slot
       slots: {},          // { '1': profileObj|null, '2': ..., '3': ... } loaded from file
+      defaultFmax: null,  // first non-zero FMax reported by SMU = clear-to baseline
     };
 
     // ---- SMU init ----
@@ -657,7 +667,7 @@
         const saved = activeProfile(store);
         const on = !!(saved && saved.autoApply === true);
         document.getElementById('chkAutoApply').checked = on;
-        if (saved && saved.savedAt) {
+        if (saved && saved.savedAt && slotHasData(saved)) {
           document.getElementById('profileHint').textContent =
             `槽位 ${STATE.activeSlot} · ${new Date(saved.savedAt).toLocaleString()}` + (on ? ' · 开机自动应用' : '');
         }
@@ -1054,20 +1064,36 @@
       return activeProfile(store);
     }
 
+    // A slot only counts as "saved" when it carries real tuning data.
+    // Clicking Save on an untouched/cleared screen would otherwise mark it
+    // with a dot even though every CO is 0 and FMax/Scalar are at defaults.
+    function slotHasData(p) {
+      if (!p || !p.co || typeof p.co !== 'object') return false;
+      if (Object.values(p.co).some(v => Number(v) !== 0)) return true;
+      const fm = Number(p.fmax) || 0;
+      // The FMax reported at plugin open is the baseline, not a tuning override.
+      if (fm > 0 && (STATE.defaultFmax === null || fm !== STATE.defaultFmax)) return true;
+      if (Number(p.scalar) > 1) return true;
+      return false;
+    }
+
     function updateSlotUI() {
       document.querySelectorAll('#slotRow .slot-btn').forEach(btn => {
         const n = Number(btn.dataset.slot);
         btn.classList.toggle('active-slot', n === STATE.activeSlot);
         const p = STATE.slots[String(n)];
-        btn.textContent = `槽位 ${n}${p && p.savedAt ? ' ●' : ''}`;
-        btn.title = p && p.savedAt
-          ? `保存于 ${new Date(p.savedAt).toLocaleString()}`
+        const isAuto = !!(p && p.autoApply === true);
+        const hasData = slotHasData(p);
+        btn.classList.toggle('auto-slot', isAuto);
+        btn.textContent = `槽位 ${n}${hasData ? ' ●' : ''}`;
+        btn.title = hasData && p.savedAt
+          ? `保存于 ${new Date(p.savedAt).toLocaleString()}${isAuto ? ' · 开机自动应用' : ''}`
           : '空槽位';
       });
       const p = STATE.slots[String(STATE.activeSlot)];
       const hint = document.getElementById('slotHint');
       if (hint) {
-        hint.textContent = p
+        hint.textContent = slotHasData(p) && p.savedAt
           ? `槽位 ${STATE.activeSlot} · ${new Date(p.savedAt).toLocaleString()}`
           : `槽位 ${STATE.activeSlot} 尚未保存`;
       }
@@ -1260,6 +1286,25 @@
       log(`[+] 已载入 Profile（${filled} 个核心）。需要写入请点 Apply。`);
     }
 
+    // Reset only what's on screen (CO 0 / FMax 0 / Scalar 1). No SMU write and
+    // no profile-file write: Apply is still required to make it effective.
+    function clearProfileToDefaults() {
+      STATE.cores.forEach(c => { STATE.values[c.core] = 0; });
+      document.getElementById('inputScalar').value = 1;
+      let fmaxNote = 'FMax 保持当前值（SMU 未上报基准）';
+      if (STATE.defaultFmax !== null) {
+        document.getElementById('inputFmax').value = STATE.defaultFmax;
+        fmaxNote = `FMax ${STATE.defaultFmax} MHz（打开插件时的硬件值）`;
+      }
+      applyValuesToInputs();
+      setSourceTag('none', '默认值（未下发）');
+      document.getElementById('coHint').textContent = '界面已恢复默认值，点 Apply 才下发硬件';
+      const hint = document.getElementById('profileHint');
+      hint.style.color = '';
+      hint.textContent = `界面已恢复默认值（CO 0 / ${fmaxNote} / Scalar 1），尚未写入 Profile`;
+      log(`[i] 界面已恢复默认值；${fmaxNote}；需要写入请点 Apply。`);
+    }
+
     // ---- Apply ----
     async function applyAllCo() {
       if (!STATE.canWrite) { log('[-] 已阻止写入：SMU 链路未就绪'); return; }
@@ -1322,6 +1367,9 @@
           const fmax = Number(await rpc('smu_get_fmax'));
           document.getElementById('inputFmax').value = fmax;
           document.getElementById('fmaxCurrent').textContent = `当前: ${fmax} MHz`;
+          // Remember the first reading as the baseline for "清空 Profile".
+          // SMU exposes only the current boost limit, not a stock-CPU value.
+          if (STATE.defaultFmax === null && fmax > 0) STATE.defaultFmax = fmax;
         } catch (e) {
           log('[-] 读取 FMax 失败: ' + e);
         }
@@ -1340,6 +1388,7 @@
     });
     document.getElementById('btnSaveProfile').addEventListener('click', saveProfile);
     document.getElementById('btnLoadProfile').addEventListener('click', loadProfileToUi);
+    document.getElementById('btnClearProfile').addEventListener('click', clearProfileToDefaults);
     document.getElementById('chkAutoApply').addEventListener('change', (e) => persistAutoApply(e.target.checked));
     document.querySelectorAll('#slotRow .slot-btn').forEach(btn => {
       btn.addEventListener('click', () => switchSlot(Number(btn.dataset.slot)));
