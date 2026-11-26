@@ -583,15 +583,31 @@
     };
 
     // ---- SMU init ----
+    // The manifest is authoritative for the companion service port: a user can
+    // change it in the UI and the host launches the sidecar with that value.
+    // Ask the host bridge for it before falling back to cached/hardcoded ports.
+    async function manifestPort() {
+      try {
+        const invoke = window.OpenRevo && window.OpenRevo.invoke;
+        if (!invoke) return null;
+        const m = await invoke('get_plugin_manifest', { id: 'pbo-tuner' });
+        const p = Number(m && m.service && m.service.port);
+        return p >= 1 && p <= 65535 ? p : null;
+      } catch (_) {
+        return null;
+      }
+    }
+
     // The host launches the companion service during plugin bootstrap, which
     // can be a beat behind the first tab paint. Poll health instead of failing
     // the whole page on a connection-refused race.
     async function waitForService(timeoutMs = 15000) {
       const deadline = Date.now() + timeoutMs;
       let lastErr = null;
-      // Current manifest port first, then the legacy hardcoded port. A fresh
-      // install has no localStorage cache, so it must find 19110 on its own.
-      const ports = [...new Set([SERVICE_PORT, 19110, 18955])];
+      const fromManifest = await manifestPort();
+      if (fromManifest && fromManifest !== SERVICE_PORT) setServicePort(fromManifest);
+      // Manifest first, then the cached port and legacy defaults.
+      const ports = [...new Set([fromManifest, SERVICE_PORT, 19110, 18955].filter(Boolean))];
       while (Date.now() < deadline) {
         for (const p of ports) {
           try {
