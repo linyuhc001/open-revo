@@ -297,6 +297,13 @@
       border: 1px solid var(--border-medium);
       color: var(--text-secondary);
     }
+    /* Active profile slot: visually marks which slot the UI is editing. */
+    button.slot-btn.active-slot {
+      background: var(--accent-soft);
+      border-color: var(--accent);
+      color: var(--accent);
+      box-shadow: inset 0 0 0 1px var(--accent);
+    }
     button.mini {
       padding: 2px 9px;
       font-size: 13px;
@@ -393,16 +400,25 @@
   </div>
 
   <div class="section">
-    <h2>Profile <span class="tag">保存 / 读取</span></h2>
+    <h2>Profile <span class="tag">3 槽位 · 保存 / 读取</span></h2>
+    <div class="row">
+      <span class="hint">槽位（点击切换，仅载入界面，不写入硬件）</span>
+    </div>
+    <div class="row" id="slotRow">
+      <button class="secondary slot-btn" data-slot="1">槽位 1</button>
+      <button class="secondary slot-btn" data-slot="2">槽位 2</button>
+      <button class="secondary slot-btn" data-slot="3">槽位 3</button>
+      <span class="hint" id="slotHint">切换即载入该槽到界面（不写硬件），点「应用」才下发并同步顶层</span>
+    </div>
     <div class="row">
       <button id="btnSaveProfile" class="secondary">保存 Profile</button>
       <button id="btnLoadProfile" class="secondary">读取 Profile</button>
       <span class="hint" id="profileHint">尚未保存</span>
     </div>
     <div class="row">
-      <label class="checkline" title="由宿主进程在启动时下发，插件页面无需打开">
+      <label class="checkline" title="由 sidecar 在启动时下发，插件页面无需打开">
         <input type="checkbox" id="chkAutoApply" />
-        OpenRevo 启动时自动应用（保存后生效，启动 8 秒后台下发）
+        开机自动应用当前槽位（保存后生效，启动 8 秒后台下发）
       </label>
     </div>
   </div>
@@ -552,6 +568,8 @@
       values: {},         // core -> margin currently shown in the UI
       original: {},       // core -> margin as read from HW/profile (for dirty marking)
       source: 'none',     // 'smu' | 'profile' | 'none'
+      activeSlot: 1,      // 1..3, currently selected profile slot
+      slots: {},          // { '1': profileObj|null, '2': ..., '3': ... } loaded from file
     };
 
     // ---- SMU init ----
@@ -628,14 +646,20 @@
       await refreshValues({ initial: true });
       await refreshFmaxScalar();
 
-      // Auto-apply is a host-side setting; reflect whatever the saved profile says.
+      // Restore the active slot index and reflect its saved settings.
       try {
-        const saved = await loadProfile(true);
+        const store = await readStore(true);
+        if (store) {
+          STATE.activeSlot = store.active;
+          STATE.slots = store.slots;
+        }
+        updateSlotUI();
+        const saved = activeProfile(store);
         const on = !!(saved && saved.autoApply === true);
         document.getElementById('chkAutoApply').checked = on;
         if (saved && saved.savedAt) {
           document.getElementById('profileHint').textContent =
-            `上次保存: ${new Date(saved.savedAt).toLocaleString()}` + (on ? ' · 开机自动应用' : '');
+            `槽位 ${STATE.activeSlot} · ${new Date(saved.savedAt).toLocaleString()}` + (on ? ' · 开机自动应用' : '');
         }
       } catch (_) {}
     }
@@ -915,18 +939,196 @@
       else setStatus('err', '未连接');
     }
 
-    // ---- Profile ----
+    // ---- Profile (3 slots) ----
+    // On-disk layout (one JSON file; the sidecar writes the string verbatim):
+    // {
+    //   schema: 2, cpu, cores, savedAt,
+    //   active: 1..3,
+    //   slots: { "1": {co,fmax,scalar,autoApply,savedAt,...}|null, "2":..., "3":... },
+    //   co, fmax, scalar, autoApply   <- top-level mirror of the ACTIVE slot.
+    //                                   The sidecar's boot-time auto_apply reads
+    //                                   exactly these top-level fields.
+    // }
+    // A legacy schema-1 file (top level IS the profile) is migrated into slot 1.
     function buildProfileObject() {
       return {
-        schema: 1,
-        cpu: STATE.smuInfo ? STATE.smuInfo.code_name : 'unknown',
+        name: `槽位 ${STATE.activeSlot}`,
         savedAt: new Date().toISOString(),
+        cpu: STATE.smuInfo ? STATE.smuInfo.code_name : 'unknown',
         cores: STATE.cores.map(c => ({ core: c.core, ccd: c.ccd, ccx: c.ccx })),
-        co: STATE.values,
+        co: { ...STATE.values },
         fmax: parseInt(document.getElementById('inputFmax').value, 10) || 0,
         scalar: parseInt(document.getElementById('inputScalar').value, 10) || 1,
         autoApply: !!document.getElementById('chkAutoApply').checked,
       };
+    }
+
+    function blankStore(active) {
+      return {
+        schema: 2,
+        slots: { '1': null, '2': null, '3': null },
+        active: active || 1,
+      };
+    }
+
+    // Read the whole store, migrating legacy single-profile files on the fly.
+    async function readStore(silent = false) {
+      let raw = '';
+      try {
+        raw = await rpc('smu_profile_load');
+      } catch (e) {
+        log('[-] 读取 Profile 失败: ' + e);
+      }
+      if (!raw) {
+        try { raw = localStorage.getItem('pbo-tuner-profile') || ''; } catch (_) {}
+      }
+      if (!raw) {
+        if (!silent) log('[i] 未找到已保存的 Profile');
+        return null;
+      }
+      let data;
+      try {
+        data = JSON.parse(raw);
+      } catch (e) {
+        log('[-] Profile 格式损坏: ' + e);
+        return null;
+      }
+      if (!data || typeof data !== 'object') return null;
+
+      if (!data.slots) {
+        // schema 1: the top-level object itself was the profile.
+        data = {
+          schema: 2,
+          cpu: data.cpu,
+          cores: data.cores,
+          savedAt: data.savedAt,
+          active: 1,
+          slots: { '1': data, '2': null, '3': null },
+        };
+        log('[i] 旧版单档 Profile 已迁移到槽位 1');
+      }
+      for (const n of ['1', '2', '3']) {
+        const s = data.slots[n];
+        if (s && (!s.co || typeof s.co !== 'object')) data.slots[n] = null;
+      }
+      const a = Number(data.active);
+      data.active = (a >= 1 && a <= 3) ? a : 1;
+      return data;
+    }
+
+    async function writeStore(store) {
+      const path = await rpc('smu_profile_save', { content: JSON.stringify(store) });
+      try { localStorage.setItem('pbo-tuner-profile', JSON.stringify(store)); } catch (_) {}
+      return path;
+    }
+
+    // Mirror the active slot onto the top level. The sidecar reads only the
+    // top-level co/fmax/scalar/autoApply at boot, so this must stay in sync.
+    function mirrorActiveToTop(store) {
+      const active = store.slots[String(store.active)];
+      if (!active) {
+        delete store.co;
+        delete store.fmax;
+        delete store.scalar;
+        delete store.autoApply;
+      } else {
+        store.co = active.co;
+        store.fmax = active.fmax;
+        store.scalar = active.scalar;
+        store.autoApply = !!active.autoApply;
+        store.cpu = active.cpu || store.cpu;
+        store.cores = active.cores || store.cores;
+        store.savedAt = active.savedAt;
+      }
+      store.schema = 2;
+      return store;
+    }
+
+    function activeProfile(store) {
+      return store && store.slots ? (store.slots[String(store.active)] || null) : null;
+    }
+
+    // Kept for existing callers: returns the active slot's profile.
+    async function loadProfile(silent = false) {
+      const store = await readStore(silent);
+      return activeProfile(store);
+    }
+
+    function updateSlotUI() {
+      document.querySelectorAll('#slotRow .slot-btn').forEach(btn => {
+        const n = Number(btn.dataset.slot);
+        btn.classList.toggle('active-slot', n === STATE.activeSlot);
+        const p = STATE.slots[String(n)];
+        btn.textContent = `槽位 ${n}${p && p.savedAt ? ' ●' : ''}`;
+        btn.title = p && p.savedAt
+          ? `保存于 ${new Date(p.savedAt).toLocaleString()}`
+          : '空槽位';
+      });
+      const p = STATE.slots[String(STATE.activeSlot)];
+      const hint = document.getElementById('slotHint');
+      if (hint) {
+        hint.textContent = p
+          ? `槽位 ${STATE.activeSlot} · ${new Date(p.savedAt).toLocaleString()}`
+          : `槽位 ${STATE.activeSlot} 尚未保存`;
+      }
+    }
+
+    // Switching slots only changes what the UI shows — no SMU write, and it
+    // does NOT touch the top-level mirror (that still represents the last
+    // actually-applied slot used by boot-time auto-apply). Only the `active`
+    // index is persisted so the choice survives a restart.
+    async function switchSlot(n) {
+      if (n === STATE.activeSlot) return;
+      STATE.activeSlot = n;
+      let store = await readStore(true);
+      if (!store) store = blankStore(n);
+      store.active = n;
+      STATE.slots = store.slots;
+      try {
+        // Write the store verbatim: top-level mirror stays as-is.
+        await writeStore(store);
+      } catch (e) {
+        log('[-] 保存槽位索引失败: ' + e);
+      }
+      updateSlotUI();
+      const p = STATE.slots[String(n)];
+      const merged = await mergeProfileIntoValues();
+      if (!p || !merged) {
+        // Empty slot: start from a clean slate on screen (never written to HW).
+        STATE.cores.forEach(c => { STATE.values[c.core] = 0; });
+        document.getElementById('inputFmax').value = 0;
+        document.getElementById('inputScalar').value = 1;
+        document.getElementById('chkAutoApply').checked = false;
+      }
+      // mergeProfileIntoValues only updates STATE.values; always push them
+      // into the visible inputs (otherwise a saved slot looks unchanged).
+      applyValuesToInputs();
+      setSourceTag(p ? 'profile' : 'none', p ? `已载入槽位 ${n}（未下发）` : `槽位 ${n} 为空，界面已清零`);
+      document.getElementById('coHint').textContent = p
+        ? `槽位 ${n} 已载入界面，点 Apply 才下发硬件`
+        : `槽位 ${n} 为空（界面已清零），编辑后点 Apply 下发并存为该槽`;
+      log(`[i] 切换到槽位 ${n}${p ? '，已载入界面（未下发，顶层不变）' : '（空，界面已清零）'}`);
+    }
+
+    // Called after a successful Apply: commit the very same on-screen values
+    // into the active slot AND the top-level mirror in one write.
+    async function commitActiveSlot() {
+      try {
+        let store = await readStore(true);
+        if (!store) store = blankStore(STATE.activeSlot);
+        store.active = STATE.activeSlot;
+        if (!store.cpu) store.cpu = STATE.smuInfo ? STATE.smuInfo.code_name : 'unknown';
+        if (!store.cores) store.cores = STATE.cores.map(c => ({ core: c.core, ccd: c.ccd, ccx: c.ccx }));
+        const profile = buildProfileObject();
+        store.slots[String(STATE.activeSlot)] = profile;
+        STATE.slots = store.slots;
+        await writeStore(mirrorActiveToTop(store));
+        updateSlotUI();
+        return true;
+      } catch (e) {
+        log('[-] 同步槽位/顶层失败: ' + e);
+        return false;
+      }
     }
 
     // Apply pushes values to the SMU only — the archive is written by an
@@ -952,23 +1154,18 @@
     }
 
     async function saveProfile() {
-      const profile = buildProfileObject();
-      try {
-        const path = await rpc('smu_profile_save', { content: JSON.stringify(profile) });
-        document.getElementById('profileHint').style.color = '';
-        document.getElementById('profileHint').textContent =
-          `已保存 ${new Date().toLocaleTimeString()} · ${profile.cores.length} 核` +
-          (profile.autoApply ? ' · 开机自动应用' : '');
-        log('[+] Profile 已保存: ' + path);
-      } catch (e) {
-        log('[-] 保存 Profile 失败: ' + e);
-        // localStorage is a best-effort backup (may be unavailable in srcDoc).
-        try {
-          localStorage.setItem('pbo-tuner-profile', JSON.stringify(profile));
-          document.getElementById('profileHint').textContent = '已保存到浏览器本地存储（后端写入失败）';
-          log('[!] 后端写入失败，已退回到浏览器本地存储');
-        } catch (_) {}
+      const ok = await commitActiveSlot();
+      if (!ok) {
+        document.getElementById('profileHint').textContent = '保存失败（后端写入错误）';
+        log('[-] 保存 Profile 失败');
+        return;
       }
+      const profile = STATE.slots[String(STATE.activeSlot)];
+      document.getElementById('profileHint').style.color = '';
+      document.getElementById('profileHint').textContent =
+        `槽位 ${STATE.activeSlot} 已保存 ${new Date().toLocaleTimeString()} · ${profile.cores.length} 核` +
+        (profile.autoApply ? ' · 开机自动应用' : '');
+      log(`[+] Profile 已保存到槽位 ${STATE.activeSlot}（顶层已同步）`);
     }
 
     // The auto-apply checkbox is a host-side setting: the host reads it from the
@@ -978,54 +1175,44 @@
     // the on-screen state would wipe the margins already stored in the file.
     async function persistAutoApply(enabled) {
       const hint = document.getElementById('profileHint');
-      let profile = await loadProfile(true);
-      if (profile) {
-        profile.autoApply = enabled;
-      } else {
+      let store = await readStore(true);
+      if (!store) store = blankStore(STATE.activeSlot);
+      store.active = STATE.activeSlot;
+      let profile = activeProfile(store);
+      if (!profile) {
         profile = buildProfileObject();  // nothing saved yet: capture the screen
-        profile.autoApply = enabled;
       }
+      profile.autoApply = enabled;
+      profile.savedAt = new Date().toISOString();
+      store.slots[String(STATE.activeSlot)] = profile;
+      // Only one slot can own boot-time auto-apply: the top-level mirror has a
+      // single autoApply flag. Enabling this slot clears the flag on the others
+      // so the checkbox never shows two "checked" slots.
+      if (enabled) {
+        for (const n of ['1', '2', '3']) {
+          if (n === String(STATE.activeSlot)) continue;
+          const other = store.slots[n];
+          if (other && other.autoApply) {
+            other.autoApply = false;
+            other.savedAt = new Date().toISOString();
+          }
+        }
+      }
+      STATE.slots = store.slots;
       try {
-        await rpc('smu_profile_save', { content: JSON.stringify(profile) });
+        await writeStore(mirrorActiveToTop(store));
+        updateSlotUI();
         hint.textContent = enabled
-          ? '自动应用已开启 · 下次启动 8 秒后下发'
-          : '自动应用已关闭并写回 Profile';
-        log(`[+] 开机自动应用: ${enabled ? '开启' : '关闭'}（已写回 Profile）`);
+          ? `槽位 ${STATE.activeSlot} 自动应用已开启（其他槽位已取消）· 下次启动 8 秒后下发`
+          : `槽位 ${STATE.activeSlot} 自动应用已关闭并写回`;
+        log(`[+] 槽位 ${STATE.activeSlot} 开机自动应用: ${enabled ? '开启（其余槽位已取消）' : '关闭'}（已写回，顶层已同步）`);
       } catch (e) {
         hint.textContent = '自动应用设置写入失败';
         log('[-] 写入自动应用设置失败: ' + e);
       }
     }
 
-    async function loadProfile(silent = false) {
-      let raw = '';
-      try {
-        raw = await rpc('smu_profile_load');
-      } catch (e) {
-        log('[-] 读取 Profile 失败: ' + e);
-      }
-      if (!raw) {
-        try { raw = localStorage.getItem('pbo-tuner-profile') || ''; } catch (_) {}
-      }
-      if (!raw) {
-        if (!silent) log('[i] 未找到已保存的 Profile');
-        return null;
-      }
-      let profile;
-      try {
-        profile = JSON.parse(raw);
-      } catch (e) {
-        log('[-] Profile 格式损坏: ' + e);
-        return null;
-      }
-      if (!profile || typeof profile !== 'object' || !profile.co) {
-        if (!silent) log('[-] Profile 内容不完整，已忽略');
-        return null;
-      }
-      return profile;
-    }
-
-    // Fill values from the profile without touching the hardware.
+    // Fill values from the active slot's profile without touching the hardware.
     async function mergeProfileIntoValues() {
       const profile = await loadProfile(true);
       if (!profile) return false;
@@ -1108,6 +1295,10 @@
           log(`[!] 写入完成：成功 ${ok}，失败 ${fail}${firstErr ? '（' + firstErr + '）' : ''}`);
           setBanner('warn', 'CO 部分写入', `成功 ${ok} / 失败 ${fail}`);
         }
+        // Hardware and archive move together: commit the applied values into
+        // the active slot and the top-level mirror so a reboot applies the same
+        // thing the user just approved.
+        if (ok > 0) await commitActiveSlot();
         await markProfileDirty();
       } finally {
         updateApplyState();
@@ -1150,6 +1341,9 @@
     document.getElementById('btnSaveProfile').addEventListener('click', saveProfile);
     document.getElementById('btnLoadProfile').addEventListener('click', loadProfileToUi);
     document.getElementById('chkAutoApply').addEventListener('change', (e) => persistAutoApply(e.target.checked));
+    document.querySelectorAll('#slotRow .slot-btn').forEach(btn => {
+      btn.addEventListener('click', () => switchSlot(Number(btn.dataset.slot)));
+    });
 
     document.getElementById('btnApplyFmax').addEventListener('click', async () => {
       const fmax = parseInt(document.getElementById('inputFmax').value, 10) || 0;
@@ -1158,6 +1352,7 @@
         if (Number(status) === 1) {
           log(`[+] FMax 已应用: ${fmax} MHz`);
           document.getElementById('fmaxCurrent').textContent = `当前: ${fmax} MHz`;
+          await commitActiveSlot();
           await markProfileDirty();
         } else {
           log(`[-] FMax 应用失败 (status 0x${Number(status).toString(16)})`);
@@ -1177,6 +1372,7 @@
         if (Number(status) === 1) {
           log(`[+] PBO Scalar 已应用: ${scalar}x`);
           document.getElementById('scalarCurrent').textContent = `当前: ${scalar}x`;
+          await commitActiveSlot();
           await markProfileDirty();
         } else {
           log(`[-] Scalar 应用失败 (status 0x${Number(status).toString(16)})`);
