@@ -500,7 +500,7 @@
     // The listening port is configurable in the 服务端口 card below; the
     // manifest is the source of truth and this cache just speeds up first
     // connect. /api/health reports the real port and re-syncs the cache.
-    let SERVICE_PORT = Number(localStorage.getItem('pbo-port')) || 18955;
+    let SERVICE_PORT = Number(localStorage.getItem('pbo-port')) || 19110;
     let SERVICE_BASE = `http://127.0.0.1:${SERVICE_PORT}/api`;
     function setServicePort(p) {
       SERVICE_PORT = p;
@@ -589,10 +589,11 @@
     async function waitForService(timeoutMs = 15000) {
       const deadline = Date.now() + timeoutMs;
       let lastErr = null;
+      // Current manifest port first, then the legacy hardcoded port. A fresh
+      // install has no localStorage cache, so it must find 19110 on its own.
+      const ports = [...new Set([SERVICE_PORT, 19110, 18955])];
       while (Date.now() < deadline) {
-        // Try the cached port first, then the manifest default — covers a
-        // stale cache after the port was reset externally.
-        for (const p of [...new Set([SERVICE_PORT, 18955])]) {
+        for (const p of ports) {
           try {
             const res = await fetch(`http://127.0.0.1:${p}/api/health`, { cache: 'no-store' });
             if (res.ok) {
@@ -608,7 +609,7 @@
         }
         await new Promise(r => setTimeout(r, 600));
       }
-      throw new Error('PBO 服务启动超时' + (lastErr ? `（${lastErr.message}）` : ''));
+      throw new Error(`PBO 服务启动超时（已尝试端口 ${ports.join(', ')}）` + (lastErr ? `：${lastErr.message}` : ''));
     }
 
     async function initSmu() {
