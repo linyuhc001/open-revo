@@ -20,6 +20,8 @@ out/
 node_modules/
 target/
 src-tauri/target/
+**/[Oo]bj/
+**/[Bb]in/Debug/
 
 # Local env & logs
 .env
@@ -33,6 +35,7 @@ src-tauri/target/
 *.swp
 *.pdb
 *.exe
+!plugins_sample/**/*.exe
 *.7z
 *.zip
 *.reg
@@ -54,3 +57,9 @@ safe_*.ps1
 run_*.bat
 check_vault_leaks.ps1
 scripts/
+AGENTS.md
+agents.md
+docs/**/*踩坑*.md
+docs/slint移植踩坑报告.md
+plugins_sample/webview2/*/sidecar/target/
+plugins_sample/webview2/process-manager/sidecar/*.exe

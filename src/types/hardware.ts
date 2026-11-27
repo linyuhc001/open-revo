@@ -43,9 +43,13 @@ export interface HardwareState {
   board_name?: string;       // e.g. "XINGYAO Series-P916F-STX" or "GM6IX9B"
   power_presets?: FactoryPowerPresets; // Real hardware factory power limits from motherboard EC
   is_dc_online?: boolean;    // true if connected to round-socket DC adapter (required for Turbo & Custom)
+  battery_level?: number;    // Real-time battery charge percentage (0-100)
+  is_charging?: boolean;     // true if battery is currently charging
+  is_ac_online?: boolean;    // true if external AC power connected
   cpu_power_w?: number;      // CPU package real-time power (W)
   gpu_power_w?: number;      // GPU real-time power draw (W)
   gpu_tuning_caps?: GpuTuningCapabilities; // Multi-generation GPU tuning & DB/cTGP capabilities
+  balanced_gpu_dynamic_boost?: boolean; // Whether Dynamic Boost is enabled in balanced mode
 }
 
 export interface GpuTuningCapabilities {
@@ -82,6 +86,11 @@ export interface AppConfig {
   gpu_offset_step?: number;
   gpu_core_offset_max?: number;
   gpu_mem_offset_max?: number;
+  gpu_oc_core_mhz?: number;
+  gpu_oc_mem_mhz?: number;
+  balanced_gpu_dynamic_boost?: boolean;
+  turbo_silent?: boolean;
+  turbo_oc_enabled?: boolean;
   cpu_temp_target_min?: number;
   cpu_temp_target_max?: number;
   cpu_tjmax?: number;

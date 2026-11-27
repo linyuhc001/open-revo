@@ -1,4 +1,5 @@
-use parking_lot::Mutex;
+#![recursion_limit = "256"]
+
 use std::sync::Arc;
 use tauri::Manager;
 
@@ -9,8 +10,9 @@ pub mod system;
 pub mod updater;
 
 pub use openrevo_core;
+pub use openrevo_core::{log_debug, log_error, log_info, log_warn};
 
-use crate::driver::ec_bridge::{EcBridge, SharedEcBridge};
+use crate::driver::ec_bridge::SharedEcBridge;
 use crate::driver::gpu_bridge::SharedGpuBridge;
 
 // Re-export common tray, window, and logger utilities for 100% backward compatibility
@@ -34,42 +36,478 @@ impl TauriEventSink {
 impl openrevo_core::CoreEventSink for TauriEventSink {
     fn emit(&self, event: &str, payload: serde_json::Value) {
         use tauri::Emitter;
-        let _ = self.app.emit(event, payload);
+        let _ = self.app.emit(event, payload.clone());
+        crate::system::native_wry::broadcast_event(event, &payload);
+
+        match event {
+            "fan-boost-changed" => {
+                if let Some(enabled) = payload.as_bool() {
+                    crate::update_tray_fan_boost(enabled);
+                    crate::system::slint_window::send_slint_ipc_message(serde_json::json!({
+                        "action": "sync_state",
+                        "fan_boost": enabled
+                    }));
+                }
+            }
+            "power-mode-changed" => {
+                let mode = payload.get("mode").and_then(|m| m.as_u64()).or_else(|| payload.as_u64());
+                if let Some(m) = mode {
+                    crate::update_tray_power_mode(m as u8);
+                }
+            }
+            "win-lock-state-changed" => {
+                let locked = payload.as_bool().unwrap_or(false);
+                crate::system::osd_window::show_key_lock_toast("win", locked);
+            }
+            "fn-lock-state-changed" => {
+                let locked = payload.as_bool().unwrap_or(false);
+                crate::system::osd_window::show_key_lock_toast("fn", locked);
+            }
+            "touchpad-state-changed" => {
+                let enabled = payload.as_bool().unwrap_or(true);
+                crate::system::osd_window::show_key_lock_toast("touchpad", !enabled);
+                crate::system::slint_window::send_slint_ipc_message(serde_json::json!({
+                    "action": "sync_state",
+                    "touchpad_locked": !enabled
+                }));
+            }
+            _ => {}
+        }
     }
 
     fn on_osd_notify(&self, feature: &str, value: &str) {
-        crate::system::osd_window::wake_osd_if_enabled(&self.app);
+        crate::log_info!("OSD", "on_osd_notify received: feature={}, value={}", feature, value);
         use tauri::Emitter;
         let payload = serde_json::json!({
             "feature": feature,
             "value": value
         });
-        let _ = self.app.emit("osd-notify", payload);
+        let _ = self.app.emit("osd-notify", payload.clone());
+        crate::system::native_wry::broadcast_event("osd-notify", &payload);
     }
 
     fn on_power_mode_changed(&self, mode: u8) {
+        crate::log_info!("OSD", "on_power_mode_changed: mode={}", mode);
         crate::update_tray_power_mode(mode);
-        crate::system::osd_window::wake_osd_if_enabled(&self.app);
+        crate::system::osd_window::show_power_mode(mode);
+        crate::system::slint_window::send_slint_ipc_message(serde_json::json!({
+            "action": "sync_state",
+            "power_mode": mode
+        }));
         use tauri::Emitter;
         let _ = self.app.emit("physical-mode-switched", mode);
         let _ = self.app.emit_to("main", "physical-mode-switched", mode);
-        let _ = self.app.emit_to("osd", "physical-mode-switched", mode);
+        crate::system::native_wry::broadcast_event("power-mode-changed", &serde_json::json!({ "mode": mode }));
+        crate::system::native_wry::broadcast_event("physical-mode-switched", &serde_json::json!(mode));
+        crate::system::watcher_hub::notify_power_event("mode_switched");
     }
 
     fn on_fan_boost_changed(&self, enabled: bool) {
+        crate::log_info!("OSD", "on_fan_boost_changed: enabled={}", enabled);
         crate::update_tray_fan_boost(enabled);
-        crate::system::osd_window::wake_osd_if_enabled(&self.app);
+        crate::system::osd_window::show_fan_boost(enabled);
+        crate::system::slint_window::send_slint_ipc_message(serde_json::json!({
+            "action": "sync_state",
+            "fan_boost": enabled
+        }));
         use tauri::Emitter;
         let _ = self.app.emit("fan-boost-changed", enabled);
         let _ = self.app.emit_to("main", "fan-boost-changed", enabled);
-        let _ = self.app.emit_to("osd", "fan-boost-changed", enabled);
         let _ = self.app.emit("physical-fan-boost-switched", enabled);
         let _ = self.app.emit_to("main", "physical-fan-boost-switched", enabled);
-        let _ = self.app.emit_to("osd", "physical-fan-boost-switched", enabled);
+        crate::system::native_wry::broadcast_event("fan-boost-changed", &serde_json::json!(enabled));
+        crate::system::native_wry::broadcast_event("physical-fan-boost-switched", &serde_json::json!(enabled));
+    }
+}
+
+struct SlintDaemonEventSink;
+
+impl openrevo_core::CoreEventSink for SlintDaemonEventSink {
+    fn emit(&self, event: &str, payload: serde_json::Value) {
+        crate::system::native_wry::broadcast_event(event, &payload);
+        match event {
+            "fan-boost-changed" => {
+                if let Some(enabled) = payload.as_bool() {
+                    crate::update_tray_fan_boost(enabled);
+                    crate::system::slint_window::send_slint_ipc_message(serde_json::json!({
+                        "action": "sync_state",
+                        "fan_boost": enabled
+                    }));
+                }
+            }
+            "power-mode-changed" => {
+                let mode = payload.get("mode").and_then(|m| m.as_u64()).or_else(|| payload.as_u64());
+                if let Some(m) = mode {
+                    crate::update_tray_power_mode(m as u8);
+                }
+            }
+            "win-lock-state-changed" => {
+                let locked = payload.as_bool().unwrap_or(false);
+                crate::system::osd_window::show_key_lock_toast("win", locked);
+            }
+            "fn-lock-state-changed" => {
+                let locked = payload.as_bool().unwrap_or(false);
+                crate::system::osd_window::show_key_lock_toast("fn", locked);
+            }
+            "touchpad-state-changed" => {
+                let enabled = payload.as_bool().unwrap_or(true);
+                crate::system::osd_window::show_key_lock_toast("touchpad", !enabled);
+                crate::system::slint_window::send_slint_ipc_message(serde_json::json!({
+                    "action": "sync_state",
+                    "touchpad_locked": !enabled
+                }));
+            }
+            _ => {}
+        }
+    }
+
+    fn on_osd_notify(&self, feature: &str, value: &str) {
+        crate::log_info!("OSD", "on_osd_notify (daemon): feature={}, value={}", feature, value);
+        crate::system::native_wry::broadcast_event("osd-notify", &serde_json::json!({ "feature": feature, "value": value }));
+    }
+
+    fn on_power_mode_changed(&self, mode: u8) {
+        crate::log_info!("OSD", "on_power_mode_changed (daemon): mode={}", mode);
+        crate::system::osd_window::show_power_mode(mode);
+        crate::system::slint_window::send_slint_ipc_message(serde_json::json!({
+            "action": "sync_state",
+            "power_mode": mode
+        }));
+        crate::system::native_wry::broadcast_event("power-mode-changed", &serde_json::json!({ "mode": mode }));
+        crate::system::native_wry::broadcast_event("physical-mode-switched", &serde_json::json!(mode));
+        crate::system::watcher_hub::notify_power_event("mode_switched");
+    }
+
+    fn on_fan_boost_changed(&self, enabled: bool) {
+        crate::log_info!("OSD", "on_fan_boost_changed (daemon): enabled={}", enabled);
+        crate::system::osd_window::show_fan_boost(enabled);
+        crate::system::slint_window::send_slint_ipc_message(serde_json::json!({
+            "action": "sync_state",
+            "fan_boost": enabled
+        }));
+        crate::system::native_wry::broadcast_event("fan-boost-changed", &serde_json::json!(enabled));
+        crate::system::native_wry::broadcast_event("physical-fan-boost-switched", &serde_json::json!(enabled));
+    }
+}
+
+fn wait_for_relaunch_parent_exit() {
+    for arg in std::env::args().skip(1) {
+        if let Some(pid_str) = arg.strip_prefix("--relaunch-wait=") {
+            if let Ok(pid) = pid_str.parse::<u32>() {
+                #[cfg(windows)]
+                unsafe {
+                    use windows::Win32::Foundation::CloseHandle;
+                    use windows::Win32::System::Threading::{
+                        OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+                    };
+                    if let Ok(handle) = OpenProcess(PROCESS_SYNCHRONIZE, false, pid) {
+                        if !handle.is_invalid() {
+                            let _ = WaitForSingleObject(handle, 5000);
+                            let _ = CloseHandle(handle);
+                        }
+                    }
+                }
+            }
+            break;
+        }
     }
 }
 
 pub fn run() {
+    wait_for_relaunch_parent_exit();
+    std::env::set_var("WEBVIEW2_DEFAULT_BACKGROUND_COLOR", "0");
+    let cfg = crate::system::config::load_config();
+    if cfg.use_classic_webview {
+        run_tauri_runtime();
+    } else {
+        run_slint_pure_daemon();
+    }
+}
+
+fn core_pid_file_path() -> std::path::PathBuf {
+    let base = std::env::var_os("LOCALAPPDATA")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    base.join("OpenRevo").join("core.pid")
+}
+
+pub fn write_core_pid_file() {
+    let path = core_pid_file_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(path, std::process::id().to_string());
+}
+
+pub fn remove_core_pid_file() {
+    let path = core_pid_file_path();
+    if let Ok(content) = std::fs::read_to_string(&path) {
+        if content.trim().parse::<u32>().ok() == Some(std::process::id()) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+#[cfg(windows)]
+unsafe fn try_wake_existing_core() -> bool {
+    use windows::core::w;
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        AllowSetForegroundWindow, FindWindowW, SendMessageTimeoutW, ASFW_ANY, SMTO_ABORTIFHUNG,
+        SMTO_BLOCK,
+    };
+
+    let _ = AllowSetForegroundWindow(ASFW_ANY);
+
+    for attempt in 0..6 {
+        if let Ok(hwnd) = FindWindowW(w!("OpenRevo_Tray_WndClass"), None) {
+            if !hwnd.0.is_null() {
+                let mut res: usize = 0;
+                let ok = SendMessageTimeoutW(
+                    hwnd,
+                    crate::system::win32_tray::WM_TRAY_WAKE_INSTANCE,
+                    WPARAM(0),
+                    LPARAM(0),
+                    SMTO_ABORTIFHUNG | SMTO_BLOCK,
+                    1500,
+                    Some(&mut res),
+                );
+                if ok.0 != 0 {
+                    return true;
+                }
+                crate::log_warn!("SINGLE_INST", "Existing tray window did not respond to SendMessageTimeoutW.");
+                return false;
+            }
+        }
+        if attempt < 5 {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+    }
+    false
+}
+
+#[cfg(windows)]
+unsafe fn terminate_hung_core_by_pid() -> bool {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject,
+        PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+        PROCESS_TERMINATE,
+    };
+
+    let Ok(pid_str) = std::fs::read_to_string(core_pid_file_path()) else {
+        return false;
+    };
+    let Ok(pid) = pid_str.trim().parse::<u32>() else {
+        return false;
+    };
+    if pid == 0 || pid == std::process::id() {
+        return false;
+    }
+
+    let Ok(handle) = OpenProcess(
+        PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | PROCESS_SYNCHRONIZE,
+        false,
+        pid,
+    ) else {
+        crate::log_warn!("SINGLE_INST", "Cannot open hung Core PID {} (possibly elevated).", pid);
+        return false;
+    };
+    if handle.is_invalid() {
+        return false;
+    }
+
+    let mut exe_buf = [0u16; 1024];
+    let mut len = exe_buf.len() as u32;
+    let is_same_exe = QueryFullProcessImageNameW(
+        handle,
+        PROCESS_NAME_WIN32,
+        windows::core::PWSTR(exe_buf.as_mut_ptr()),
+        &mut len,
+    )
+    .is_ok()
+        && std::env::current_exe().ok().map_or(false, |cur| {
+            let target = String::from_utf16_lossy(&exe_buf[..len as usize]);
+            std::path::Path::new(&target)
+                .file_name()
+                .map_or(false, |name| Some(name) == cur.file_name())
+        });
+
+    let terminated = if is_same_exe {
+        crate::log_warn!("SINGLE_INST", "Terminating hung Core PID {} for clean recovery...", pid);
+        let ok = TerminateProcess(handle, 1).is_ok();
+        if ok {
+            let _ = WaitForSingleObject(handle, 3000);
+        }
+        ok
+    } else {
+        false
+    };
+
+    let _ = CloseHandle(handle);
+    terminated
+}
+
+#[cfg(windows)]
+unsafe fn acquire_single_instance_or_recover() -> Option<windows::Win32::Foundation::HANDLE> {
+    use windows::core::w;
+    use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS};
+    use windows::Win32::System::Threading::CreateMutexW;
+
+    let mutex_name = w!("Local\\OpenRevo_Core_SingleInstance_Mutex");
+
+    for attempt in 0..2 {
+        match CreateMutexW(None, true, mutex_name) {
+            Ok(handle) => {
+                if GetLastError() == ERROR_ALREADY_EXISTS {
+                    let _ = CloseHandle(handle);
+                } else {
+                    write_core_pid_file();
+                    return Some(handle);
+                }
+            }
+            Err(err) => {
+                let code = err.code();
+                if code != ERROR_ACCESS_DENIED.into() && code != ERROR_ALREADY_EXISTS.into() {
+                    crate::log_warn!("SINGLE_INST", "CreateMutexW unexpected error: {:?}", err);
+                    return None;
+                }
+            }
+        }
+
+        crate::log_info!("SINGLE_INST", "Another instance detected. Attempting wake & liveness probe...");
+        if try_wake_existing_core() {
+            crate::log_info!("SINGLE_INST", "Existing Core responded and woke UI. Exiting duplicate instance.");
+            return None;
+        }
+
+        if attempt == 0 && terminate_hung_core_by_pid() {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            continue;
+        }
+
+        crate::log_warn!("SINGLE_INST", "Existing Core did not respond and could not be recovered. Exiting duplicate instance.");
+        return None;
+    }
+
+    None
+}
+
+fn run_slint_pure_daemon() {
+    // 0. Ensure Host process is Per-Monitor DPI Aware V2 so Win32 coordinate queries (GetClientRect) match Slint physical resolution
+    #[cfg(target_os = "windows")]
+    unsafe {
+        #[link(name = "user32")]
+        extern "system" {
+            fn SetProcessDpiAwarenessContext(value: isize) -> i32;
+        }
+        const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: isize = -4;
+        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    }
+
+    // 0. Single Instance Lock (Native Win32 Mutex + Liveness Probe + Hung Core Recovery)
+    #[cfg(windows)]
+    let _single_instance_mutex = unsafe {
+        match acquire_single_instance_or_recover() {
+            Some(handle) => handle,
+            None => return,
+        }
+    };
+
+    // 1. Install unconditional emergency panic hook immediately on process startup
+    crate::system::logger::install_panic_hook();
+    crate::system::boot_trace::init_boot_trace();
+    crate::system::boot_trace::boot_log("BOOT_START", "OpenRevo Slint Pure Daemon engine starting up (0MB WebView2/Tao runtime)...");
+    crate::system::logger::init_from_cli();
+
+    // 2. Hardware Capability Snapshot Cache Warmup
+    std::thread::spawn(|| {
+        if crate::hal::platform_probe::is_ultrabook() {
+            return;
+        }
+        let _ = crate::system::hardware_probe::get_hardware_snapshot_cached();
+        let _ = crate::driver::gpu_bridge::query_nvidia_power_limits_static();
+        let _ = crate::system::power_mode::refresh_factory_power_presets(true);
+    });
+
+    // 3. ACPI Kernel Driver check
+    if !crate::hal::platform_probe::needs_acpi_kernel_driver() {
+        crate::system::boot_trace::boot_log("DRIVER_OK", "Platform uses native WMI/driverless mailbox channel.");
+    } else {
+        let _ = crate::system::service_mgr::ensure_acpi_driver_ready();
+    }
+
+    // 4. Initialize Hardware Bridges
+    let ec_instance = crate::driver::ec_bridge::get_global_ec();
+    let gpu_instance = crate::driver::gpu_bridge::get_global_gpu();
+    let _lighting_instance = crate::driver::ite_lighting::get_global_lighting();
+
+    let ec_for_tray = Arc::clone(&ec_instance);
+    let ec_for_restore = Arc::clone(&ec_instance);
+    let ec_for_wmi = Arc::clone(&ec_instance);
+    let ec_for_watcher = Arc::clone(&ec_instance);
+    let ec_for_power_listener = Arc::clone(&ec_instance);
+    let ec_for_telemetry = Arc::clone(&ec_instance);
+    let gpu_for_telemetry = Arc::clone(&gpu_instance);
+
+    // 5. Global Event Sink
+    openrevo_core::set_global_event_sink(Arc::new(SlintDaemonEventSink));
+
+    // 6. Keyboard Hooks (Win Lock, Caps/Num Lock OSD)
+    crate::system::hooks::init_hooks(None);
+
+    // 7. Power Listener (Sleep, Resume, Lid Close)
+    crate::system::power_listener::init_power_event_watcher(ec_for_power_listener);
+
+    // 8. WMI Physical ACPI Key Listener (Q-Key, Fn+1)
+    if !crate::hal::platform_probe::is_ultrabook() && crate::hal::platform_probe::has_acpi_physical_key_events() {
+        crate::driver::wmi_event_listener::start_wmi_event_listener(ec_for_wmi);
+    }
+
+    // 9. Touchpad Hardware Listener
+    crate::system::device_switches::start_touchpad_listener();
+
+    // 10. Hardware State Watcher (Bluetooth, Wi-Fi, Camera)
+    crate::system::device_switches::start_hardware_state_watcher(None, ec_for_watcher);
+
+    // 11. Display Tuning & Color Calibration
+    crate::system::display_tuning::init_display_tuning();
+    crate::system::color_calibration::init_color_calibration();
+
+    // 12. Hardware State Restore
+    crate::system::power::spawn_hardware_state_restore(ec_for_restore);
+
+    // 13. Telemetry Loop
+    crate::system::telemetry::start_telemetry_loop(None, ec_for_telemetry, gpu_for_telemetry);
+
+    // 14. Watcher Hub & Enabled Plugins Bootstrap
+    crate::system::watcher_hub::ensure_background_watcher_started();
+    crate::commands::system_cmd::bootstrap_enabled_plugins();
+
+    // 15. Autostart Alignment
+    crate::system::autostart::sync_autostart_target_path();
+
+    // 16. Check Launch Visibility
+    let args: Vec<String> = std::env::args().collect();
+    let cli_visible = args.iter().any(|a| a == "--visible" || a == "--show");
+    let cfg = crate::system::config::load_config();
+    if cli_visible || cfg.launch_visible {
+        crate::system::slint_window::show_slint_window();
+    } else {
+        crate::log_info!("BOOT", "Zero-footprint standby: Slint main companion will spawn on demand upon tray click.");
+    }
+
+    // Asynchronously trim cold working set memory after startup stabilization
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_millis(2500));
+        crate::system::process::trim_process_working_set();
+    });
+
+    // 16. Enter Pure Win32 Tray Loop (blocks main thread until exit)
+    crate::system::win32_tray::run_tray_loop(ec_for_tray);
+}
+
+pub fn run_tauri_runtime() {
     // 0. Disable WebView2 background throttling & renderer suspension for HUD overlay and widgets
     #[cfg(windows)]
     {
@@ -119,7 +557,7 @@ pub fn run() {
 
     // Step 2: Initialize EC driver bridge
     let ec_instance: SharedEcBridge = crate::system::boot_trace::boot_scope("Step 2: EcBridge Auto-load", || {
-        Arc::new(Mutex::new(EcBridge::auto_load()))
+        crate::driver::ec_bridge::get_global_ec()
     });
 
     // Step 3: Initialize GPU telemetry bridge
@@ -150,8 +588,13 @@ pub fn run() {
     let single_instance_plugin = crate::system::boot_trace::boot_scope("Step 5: SingleInstance Plugin", || {
         tauri_plugin_single_instance::init(|app, argv, _cwd| {
             crate::system::boot_trace::boot_log("SINGLE_INST", &format!("Another instance attempted launch with args: {:?}", argv));
-            if let Some(window) = crate::system::window::ensure_window_alive(app) {
-                crate::system::window::restore_and_sync_window(&window);
+            let cfg = crate::system::config::load_config();
+            if cfg.use_classic_webview {
+                if let Some(window) = crate::system::window::ensure_window_alive(app) {
+                    crate::system::window::restore_and_sync_window(&window);
+                }
+            } else {
+                crate::system::slint_window::show_slint_window();
             }
         })
     });
@@ -169,6 +612,7 @@ pub fn run() {
             commands::hardware_cmd::set_fan_boost,
             commands::hardware_cmd::set_battery_limit,
             commands::hardware_cmd::switch_refresh_rate,
+            commands::hardware_cmd::toggle_screen_flip,
             commands::hardware_cmd::get_display_monitors,
             commands::hardware_cmd::set_display_monitor_refresh_rate,
             commands::hardware_cmd::set_auto_min_refresh_on_battery,
@@ -232,6 +676,11 @@ pub fn run() {
             commands::hardware_cmd::set_keyboard_sleep_timeout,
             commands::hardware_cmd::get_app_config,
             commands::hardware_cmd::save_app_config,
+            commands::hardware_cmd::get_classic_webview,
+            commands::hardware_cmd::set_classic_webview,
+            commands::system_cmd::get_update_channel,
+            commands::system_cmd::set_update_channel,
+            commands::hardware_cmd::restart_app,
             commands::hardware_cmd::get_device_switches,
             commands::hardware_cmd::set_device_switch,
             commands::hardware_cmd::get_gpu_mode_info,
@@ -253,6 +702,7 @@ pub fn run() {
             commands::hardware_cmd::reset_custom_profile_to_defaults,
             commands::hardware_cmd::apply_custom_profile,
             commands::hardware_cmd::apply_fan_curve_live,
+            commands::hardware_cmd::apply_fan_curve_linked,
             commands::hardware_cmd::toggle_fan_isolated_output,
             commands::hardware_cmd::toggle_fan_ramp_rate,
             commands::hardware_cmd::toggle_fan_curve_control,
@@ -310,6 +760,12 @@ pub fn run() {
             commands::hardware_cmd::set_plugin_enabled_unified,
             commands::hardware_cmd::uninstall_plugin,
             commands::hardware_cmd::install_plugin_from_url,
+            commands::system_cmd::plugin_log,
+            commands::system_cmd::register_telemetry_consumer,
+            commands::system_cmd::unregister_telemetry_consumer,
+            commands::system_cmd::emit_plugin_broadcast,
+            commands::system_cmd::set_plugin_watchers,
+            commands::system_cmd::get_plugin_watchers,
             commands::system_cmd::load_plugin_theme_css,
             commands::system_cmd::set_active_skin,
             commands::system_cmd::get_active_skin,
@@ -339,6 +795,8 @@ pub fn run() {
             commands::hardware_cmd::set_color_calibration_enabled,
             commands::hardware_cmd::import_custom_color_profile,
             commands::hardware_cmd::delete_custom_color_profile,
+            commands::hardware_cmd::get_cloud_icc_identity,
+            commands::hardware_cmd::fetch_cloud_icc_profile,
             commands::hardware_cmd::export_device_diagnostic_report,
             commands::hardware_cmd::apply_gpu_tuning_state,
             commands::hardware_cmd::get_gpu_power_state_truth,
@@ -350,6 +808,7 @@ pub fn run() {
             crate::system::widget_manager::get_running_widgets,
             crate::system::widget_manager::widget_ready,
             commands::shortcut_cmd::get_registered_shortcuts,
+            commands::shortcut_cmd::check_hotkey_conflict,
             commands::shortcut_cmd::register_custom_shortcut,
             commands::shortcut_cmd::unregister_custom_shortcut,
             commands::shortcut_cmd::trigger_shortcut_action,
@@ -361,30 +820,70 @@ pub fn run() {
             commands::watcher_cmd::register_custom_watcher,
             commands::watcher_cmd::unregister_custom_watcher,
             commands::watcher_cmd::trigger_watcher_manual,
+            commands::plugin_storage_cmd::get_plugin_storage,
+            commands::plugin_storage_cmd::set_plugin_storage,
+            commands::plugin_storage_cmd::read_plugin_file,
+            commands::plugin_storage_cmd::write_plugin_file,
+            commands::plugin_storage_cmd::delete_plugin_file,
+            commands::plugin_storage_cmd::list_plugin_files,
+            commands::ai_cmd::ai_get_config,
+            commands::ai_cmd::ai_save_config,
+            commands::ai_cmd::ai_fetch_models,
+            commands::ai_cmd::ai_chat_send,
+            commands::ai_cmd::ai_get_system_skills,
+            commands::tuning_cmd::get_gpu_tuning_info,
+            commands::tuning_cmd::set_gpu_clock_offsets,
+            commands::tuning_cmd::set_gpu_vf_curve_deltas,
+            commands::tuning_cmd::set_gpu_undervolt_curve,
+            commands::tuning_cmd::reset_gpu_vf_curve,
+            commands::tuning_cmd::reset_gpu_tuning,
+            commands::power_cmd::get_turbo_submode_state,
+            commands::power_cmd::set_turbo_submode,
+            commands::power_cmd::apply_turbo_profile,
+            commands::power_cmd::set_turbo_oc_enabled,
+            commands::tuning_cmd::apply_gpu_oc,
+            commands::tuning_cmd::get_gpu_oc_state,
         ])
         .setup(move |app| {
             openrevo_core::set_global_event_sink(Arc::new(TauriEventSink::new(app.handle().clone())));
             crate::system::boot_trace::boot_log("SETUP", "Tauri setup closure entered");
-            crate::system::actuator::UnifiedPowerActuator::global().bind_app_handle(app.handle().clone());
             crate::system::webview_orchestrator::WebviewOrchestrator::global().bind_app_handle(app.handle().clone());
 
             // Step 6.1: Initialize main WebviewWindow (positioning above taskbar)
             crate::system::boot_trace::boot_scope("Step 6.1: Main Window Positioning", || {
-                if let Some(window) = app.get_webview_window("main") {
-                    crate::system::window::init_main_window(&window);
+                let cfg = crate::system::config::load_config();
+                if cfg.use_classic_webview {
+                    if let Some(window) = app.get_webview_window("main").or_else(|| crate::system::window::create_main_webview_window(&app.handle())) {
+                        crate::system::window::init_main_window(&window);
+                    }
                 } else {
-                    crate::log_error!("WINDOW", "CRITICAL: 'main' WebviewWindow was NOT created by Tauri during setup!");
+                    crate::log_info!("WINDOW", "Slint native UI mode active; zero background WebView2 windows spawned on boot.");
                 }
             });
 
             // Step 6.2: Initialize permanent keyboard hook (Caps Lock, Num Lock, Scroll Lock, Win Lock)
             crate::system::boot_trace::boot_scope("Step 6.2: Keyboard Hooks", || {
-                crate::system::hooks::init_hooks(&app.handle());
+                crate::system::hooks::init_hooks(Some(&app.handle()));
             });
 
             // Step 6.3: Enqueue OSD overlay window into WebviewOrchestrator (active only after main window confirms ready)
             crate::system::boot_trace::boot_scope("Step 6.3: OSD Orchestrator Enqueue", || {
                 crate::system::osd_window::init_osd_window(&app.handle());
+            });
+
+            // Step 6.3b: Initialize Slint native main companion if enabled
+            crate::system::boot_trace::boot_scope("Step 6.3b: Slint Main Companion", || {
+                if let Ok(mut g) = crate::system::slint_window::SLINT_APP_HANDLE.lock() {
+                    *g = Some(app.handle().clone());
+                }
+                let args: Vec<String> = std::env::args().collect();
+                let cli_visible = args.iter().any(|a| a == "--visible" || a == "--show");
+                let cfg = crate::system::config::load_config();
+                if !cfg.use_classic_webview && (cli_visible || cfg.launch_visible) {
+                    crate::system::slint_window::show_slint_window();
+                } else {
+                    crate::log_info!("BOOT", "Zero-footprint standby: Slint main companion will spawn on demand upon tray click.");
+                }
             });
 
             // Step 6.4: Start dedicated Windows power event watcher (Sleep, Hibernate, Lid Close, Shutdown)
@@ -398,17 +897,17 @@ pub fn run() {
                     crate::system::boot_trace::boot_log("LISTENER_BYPASS", "Ultrabook detected: AcpiTest_EventULong companion listener bypassed.");
                     return;
                 }
-                crate::driver::wmi_event_listener::start_wmi_event_listener(app.handle().clone(), ec_for_wmi);
+                crate::driver::wmi_event_listener::start_wmi_event_listener(ec_for_wmi);
             });
 
             // Step 6.6: Start dedicated Precision Touchpad registry listener for hardware Fn+F5 sync
             crate::system::boot_trace::boot_scope("Step 6.6: Touchpad Listener", || {
-                crate::system::device_switches::start_touchpad_listener(app.handle().clone());
+                crate::system::device_switches::start_touchpad_listener();
             });
 
             // Step 6.7: Start dedicated background watcher for external Bluetooth, Wi-Fi, and Camera state changes
             crate::system::boot_trace::boot_scope("Step 6.7: Hardware State Watcher", || {
-                crate::system::device_switches::start_hardware_state_watcher(app.handle().clone(), ec_for_watcher);
+                crate::system::device_switches::start_hardware_state_watcher(Some(app.handle().clone()), ec_for_watcher);
             });
 
             // Step 6.8: Initialize display tuning engine
@@ -427,7 +926,7 @@ pub fn run() {
             // Step 6.11: Start adaptive dynamic telemetry heartbeat broadcaster
             crate::system::boot_trace::boot_scope("Step 6.11: Telemetry Heartbeat", || {
                 crate::system::telemetry::start_telemetry_loop(
-                    app.handle().clone(),
+                    Some(app.handle().clone()),
                     ec_for_telemetry,
                     gpu_for_telemetry,
                 );
@@ -435,7 +934,7 @@ pub fn run() {
 
             // Step 6.12: Enqueue enabled widget windows into WebviewOrchestrator for safe serial startup
             crate::system::boot_trace::boot_scope("Step 6.12: Widgets Orchestrator Enqueue", || {
-                crate::system::widget_manager::restore_active_widgets_on_boot(&app.handle());
+                crate::system::widget_manager::restore_active_widgets_on_boot(Some(&app.handle()));
             });
 
             // Step 6.13: Verify & auto-heal autostart scheduled task to align with current executable
@@ -446,7 +945,9 @@ pub fn run() {
             // Step 6.14: Initialize Universal Watcher Hub and auto-load plugin watchers
             crate::system::boot_trace::boot_scope("Step 6.14: Watcher Hub Initialization", || {
                 crate::system::watcher_hub::init_watcher_hub(app.handle().clone());
-                let _ = crate::commands::system_cmd::get_custom_plugins();
+                crate::system::broadcast::bind_broadcast_app(app.handle().clone());
+                crate::commands::system_cmd::bootstrap_enabled_plugins();
+                crate::system::watcher_hub::trigger_startup_watchers();
             });
 
             crate::system::boot_trace::boot_log("TRAY", "System tray mounted and listeners active");
@@ -457,12 +958,21 @@ pub fn run() {
         .on_window_event(crate::system::window::handle_window_event)
         .build(tauri::generate_context!())
         .expect("error while building OpenRevo application")
-        .run(|_app_handle, event| {
-            if let tauri::RunEvent::Exit = event {
+        .run(|_app_handle, event| match event {
+            tauri::RunEvent::ExitRequested { api, .. } => {
+                if !crate::system::tray::IS_EXPLICIT_EXIT.load(std::sync::atomic::Ordering::SeqCst) {
+                    // Prevent app from quitting when no webview windows exist (system tray background daemon)
+                    api.prevent_exit();
+                }
+            }
+            tauri::RunEvent::Exit => {
                 println!("[OpenRevo] Process exiting. Executing clean webview shutdown and hardware safety shutdown...");
+                crate::system::native_wry::shutdown_all();
                 crate::system::webview_orchestrator::WebviewOrchestrator::global().safe_shutdown_all_subviews();
                 crate::system::tray::safe_hardware_shutdown_on_exit();
                 crate::system::plugin_service::shutdown_all_plugin_services();
+                std::process::exit(0);
             }
+            _ => {}
         });
 }

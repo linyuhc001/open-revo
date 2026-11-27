@@ -1,0 +1,1170 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Revo Xray</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface-card: #1a212b;
+    --border-subtle: #2a313c;
+    --text-primary: #e6edf3;
+    --text-dim: #7d8590;
+    --accent: #58a6ff;
+    --status-ok: #3fb950;
+    --status-warn: #d29922;
+    --status-err: #f85149;
+    --radius-md: 10px;
+    --radius-sm: 6px;
+    --mono: ui-monospace, SFMono-Regular, Consolas, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text-primary);
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-size: 13px;
+    padding: 14px 16px;
+    overflow-y: auto;
+  }
+  .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .header h1 { font-size: 16px; font-weight: 600; letter-spacing: 0.5px; }
+  .svc { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--text-dim); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--status-err); flex: none; }
+  .dot.ok { background: var(--status-ok); box-shadow: 0 0 6px var(--status-ok); }
+  .dot.warn { background: var(--status-warn); }
+  .nav { display: flex; gap: 6px; margin-bottom: 14px; }
+  .nav button {
+    background: var(--surface); border: 1px solid var(--border-subtle); color: var(--text-dim);
+    font: inherit; font-size: 13px; padding: 7px 18px; cursor: pointer;
+    border-radius: 8px; transition: background 0.15s, color 0.15s, border-color 0.15s;
+  }
+  .nav button:hover { color: var(--text-primary); border-color: #3d4653; background: #1c232e; }
+  .nav button.active {
+    background: #1f6feb33; border-color: #388bfd66; color: var(--accent);
+    font-weight: 600; box-shadow: inset 0 0 0 1px #388bfd22;
+  }
+  .page { display: none; }
+  .page.active { display: block; }
+  .card {
+    background: var(--surface-card); border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md); padding: 12px 14px; margin-bottom: 12px;
+  }
+  .card h2 { font-size: 13px; font-weight: 600; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+  .card h2 .hint { font-weight: 400; font-size: 11px; color: var(--text-dim); }
+  .tag {
+    font-size: 10px; padding: 2px 8px; border-radius: 10px;
+    background: #1f6feb33; color: var(--accent); border: 1px solid #388bfd44;
+  }
+  .tag.ok { background: #23863633; color: var(--status-ok); border-color: #3fb95044; }
+  .tag.warn { background: #bb800933; color: var(--status-warn); border-color: #d2992244; }
+  .btn {
+    background: var(--surface); border: 1px solid var(--border-subtle); color: var(--text-primary);
+    border-radius: var(--radius-sm); padding: 5px 10px; font: inherit; font-size: 12px; cursor: pointer;
+    user-select: none;
+  }
+  .btn:hover { border-color: var(--accent); }
+  .btn:active { transform: translateY(1px); }
+  .btn.primary { background: #1f6feb33; border-color: #388bfd66; }
+  .btn.danger { color: var(--status-err); border-color: #f8514955; }
+  .btn.danger:hover { background: #f8514922; }
+  .btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+  input[type="text"], textarea, select {
+    background: var(--surface); border: 1px solid var(--border-subtle); color: var(--text-primary);
+    border-radius: var(--radius-sm); padding: 6px 10px; font: inherit; font-size: 12px; outline: none;
+  }
+  input[type="text"]:focus, textarea:focus, select:focus { border-color: var(--accent); }
+  /* editable combobox: input + dropdown that lists ALL options unfiltered (v2rayN ComboBox style) */
+  .combo { position: relative; }
+  .combo .combo-btn {
+    position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+    background: none; border: none; color: var(--text-dim); font-size: 11px;
+    cursor: pointer; padding: 4px 6px; line-height: 1;
+  }
+  .combo .combo-btn:hover { color: var(--text-primary); }
+  .combo-menu {
+    display: none; position: absolute; left: 0; top: calc(100% + 3px); z-index: 50;
+    background: var(--surface-card); border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm); box-shadow: 0 8px 24px #00000066;
+    max-height: 280px; overflow-y: auto; min-width: 500px; padding: 4px 0;
+  }
+  .combo-menu.open { display: block; }
+  .combo-menu > div {
+    padding: 6px 12px; font-size: 12px; white-space: nowrap; cursor: pointer;
+    color: var(--text-primary);
+  }
+  .combo-menu > div:hover { background: var(--accent); color: #fff; }
+  textarea { width: 100%; font-family: var(--mono); resize: vertical; min-height: 70px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { padding: 6px 8px; text-align: left; border-bottom: 1px solid #21262d; white-space: nowrap; }
+  th { color: var(--text-dim); font-weight: 500; font-size: 11px; position: sticky; top: 0; background: var(--surface-card); }
+  td.wrap { white-space: normal; word-break: break-all; }
+  tr.node-row { cursor: pointer; }
+  tr.node-row:hover { background: #1c232e; }
+  tr.node-row.selected { background: #1f6feb26; }
+  tr.node-row.selected td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
+  .lat-ok { color: var(--status-ok); }
+  .lat-mid { color: var(--status-warn); }
+  .lat-bad { color: var(--status-err); }
+  .lat-dim { color: var(--text-dim); }
+  .log {
+    background: #0a0d12; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
+    font-family: var(--mono); font-size: 11px; padding: 10px; height: 320px; overflow-y: auto;
+    white-space: pre-wrap; word-break: break-all; color: #8b949e;
+  }
+  .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .empty { color: var(--text-dim); text-align: center; padding: 24px 0; font-size: 12px; }
+  .toast {
+    position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%) translateY(20px);
+    background: #1c232e; border: 1px solid var(--border-subtle); color: var(--text-primary);
+    padding: 8px 16px; border-radius: 8px; font-size: 12px; opacity: 0; pointer-events: none;
+    transition: opacity 0.2s, transform 0.2s; max-width: 70%;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .toast.err { border-color: #f8514966; color: #ffb3ad; }
+  .switch { position: relative; width: 40px; height: 20px; background: #21262d; border-radius: 10px; cursor: pointer; border: 1px solid var(--border-subtle); transition: background .15s; flex: none; }
+  .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--text-dim); transition: all .15s; }
+  .switch.on { background: #1f6feb55; border-color: #388bfd66; }
+  .switch.on::after { left: 22px; background: var(--accent); }
+  .switch:disabled { opacity: 0.5; cursor: wait; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <h1>Revo Xray</h1>
+    <div class="svc">
+      <span style="font-weight:600;">代理</span><div id="coreSwitch" class="switch" title="启动/停止 Xray 核心"></div>
+      <span style="color:#21262d">|</span>
+      <span style="font-weight:600;">系统代理</span><div id="sysProxySwitch" class="switch" title="接管/还原 Windows 系统代理（指向 HTTP 入口）"></div>
+      <span style="color:#21262d">|</span>
+      <span style="font-weight:600;">TUN</span><div id="tunSwitch" class="switch" title="TUN 模式：虚拟网卡接管全系统流量（需管理员权限，开启/关闭会重启核心）"></div>
+      <span style="color:#21262d">|</span>
+      <span id="coreDot" class="dot"></span><span id="coreText">核心未运行</span>
+      <span style="color:#21262d">|</span>
+      <span id="svcDot" class="dot"></span><span id="svcText">服务检查中</span>
+    </div>
+  </div>
+
+  <div class="nav" id="nav">
+    <button data-page="nodes" class="active">节点</button>
+    <button data-page="subs">订阅</button>
+    <button data-page="routing">路由</button>
+    <button data-page="dns">DNS</button>
+    <button data-page="core">核心</button>
+    <button data-page="settings">设置</button>
+    <button data-page="logs">日志</button>
+  </div>
+
+  <!-- ===== 节点 ===== -->
+  <div class="page active" data-page="nodes">
+    <div class="card">
+      <h2>导入节点
+        <span class="hint">支持 vless:// vmess:// trojan:// ss:// 链接（可多行），或 base64 订阅内容</span>
+      </h2>
+      <textarea id="importText" placeholder="粘贴分享链接或 base64 订阅内容…"></textarea>
+      <div class="row" style="margin-top:8px;">
+        <button class="btn primary" id="btnImport">导入</button>
+        <button class="btn" id="btnClipImport">从剪贴板导入</button>
+        <span class="hint" style="font-size:11px;color:var(--text-dim);" id="importHint"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>节点列表 <span class="tag" id="nodeCount">0</span>
+        <span class="hint">双击行 = 选中并启动 · 当前协议仅 vless / vmess / trojan / ss（xray 内核）</span>
+      </h2>
+      <div class="row" style="margin-bottom:8px;">
+        <button class="btn" id="btnTcpingAll">测全部 tcping</button>
+        <button class="btn" id="btnTestReal">测当前节点真延迟</button>
+        <button class="btn" id="btnRefresh">刷新</button>
+        <button class="btn danger" id="btnClear" style="margin-left:auto;">清空列表</button>
+      </div>
+      <div id="nodeTableWrap" style="max-height: 380px; overflow-y:auto;">
+        <table>
+          <thead><tr><th style="width:34%">名称</th><th>协议</th><th>地址</th><th>tcping</th><th>真延迟</th><th>订阅</th><th style="width:120px">操作</th></tr></thead>
+          <tbody id="nodeBody"></tbody>
+        </table>
+        <div class="empty" id="nodeEmpty">还没有节点，先在上面导入或添加订阅</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 订阅 ===== -->
+  <div class="page" data-page="subs">
+    <div class="card">
+      <h2>添加订阅 <span class="hint">支持 base64 / 明文链接列表的订阅地址</span></h2>
+      <div class="row">
+        <input type="text" id="subName" placeholder="名称（可选）" style="width:160px;" />
+        <input type="text" id="subUrl" placeholder="https://… 订阅地址" style="flex:1;" />
+        <button class="btn primary" id="btnSubAdd">添加</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>订阅列表</h2>
+      <table>
+        <thead><tr><th style="width:22%">名称</th><th class="wrap">地址</th><th>节点数</th><th>上次更新</th><th style="width:140px">操作</th></tr></thead>
+        <tbody id="subBody"></tbody>
+      </table>
+      <div class="empty" id="subEmpty">暂无订阅</div>
+    </div>
+  </div>
+
+  <!-- ===== 核心 ===== -->
+  <div class="page" data-page="core">
+    <div class="card">
+      <h2>Xray 内核 <span class="tag" id="xrayVerTag">未安装</span>
+        <span class="tag" id="geoTag">geo 未下载</span>
+      </h2>
+      <div class="row">
+        <button class="btn primary" id="btnCoreStart">启动核心</button>
+        <button class="btn" id="btnCoreStop">停止</button>
+        <button class="btn" id="btnCoreRestart">重启</button>
+        <span style="flex:1"></span>
+        <button class="btn" id="btnCoreDownload">下载 / 更新内核</button>
+        <button class="btn" id="btnGeoDownload">下载 Geo 文件</button>
+        <input type="text" id="mirrorUrl" placeholder="镜像前缀（可选，如 https://ghproxy.net）" style="width:280px;" />
+      </div>
+      <div class="row" style="margin-top:8px;">
+        <span class="hint" style="font-size:11px;color:var(--text-dim);">
+          内核来自 XTLS/Xray-core 官方 release，geo 文件来自 Loyalsoldier/v2ray-rules-dat（同 v2rayN）；
+          缺 geo 文件时仍可启动，但没有 CN 直连规则；国内网络建议填镜像前缀
+        </span>
+      </div>
+    </div>
+    <div class="card">
+      <h2>本机入口</h2>
+      <div class="row" style="font-family:var(--mono);font-size:12px;">
+        <span>SOCKS5: <b>127.0.0.1:<span id="socksPort">20808</span></b></span>
+        <span style="color:#21262d">|</span>
+        <span>HTTP: <b>127.0.0.1:<span id="httpPort">20809</span></b></span>
+        <span style="flex:1"></span>
+        <span style="font-size:11px;color:var(--text-dim);">系统代理开关只改 WinINET，指向 HTTP 入口</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 路由 ===== -->
+  <div class="page" data-page="routing">
+    <div class="card">
+      <h2>路由规则 <span class="tag" id="ruleCount">0</span>
+        <span class="hint">自上而下匹配，先命中先用 · 域名支持 geosite:cn / domain:xx.com / 纯域名 · IP 支持 geoip:cn / geoip:private / CIDR（多项逗号分隔）</span>
+      </h2>
+      <div class="row">
+        <span>域名解析策略</span>
+        <select id="routeStrategy">
+          <option value="AsIs">AsIs（只按域名匹配）</option>
+          <option value="IPIfNonMatch">IPIfNonMatch（先域名后 IP，推荐）</option>
+          <option value="IPOnDemand">IPOnDemand（IP 优先）</option>
+        </select>
+        <span style="color:#21262d">|</span>
+        <span>预定义规则集</span>
+        <button class="btn" data-preset="whitelist">绕过大陆</button>
+        <button class="btn" data-preset="blacklist">黑名单</button>
+        <button class="btn" data-preset="global">全局代理</button>
+        <span class="hint" style="font-size:11px;color:var(--text-dim);">点选填入模板，再点「保存规则」生效</span>
+      </div>
+      <div id="ruleWrap" style="max-height:400px;overflow-y:auto;">
+        <table>
+          <thead><tr><th style="width:34px">#</th><th style="width:96px">出站</th><th style="width:36%">域名</th><th style="width:24%">IP</th><th style="width:88px">端口</th><th style="width:78px">网络</th><th style="width:118px">操作</th></tr></thead>
+          <tbody id="ruleBody"></tbody>
+        </table>
+        <div class="empty" id="ruleEmpty">未自定义规则（使用默认 CN 直连规则集）</div>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <button class="btn primary" id="btnRuleSave">保存规则</button>
+        <button class="btn" id="btnRuleAdd">添加规则</button>
+        <button class="btn" id="btnRuleDefault">填入默认规则（绕过大陆）</button>
+        <button class="btn" id="btnRuleClear">清空（回落到内置绕过大陆规则集）</button>
+        <span class="hint" style="font-size:11px;color:var(--text-dim);">保存后若核心在运行会自动重启生效；缺 geo 文件时 geo 规则自动跳过</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== DNS ===== -->
+  <div class="page" data-page="dns">
+    <div class="card">
+      <h2>DNS 基础设置 <span class="hint">同 v2rayN 基础模式：DNS 始终生效（无总开关），解析全部由 xray 核心完成，插件只生成配置 · 会自动按路由规则给直连/远程域名挂对应的 DNS</span></h2>
+      <div class="row">
+        <span>并行查询</span>
+        <div id="dnsParallel" class="switch" title="对所有 DNS 服务器并发查询"></div>
+        <span style="color:#21262d">|</span>
+        <span>过时缓存</span>
+        <div id="dnsStale" class="switch" title="DNS 记录过期后继续使用旧记录"></div>
+        <span style="color:#21262d">|</span>
+        <span>阻断 AAAA</span>
+        <div id="dnsNoAAAA" class="switch" title="屏蔽 IPv6 解析（queryStrategy=UseIPv4）"></div>
+      </div>
+      <div style="margin-top:12px;display:grid;grid-template-columns:130px 1fr;gap:10px 14px;align-items:start;max-width:820px;">
+        <span style="padding-top:6px;">直连 DNS</span>
+        <div>
+          <div class="combo">
+            <input type="text" id="dnsDirect" data-combo="direct" style="width:100%;padding-right:26px;" placeholder="119.29.29.29" />
+            <button type="button" class="combo-btn">▾</button>
+            <div class="combo-menu"></div>
+          </div>
+          <div class="hint" style="font-size:11px;color:var(--text-dim);">解析国内域名，请求不走代理。多个地址用英文逗号分隔</div>
+        </div>
+        <span style="padding-top:6px;">远程 DNS</span>
+        <div>
+          <div class="combo">
+            <input type="text" id="dnsRemote" data-combo="remote" style="width:100%;padding-right:26px;" placeholder="https://cloudflare-dns.com/dns-query" />
+            <button type="button" class="combo-btn">▾</button>
+            <div class="combo-menu"></div>
+          </div>
+          <div class="hint" style="font-size:11px;color:var(--text-dim);">解析国外域名，请求通过代理出站。建议使用 DoH 或可信的远程 DNS 防污染</div>
+        </div>
+        <span style="padding-top:6px;">Bootstrap DNS</span>
+        <div>
+          <div class="combo">
+            <input type="text" id="dnsBootstrap" data-combo="boot" style="width:100%;padding-right:26px;" placeholder="119.29.29.29" />
+            <button type="button" class="combo-btn">▾</button>
+            <div class="combo-menu"></div>
+          </div>
+          <div class="hint" style="font-size:11px;color:var(--text-dim);">用于解析 DNS 服务器自身的域名（如 cloudflare-dns.com），需指定为纯 IP</div>
+        </div>
+        <span style="padding-top:6px;">直连解析策略</span>
+        <div>
+          <select id="dnsStratDirect">
+            <option value="">默认（AsIs）</option>
+            <option value="AsIs">AsIs</option>
+            <option value="UseIP">UseIP</option>
+            <option value="UseIPv4v6">UseIPv4v6</option>
+            <option value="UseIPv6v4">UseIPv6v4</option>
+            <option value="UseIPv4">UseIPv4</option>
+            <option value="UseIPv6">UseIPv6</option>
+          </select>
+          <div class="hint" style="font-size:11px;color:var(--text-dim);">直连出站（freedom）按此策略解析域名，AsIs 则原样发域名</div>
+        </div>
+        <span style="padding-top:6px;">远程解析策略</span>
+        <div>
+          <select id="dnsStratRemote">
+            <option value="">默认（AsIs）</option>
+            <option value="AsIs">AsIs</option>
+            <option value="UseIP">UseIP</option>
+            <option value="UseIPv4v6">UseIPv4v6</option>
+            <option value="UseIPv6v4">UseIPv6v4</option>
+            <option value="UseIPv4">UseIPv4</option>
+            <option value="UseIPv6">UseIPv6</option>
+          </select>
+          <div class="hint" style="font-size:11px;color:var(--text-dim);">代理出站在解析节点服务器域名时使用的 IP 策略（targetStrategy）</div>
+        </div>
+        <span style="padding-top:6px;">代理拨号解析策略</span>
+        <div>
+          <select id="dnsStratDial">
+            <option value="">默认（AsIs）</option>
+            <option value="AsIs">AsIs</option>
+            <option value="UseIP">UseIP</option>
+            <option value="UseIPv4v6">UseIPv4v6</option>
+            <option value="UseIPv6v4">UseIPv6v4</option>
+            <option value="UseIPv4">UseIPv4</option>
+            <option value="UseIPv6">UseIPv6</option>
+          </select>
+          <div class="hint" style="font-size:11px;color:var(--text-dim);">代理出站拨号（sockopt.domainStrategy），一般保持默认即可</div>
+        </div>
+      </div>
+      <div class="row" style="margin-top:8px;">
+        <button class="btn primary" id="btnDnsSave">保存 DNS 设置</button>
+        <span class="hint" style="font-size:11px;color:var(--text-dim);">保存后若核心在运行会自动重启生效；直连/远程 DNS 会按路由规则自动挂到对应域名上，未启用的走默认兜底</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 设置 ===== -->
+  <div class="page" data-page="settings">
+    <div class="card">
+      <h2>入站端口 <span class="hint">本机代理入口，保存前会做端口冲突检测（同进程管理插件）</span></h2>
+      <div class="row">
+        <span>SOCKS5 端口</span>
+        <input type="text" id="setSocksPort" style="width:110px;" />
+        <span style="color:#21262d">|</span>
+        <span>HTTP 端口</span>
+        <input type="text" id="setHttpPort" style="width:110px;" />
+        <button class="btn" id="btnPortsCheck">检测冲突</button>
+        <button class="btn primary" id="btnPortsSave">保存</button>
+        <button class="btn" id="btnPortsReset">还原默认</button>
+      </div>
+      <div class="row" style="margin-top:8px;">
+        <span class="hint" id="portsHint" style="font-size:11px;color:var(--text-dim);">
+          默认 20808 / 20809，范围 1024–65535 且两者不能相同、不能占用插件服务端口；
+          保存后若核心在运行会自动重启生效，系统代理始终指向 HTTP 入口
+        </span>
+      </div>
+    </div>
+    <div class="card">
+      <h2>服务端口 <span class="tag">Listen Port</span></h2>
+      <div class="row">
+        <label>xray-service 监听</label>
+        <input type="number" id="svcPortInput" value="" min="1024" max="65535" step="1" style="width:110px;" />
+        <button class="btn" id="btnSvcPortCheck">检测</button>
+        <button class="btn primary" id="btnSvcPortApply" disabled>应用</button>
+        <span class="hint" id="svcPortHint" style="font-size:11px;color:var(--text-dim);">输入端口号后点「检测」查占用</span>
+      </div>
+      <div class="row">
+        <span class="hint" style="font-size:11px;color:var(--text-dim);line-height:1.7;">
+          此端口用于插件伴随服务（面板与本页通信），默认 18957，没有冲突不用改。
+          应用后服务会在新端口重启，代理核心自动恢复，manifest 同步更新（宿主下次启动读取新端口）。
+        </span>
+      </div>
+    </div>
+    <div class="card">
+      <h2>关于</h2>
+      <div class="row" style="font-size:12px;color:var(--text-dim);">
+        <span>服务版本 <b id="svcVer" style="color:var(--text-primary);">—</b></span>
+        <span style="color:#21262d">|</span>
+        <span>内核 <b id="xrayVerShort" style="color:var(--text-primary);">—</b></span>
+        <span style="color:#21262d">|</span>
+        <span>数据目录：插件目录下 data\（config.json 每次启动核心自动重生成）</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 日志 ===== -->
+  <div class="page" data-page="logs">
+    <div class="card">
+      <h2>服务日志 <button class="btn" id="btnLogRefresh" style="margin-left:auto;">刷新</button></h2>
+      <div class="log" id="logBox">（空）</div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+// ==========================================================================
+// API base: manifest service.port is the source of truth, cached here.
+// ==========================================================================
+let apiPort = Number(localStorage.getItem('xr-port')) || 18957;
+let API = 'http://127.0.0.1:' + apiPort;
+function setApiPort(p) {
+  apiPort = p;
+  localStorage.setItem('xr-port', String(p));
+  API = 'http://127.0.0.1:' + p;
+}
+const $ = (id) => document.getElementById(id);
+
+let toastTimer = null;
+function toast(msg, isErr) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.classList.toggle('err', !!isErr);
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 3200);
+}
+
+function fetchTimeout(url, ms, opts) {
+  const c = new AbortController();
+  const t = setTimeout(() => c.abort(), ms);
+  return fetch(url, { ...opts, signal: c.signal }).finally(() => clearTimeout(t));
+}
+
+let serviceOk = false;
+async function checkHealth() {
+  try {
+    const r = await fetchTimeout(API + '/api/health', 3000);
+    const j = await r.json();
+    serviceOk = j.status === 'ok';
+    if (serviceOk && j.port && j.port !== apiPort) setApiPort(j.port);
+    $('svcText').textContent = serviceOk
+      ? `服务在线 v${j.version || ''}`
+      : '服务异常';
+    $('svcVer').textContent = j.version || '—';
+    $('xrayVerShort').textContent = j.xray_installed ? (j.xray_version || '已安装') : '未安装';
+    $('svcDot').classList.toggle('ok', serviceOk);
+    applyHealth(j);
+    return serviceOk;
+  } catch (_) {
+    serviceOk = false;
+    $('svcText').textContent = 'sidecar 未响应';
+    $('svcDot').classList.remove('ok');
+    return false;
+  }
+}
+
+async function api(path, opts) {
+  const timeout = (opts && opts.timeout) || 20000;
+  let r;
+  try {
+    r = await fetchTimeout(API + path, timeout, opts);
+  } catch (e) {
+    // A client-side abort used to surface as the raw browser message
+    // "signal is aborted without reason" — translate it. Long jobs (core /
+    // geo download) keep running server-side after the client gives up.
+    if (e && (e.name === 'AbortError' || /abort/i.test(String(e.message)))) {
+      throw new Error(`请求超时（${Math.round(timeout / 1000)}s），后台可能仍在处理，稍后刷新查看`);
+    }
+    throw e;
+  }
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.__error || j.error) throw new Error(j.__error || j.error || ('HTTP ' + r.status));
+  return j;
+}
+const post = (path, body, timeout) => api(path, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body || {}),
+  timeout,
+});
+
+// ---------------- health → header ----------------
+let healthCache = {};
+function applyHealth(j) {
+  healthCache = j;
+  const running = !!j.running;
+  $('coreDot').classList.toggle('ok', running);
+  $('coreDot').classList.toggle('warn', !running && j.xray_installed);
+  $('coreText').textContent = running
+    ? `核心运行中 · ${(j.xray_version || 'xray').split(' ')[0]}`
+    : (j.xray_installed ? '核心已停止' : '核心未安装');
+  $('xrayVerTag').textContent = j.xray_installed ? (j.xray_version || '已安装') : '未安装';
+  $('xrayVerTag').className = 'tag ' + (j.xray_installed ? 'ok' : 'warn');
+  $('socksPort').textContent = j.socks_port || 20808;
+  $('httpPort').textContent = j.http_port || 20809;
+  $('sysProxySwitch').classList.toggle('on', !!j.sysproxy?.enabled && !!j.sysproxy?.ours);
+  $('tunSwitch').classList.toggle('on', !!j.tun);
+  // core switch = core running only (independent from system proxy)
+  $('coreSwitch').classList.toggle('on', running);
+  const geo = j.geo_ready || {};
+  const geoOk = geo.geoip && geo.geosite;
+  $('geoTag').textContent = geoOk ? 'geo 就绪' : (j.xray_installed ? 'geo 未下载' : 'geo 未下载');
+  $('geoTag').className = 'tag ' + (geoOk ? 'ok' : 'warn');
+}
+
+// ---------------- nodes ----------------
+let nodes = [];
+let selectedId = '';
+
+function latCell(ms, kind) {
+  if (!ms) return '<span class="lat-dim">—</span>';
+  const cls = ms < 200 ? 'lat-ok' : ms < 800 ? 'lat-mid' : 'lat-bad';
+  return `<span class="${cls}">${ms}${kind || ''}</span>`;
+}
+
+function renderNodes() {
+  const body = $('nodeBody');
+  $('nodeCount').textContent = nodes.length;
+  $('nodeEmpty').style.display = nodes.length ? 'none' : 'block';
+  body.innerHTML = nodes.map((n) => `
+    <tr class="node-row${n.id === selectedId ? ' selected' : ''}" data-id="${n.id}">
+      <td class="wrap">${esc(n.name || '(未命名)')}</td>
+      <td>${esc(n.proto.toUpperCase())}</td>
+      <td class="wrap">${esc(n.add)}:${n.port}</td>
+      <td>${latCell(n.tcping_ms)}</td>
+      <td>${latCell(n.real_ms)}</td>
+      <td>${n.sub_id ? '<span class="tag">订阅</span>' : '<span class="lat-dim">手动</span>'}</td>
+      <td>
+        <button class="btn" data-act="ping" data-id="${n.id}">测</button>
+        <button class="btn" data-act="share" data-id="${n.id}">链</button>
+        <button class="btn danger" data-act="del" data-id="${n.id}">删</button>
+      </td>
+    </tr>`).join('');
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+async function getNodes() {
+  if (!(await checkHealth())) return;
+  const j = await api('/api/nodes');
+  nodes = j.nodes || [];
+  selectedId = j.selected || '';
+  renderNodes();
+}
+
+$('nodeBody').addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('button[data-act]');
+  const tr = ev.target.closest('tr.node-row');
+  if (btn) {
+    const id = btn.dataset.id;
+    try {
+      if (btn.dataset.act === 'ping') {
+        toast('tcping 中…');
+        const j = await post('/api/test/tcping', { id });
+        toast(`tcping：${j.results[id] ?? '超时'} ms`, !j.results?.[id]);
+        getNodes();
+      } else if (btn.dataset.act === 'share') {
+        const j = await post('/api/nodes/share', { id });
+        await navigator.clipboard.writeText(j.link || '');
+        toast('分享链接已复制到剪贴板');
+      } else if (btn.dataset.act === 'del') {
+        await post('/api/nodes/delete', { id });
+        toast('已删除');
+        getNodes();
+      }
+    } catch (e) { toast(e.message, true); }
+    return;
+  }
+  if (tr) {
+    // click row = select; the backend hot-restarts the core if it is running.
+    try {
+      const j = await post('/api/nodes/select', { id: tr.dataset.id });
+      selectedId = tr.dataset.id;
+      renderNodes();
+      toast(j.restarted ? '已切换节点并重启核心' : '已切换节点（核心未运行）');
+      checkHealth();
+    } catch (e) { toast(e.message, true); }
+  }
+});
+$('nodeBody').addEventListener('dblclick', async (ev) => {
+  const tr = ev.target.closest('tr.node-row');
+  if (!tr) return;
+  try {
+    // Backend selects and hot-restarts when running. If stopped, start it here.
+    const j = await post('/api/nodes/select', { id: tr.dataset.id });
+    selectedId = tr.dataset.id;
+    renderNodes();
+    if (!j.restarted && !healthCache.running) await post('/api/core/start');
+    toast('已选中并启动核心');
+    checkHealth();
+  } catch (e) { toast(e.message, true); }
+});
+
+$('btnImport').addEventListener('click', async () => {
+  const text = $('importText').value.trim();
+  if (!text) return toast('先粘贴链接或订阅内容', true);
+  try {
+    const j = await post('/api/nodes/import', { text });
+    $('importText').value = '';
+    const errs = (j.errors || []).length;
+    toast(`导入完成：新增 ${j.added}，共 ${j.total}${errs ? `，${errs} 条无法识别` : ''}`, false);
+    getNodes();
+  } catch (e) { toast(e.message, true); }
+});
+$('btnClipImport').addEventListener('click', async () => {
+  try {
+    $('importText').value = (await navigator.clipboard.readText()) || '';
+    $('btnImport').click();
+  } catch (e) { toast('读取剪贴板失败：' + e.message, true); }
+});
+$('btnTcpingAll').addEventListener('click', async () => {
+  toast('批量 tcping 中…');
+  try { await post('/api/test/tcping', {}, 60000); toast('tcping 完成'); getNodes(); }
+  catch (e) { toast(e.message, true); }
+});
+$('btnTestReal').addEventListener('click', async () => {
+  toast('真延迟探测中…（走当前节点的完整链路）');
+  try { const j = await post('/api/test/real', {}, 30000); toast(`真延迟：${j.ms} ms`); getNodes(); }
+  catch (e) { toast(e.message, true); }
+});
+$('btnRefresh').addEventListener('click', () => getNodes());
+$('btnClear').addEventListener('click', async () => {
+  if (!confirm('确定清空全部节点？')) return;
+  try { await post('/api/nodes/clear'); getNodes(); } catch (e) { toast(e.message, true); }
+});
+
+// ---------------- subs ----------------
+function renderSubs(subs) {
+  $('subEmpty').style.display = subs.length ? 'none' : 'block';
+  $('subBody').innerHTML = subs.map((s) => `
+    <tr>
+      <td>${esc(s.name)}</td>
+      <td class="wrap" style="font-family:var(--mono);font-size:11px;">${esc(s.url)}</td>
+      <td>${s.count || 0}</td>
+      <td>${esc(s.last_update || '—')}</td>
+      <td>
+        <button class="btn" data-act="sub-upd" data-id="${s.id}">更新</button>
+        <button class="btn danger" data-act="sub-del" data-id="${s.id}">删除</button>
+      </td>
+    </tr>`).join('');
+}
+
+async function getSubs() {
+  const j = await api('/api/subs');
+  renderSubs(j.subs || []);
+}
+
+$('subBody').addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('button[data-act]');
+  if (!btn) return;
+  const id = btn.dataset.id;
+  try {
+    if (btn.dataset.act === 'sub-upd') {
+      toast('拉取订阅中…');
+      const j = await post('/api/subs/update', { id }, 45000);
+      toast(`订阅更新：${j.count} 个节点`);
+      getSubs(); getNodes();
+    } else if (btn.dataset.act === 'sub-del') {
+      await post('/api/subs/delete', { id });
+      toast('订阅与其节点已删除');
+      getSubs(); getNodes();
+    }
+  } catch (e) { toast(e.message, true); }
+});
+
+$('btnSubAdd').addEventListener('click', async () => {
+  const url = $('subUrl').value.trim();
+  if (!url) return toast('先填订阅地址', true);
+  try {
+    await post('/api/subs/add', { url, name: $('subName').value.trim() });
+    $('subUrl').value = ''; $('subName').value = '';
+    toast('订阅已添加，点「更新」拉取节点');
+    getSubs();
+  } catch (e) { toast(e.message, true); }
+});
+
+// ---------------- core ----------------
+$('btnCoreStart').addEventListener('click', async () => {
+  try { const j = await post('/api/core/start'); toast(`核心已启动 · ${j.node || ''}`); checkHealth(); }
+  catch (e) { toast(e.message, true); }
+});
+$('btnCoreStop').addEventListener('click', async () => {
+  try { await post('/api/core/stop'); toast('核心已停止'); checkHealth(); }
+  catch (e) { toast(e.message, true); }
+});
+$('btnCoreRestart').addEventListener('click', async () => {
+  try { await post('/api/core/restart'); toast('核心已重启'); checkHealth(); }
+  catch (e) { toast(e.message, true); }
+});
+$('btnCoreDownload').addEventListener('click', async () => {
+  const btn = $('btnCoreDownload');
+  btn.disabled = true;
+  toast('下载内核中…（约 16MB，最多等 3 分钟）');
+  try {
+    const j = await post('/api/core/download', { mirror: $('mirrorUrl').value.trim() }, 180000);
+    toast(j.skipped ? (j.message || '已是最新') : `内核就绪：${j.version}`);
+  } catch (e) { toast(e.message, true); }
+  btn.disabled = false;
+  checkHealth();
+});
+
+$('btnGeoDownload').addEventListener('click', async () => {
+  const btn = $('btnGeoDownload');
+  btn.disabled = true;
+  toast('下载 geo 文件中…（geoip + geosite，最多等 4 分钟）');
+  try {
+    const j = await post('/api/geo/download', { mirror: $('mirrorUrl').value.trim() }, 240000);
+    toast(j.skipped ? (j.message || 'geo 文件已完整') : 'geo 文件就绪');
+  } catch (e) { toast(e.message, true); }
+  btn.disabled = false;
+  checkHealth();
+});
+
+// core switch: start / stop the Xray core only (system proxy is separate)
+$('coreSwitch').addEventListener('click', async () => {
+  const sw = $('coreSwitch');
+  const on = !sw.classList.contains('on');
+  sw.disabled = true;
+  toast(on ? '正在启动核心…' : '正在停止核心…');
+  try {
+    await post(on ? '/api/core/start' : '/api/core/stop', {});
+    toast(on ? '核心已启动' : '核心已停止');
+  } catch (e) { toast(e.message, true); }
+  sw.disabled = false;
+  checkHealth();
+});
+
+// TUN switch: virtual-adapter global takeover, requires admin rights.
+// Toggling restarts the core so the tun inbound is added/removed atomically.
+$('tunSwitch').addEventListener('click', async () => {
+  const sw = $('tunSwitch');
+  const on = !sw.classList.contains('on');
+  sw.disabled = true;
+  toast(on ? '正在开启 TUN（重启核心）…' : '正在关闭 TUN（重启核心）…');
+  try {
+    await post('/api/tun', { on }, 30000);
+    toast(on ? 'TUN 已开启（全系统流量接管）' : 'TUN 已关闭');
+    checkHealth();
+  } catch (e) {
+    toast(e.message + (on ? '（TUN 需管理员权限，且 wintun.dll 需与 xray.exe 同目录）' : ''), true);
+  }
+  sw.disabled = false;
+});
+
+$('sysProxySwitch').addEventListener('click', async () => {
+  const sw = $('sysProxySwitch');
+  const on = !sw.classList.contains('on');
+  sw.disabled = true;
+  toast(on ? '正在接管系统代理…' : '正在还原系统代理…');
+  try {
+    await post('/api/sysproxy', { on });
+    toast(on ? '系统代理已开启（指向 HTTP 入口）' : '系统代理已关闭');
+    checkHealth();
+  } catch (e) { toast(e.message, true); }
+  sw.disabled = false;
+});
+
+// ---------------- settings: ports / routing / dns ----------------
+let routingRules = []; // {outbound, domain, ip, port, network} — comma strings in the editor
+
+async function getSettings() {
+  const j = await api('/api/settings');
+  $('setSocksPort').value = j.socks_port || 20808;
+  $('setHttpPort').value = j.http_port || 20809;
+  routingRules = (j.routing || []).map((r) => ({
+    outbound: r.outbound || 'direct',
+    domain: (r.domain || []).join(','),
+    ip: (r.ip || []).join(','),
+    port: r.port || '',
+    network: r.network || '',
+  }));
+  renderRules();
+  $('routeStrategy').value = j.routing_strategy || 'IPIfNonMatch';
+  const d = j.dns || {};
+  $('dnsDirect').value = d.direct_dns || '119.29.29.29';
+  $('dnsRemote').value = d.remote_dns || 'https://cloudflare-dns.com/dns-query';
+  $('dnsBootstrap').value = d.bootstrap_dns || '119.29.29.29';
+  $('dnsStratDirect').value = d.strategy_direct || '';
+  $('dnsStratRemote').value = d.strategy_remote || '';
+  $('dnsStratDial').value = d.strategy_dial || '';
+  $('dnsParallel').classList.toggle('on', !!d.parallel_query);
+  $('dnsStale').classList.toggle('on', !!d.serve_stale);
+  $('dnsNoAAAA').classList.toggle('on', !!d.block_aaaa);
+  $('svcPortInput').value = apiPort;
+}
+
+function renderRules() {
+  const body = $('ruleBody');
+  $('ruleCount').textContent = routingRules.length;
+  $('ruleEmpty').style.display = routingRules.length ? 'none' : 'block';
+  const obLabel = { proxy: '代理', direct: '直连', block: '拦截' };
+  body.innerHTML = routingRules.map((r, i) => `
+    <tr data-i="${i}">
+      <td>${i + 1}</td>
+      <td>
+        <select data-f="outbound" style="width:80px;">
+          ${['proxy', 'direct', 'block'].map((o) => `<option value="${o}"${r.outbound === o ? ' selected' : ''}>${obLabel[o]}</option>`).join('')}
+        </select>
+      </td>
+      <td><input type="text" data-f="domain" value="${esc(r.domain)}" style="width:100%;" placeholder="geosite:cn,domain:xx.com" /></td>
+      <td><input type="text" data-f="ip" value="${esc(r.ip)}" style="width:100%;" placeholder="geoip:cn,1.2.3.0/24" /></td>
+      <td><input type="text" data-f="port" value="${esc(r.port)}" style="width:78px;" placeholder="443" /></td>
+      <td>
+        <select data-f="network" style="width:70px;">
+          <option value=""${!r.network ? ' selected' : ''}>—</option>
+          <option value="tcp"${r.network === 'tcp' ? ' selected' : ''}>tcp</option>
+          <option value="udp"${r.network === 'udp' ? ' selected' : ''}>udp</option>
+          <option value="tcp,udp"${r.network === 'tcp,udp' ? ' selected' : ''}>tcp,udp</option>
+        </select>
+      </td>
+      <td>
+        <button class="btn" data-act="up"${i === 0 ? ' disabled' : ''}>↑</button>
+        <button class="btn" data-act="down"${i === routingRules.length - 1 ? ' disabled' : ''}>↓</button>
+        <button class="btn danger" data-act="del">删</button>
+      </td>
+    </tr>`).join('');
+}
+
+$('ruleBody').addEventListener('input', (ev) => {
+  const tr = ev.target.closest('tr[data-i]');
+  const f = ev.target.dataset.f;
+  if (!tr || !f) return;
+  const i = Number(tr.dataset.i);
+  if (!routingRules[i]) return;
+  routingRules[i][f] = ev.target.value;
+});
+$('ruleBody').addEventListener('click', (ev) => {
+  const btn = ev.target.closest('button[data-act]');
+  if (!btn) return;
+  const i = Number(btn.closest('tr').dataset.i);
+  const act = btn.dataset.act;
+  if (act === 'up' && i > 0) {
+    [routingRules[i - 1], routingRules[i]] = [routingRules[i], routingRules[i - 1]];
+  } else if (act === 'down' && i < routingRules.length - 1) {
+    [routingRules[i + 1], routingRules[i]] = [routingRules[i], routingRules[i + 1]];
+  } else if (act === 'del') {
+    routingRules.splice(i, 1);
+  } else {
+    return;
+  }
+  renderRules();
+});
+$('btnRuleAdd').addEventListener('click', () => {
+  routingRules.push({ outbound: 'direct', domain: '', ip: '', port: '', network: '' });
+  renderRules();
+});
+$('btnRuleDefault').addEventListener('click', () => {
+  // default = 绕过大陆（v2rayN V4-Whitelist preset）
+  routingRules = ROUTE_PRESETS.whitelist.map((r) => ({ ...r }));
+  renderRules();
+});
+$('btnRuleClear').addEventListener('click', () => {
+  routingRules = [];
+  renderRules();
+  toast('已清空，点「保存规则」后回落到内置绕过大陆规则集');
+});
+$('btnRuleSave').addEventListener('click', async () => {
+  const rules = routingRules.map((r) => ({
+    outbound: r.outbound, domain: r.domain || '', ip: r.ip || '',
+    port: (r.port || '').trim(), network: r.network || '',
+  }));
+  const strategy = $('routeStrategy').value;
+  try {
+    const j = await post('/api/routing/set', { rules, strategy });
+    toast(j.restarted ? `已保存 ${rules.length} 条规则并重启核心` : `已保存 ${rules.length} 条规则`);
+  } catch (e) { toast(e.message, true); }
+});
+
+// v2rayN preset rule sets, straight from ServiceLib/Sample/custom_routing_*
+// (whitelist = 绕过大陆 / blacklist = 黑名单 / global = 全局代理), condensed
+// to the fields this editor supports (domain / ip / port / network).
+const ROUTE_PRESETS = {
+  whitelist: [
+    { outbound: 'block', domain: '', ip: '', port: '443', network: 'udp' },   // 阻断udp443
+    { outbound: 'proxy', domain: 'geosite:google', ip: '', port: '', network: '' }, // 代理Google
+    { outbound: 'direct', domain: '', ip: 'geoip:private', port: '', network: '' },
+    { outbound: 'direct', domain: 'geosite:private', ip: '', port: '', network: '' },
+    { outbound: 'direct', domain: 'domain:alidns.com,domain:doh.pub,domain:dot.pub,domain:360.cn,domain:onedns.net', ip: '', port: '', network: '' }, // 绕过中国公共DNS域名
+    { outbound: 'direct', domain: '', ip: 'geoip:cn', port: '', network: '' }, // 绕过中国IP
+    { outbound: 'direct', domain: 'geosite:cn', ip: '', port: '', network: '' }, // 绕过中国域名
+  ],
+  blacklist: [
+    { outbound: 'block', domain: '', ip: '', port: '443', network: 'udp' },
+    { outbound: 'proxy', domain: 'geosite:google', ip: '', port: '', network: '' },
+    { outbound: 'direct', domain: '', ip: 'geoip:private', port: '', network: '' },
+    { outbound: 'direct', domain: 'geosite:private', ip: '', port: '', network: '' },
+    { outbound: 'proxy', domain: 'domain:cloudflare-dns.com,domain:one.one.one.one,domain:dns.google,domain:adguard-dns.com,domain:opendns.com,domain:quad9.net', ip: '1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4,9.9.9.9,149.112.112.112,208.67.222.222,77.88.8.8', port: '', network: '' }, // 代理海外公共DNS
+    { outbound: 'proxy', domain: 'geosite:gfw,geosite:greatfire', ip: '', port: '', network: '' }, // 代理GFW
+    { outbound: 'direct', domain: '', ip: '', port: '0-65535', network: '' }, // 最终直连
+  ],
+  global: [
+    { outbound: 'block', domain: '', ip: '', port: '443', network: 'udp' },
+    { outbound: 'direct', domain: '', ip: 'geoip:private', port: '', network: '' },
+    { outbound: 'direct', domain: 'geosite:private', ip: '', port: '', network: '' },
+    { outbound: 'proxy', domain: '', ip: '', port: '0-65535', network: '' }, // 最终代理
+  ],
+};
+document.querySelectorAll('button[data-preset]').forEach((b) => {
+  b.addEventListener('click', () => {
+    const tpl = ROUTE_PRESETS[b.dataset.preset] || [];
+    routingRules = tpl.map((r) => ({ ...r }));
+    renderRules();
+    toast('已填入 v2rayN 规则集模板，点「保存规则」生效');
+  });
+});
+
+['dnsParallel', 'dnsStale', 'dnsNoAAAA'].forEach((id) => {
+  $(id).addEventListener('click', () => $(id).classList.toggle('on'));
+});
+
+// DNS option lists — verbatim from v2rayN ServiceLib/Global.cs
+// (DomainDirectDNSAddress / DomainRemoteDNSAddress / DomainPureIPDNSAddress)
+const DNS_OPTIONS = {
+  direct: [
+    '119.29.29.29',
+    '223.5.5.5',
+    '119.29.29.29,223.5.5.5,https://doh.pub/dns-query',
+    'https://doh.pub/dns-query',
+    'https://dns.alidns.com/dns-query',
+    'https://doh.pub/dns-query,https://dns.alidns.com/dns-query',
+    'localhost',
+  ],
+  remote: [
+    'https://cloudflare-dns.com/dns-query',
+    'https://dns.google/dns-query',
+    'https://cloudflare-dns.com/dns-query,https://dns.google/dns-query,8.8.8.8',
+    'https://dns.cloudflare.com/dns-query',
+    'https://doh.dns.sb/dns-query',
+    'https://doh.opendns.com/dns-query',
+    'https://common.dot.dns.yandex.net/dns-query',
+    'https://1.1.1.1/dns-query',
+    'https://8.8.8.8/dns-query',
+    'https://1.1.1.1/dns-query,https://8.8.8.8/dns-query',
+    '8.8.8.8',
+    '1.1.1.1',
+    '185.222.222.222',
+    '208.67.222.222',
+    '77.88.8.8',
+  ],
+  boot: ['119.29.29.29', '223.5.5.5', 'localhost'],
+};
+
+// Editable combobox: dropdown shows ALL options unfiltered (native datalist
+// filters by the typed text and truncates long entries — wrong for multi-DNS
+// strings). Input stays freely editable.
+document.querySelectorAll('.combo').forEach((wrap) => {
+  const input = wrap.querySelector('input');
+  const menu = wrap.querySelector('.combo-menu');
+  const btn = wrap.querySelector('.combo-btn');
+  const opts = DNS_OPTIONS[input.dataset.combo] || [];
+  menu.innerHTML = opts.map((o) => `<div>${esc(o)}</div>`).join('');
+  const close = () => menu.classList.remove('open');
+  const open = () => menu.classList.add('open');
+  // preventDefault on mousedown keeps input focus (no blur) while clicking
+  btn.addEventListener('mousedown', (e) => e.preventDefault());
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    menu.classList.toggle('open');
+  });
+  input.addEventListener('focus', open);
+  menu.addEventListener('mousedown', (e) => e.preventDefault());
+  menu.addEventListener('click', (e) => {
+    const item = e.target.closest('div');
+    if (!item) return;
+    input.value = item.textContent;
+    input.dispatchEvent(new Event('change'));
+    close();
+  });
+  input.addEventListener('blur', close);
+  document.addEventListener('click', (e) => {
+    if (!wrap.contains(e.target)) close();
+  });
+});
+$('btnDnsSave').addEventListener('click', async () => {
+  const body = {
+    direct_dns: $('dnsDirect').value.trim(),
+    remote_dns: $('dnsRemote').value.trim(),
+    bootstrap_dns: $('dnsBootstrap').value.trim(),
+    strategy_direct: $('dnsStratDirect').value,
+    strategy_remote: $('dnsStratRemote').value,
+    strategy_dial: $('dnsStratDial').value,
+    parallel_query: $('dnsParallel').classList.contains('on'),
+    serve_stale: $('dnsStale').classList.contains('on'),
+    block_aaaa: $('dnsNoAAAA').classList.contains('on'),
+  };
+  try {
+    const j = await post('/api/dns/set', body);
+    toast(j.restarted ? 'DNS 已保存并重启核心' : 'DNS 已保存');
+  } catch (e) { toast(e.message, true); }
+});
+
+// ---------------- settings: service (listen) port ----------------
+let svcPortState = null;
+function svcHint(text, color) {
+  const h = $('svcPortHint');
+  h.textContent = text;
+  h.style.color = color || '';
+}
+function svcUpdateApply() {
+  $('btnSvcPortApply').disabled = !(svcPortState && svcPortState.free);
+}
+async function svcCheckPort() {
+  const p = parseInt($('svcPortInput').value, 10);
+  if (!p || p < 1024 || p > 65535) {
+    svcPortState = null;
+    svcHint('请输入 1024–65535 的端口号', 'var(--status-error)');
+    svcUpdateApply();
+    return;
+  }
+  svcHint('检测中…', 'var(--text-dim)');
+  try {
+    const d = await post('/api/service_port/check', { port: p });
+    svcPortState = d;
+    if (d.free) {
+      svcHint(d.self ? `✅ 端口 ${p} 可用（当前端口）` : `✅ 端口 ${p} 可用`, 'var(--status-ok)');
+    } else {
+      const who = d.owner ? `${d.owner}${d.pid ? ' (PID ' + d.pid + ')' : ''}` : '其他进程';
+      svcHint(`❌ 端口 ${p} 已被 ${who} 占用`, 'var(--status-error)');
+    }
+  } catch (e) {
+    svcPortState = null;
+    svcHint('检测失败: ' + e.message, 'var(--status-error)');
+  }
+  svcUpdateApply();
+}
+async function svcApplyPort() {
+  if (!svcPortState || !svcPortState.free) return;
+  const p = svcPortState.port;
+  $('btnSvcPortApply').disabled = true;
+  svcHint('重启服务中…', 'var(--text-dim)');
+  try {
+    await post('/api/service_port/set', { port: p }, 30000);
+  } catch (e) {
+    svcHint('应用失败: ' + e.message, 'var(--status-error)');
+    svcUpdateApply();
+    return;
+  }
+  // Old instance hands over to a fresh one on the new port; poll health there.
+  setApiPort(p);
+  let ok = false;
+  for (let i = 0; i < 25 && !ok; i++) {
+    await new Promise((r) => setTimeout(r, 400));
+    try {
+      const res = await fetchTimeout(`http://127.0.0.1:${apiPort}/api/health`, 2000);
+      if (res.ok) {
+        const j = await res.json();
+        if (j.port && j.port !== apiPort) setApiPort(j.port);
+        ok = true;
+      }
+    } catch (_) { /* not up yet */ }
+  }
+  if (ok) {
+    svcHint(`✅ 已切换到端口 ${apiPort}`, 'var(--status-ok)');
+    $('svcPortInput').value = apiPort;
+    toast(`服务已切换到端口 ${apiPort}` + (svcPortState.resume_core ? '，核心恢复中' : ''));
+    checkHealth();
+    getSettings();
+  } else {
+    svcHint('服务未在新端口上线 — 重开面板重试', 'var(--status-error)');
+  }
+  svcUpdateApply();
+}
+$('btnSvcPortCheck').addEventListener('click', svcCheckPort);
+$('btnSvcPortApply').addEventListener('click', svcApplyPort);
+$('svcPortInput').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') svcCheckPort(); });
+
+async function portsCheck(socks, http) {
+  return post('/api/ports/check', { socks, http });
+}
+function showPortProblems(j) {
+  const bad = Object.entries(j.ports || {}).filter(([, x]) => !x.ok);
+  if (bad.length) {
+    toast(bad.map(([k, x]) => `${k === 'socks' ? 'SOCKS' : 'HTTP'}: ${x.reason}`).join('；'), true);
+    return true;
+  }
+  return false;
+}
+$('btnPortsCheck').addEventListener('click', async () => {
+  try {
+    const j = await portsCheck($('setSocksPort').value.trim(), $('setHttpPort').value.trim());
+    if (!showPortProblems(j)) toast('两个端口都可用');
+  } catch (e) { toast(e.message, true); }
+});
+$('btnPortsSave').addEventListener('click', async () => {
+  const socks = $('setSocksPort').value.trim();
+  const http = $('setHttpPort').value.trim();
+  try {
+    // client-side pre-check mirrors the server: conflict errors surface before saving
+    const j = await portsCheck(socks, http);
+    if (showPortProblems(j)) return;
+    const r = await post('/api/ports/set', { socks: Number(socks), http: Number(http) });
+    $('socksPort').textContent = socks;
+    $('httpPort').textContent = http;
+    toast(r.restarted ? `端口已改为 ${socks}/${http} 并重启核心` : `端口已改为 ${socks}/${http}，下次启动核心生效`);
+    checkHealth();
+  } catch (e) { toast(e.message, true); }
+});
+$('btnPortsReset').addEventListener('click', async () => {
+  try {
+    const r = await post('/api/ports/set', { socks: 20808, http: 20809 });
+    toast(r.restarted ? '已还原默认端口并重启核心' : '已还原默认端口');
+    getSettings(); checkHealth();
+  } catch (e) { toast(e.message, true); }
+});
+
+// ---------------- logs ----------------
+async function refreshLog() {
+  try {
+    const j = await api('/api/log');
+    const box = $('logBox');
+    box.textContent = j.log || '（空）';
+    box.scrollTop = box.scrollHeight;
+  } catch (e) { /* ignore */ }
+}
+$('btnLogRefresh').addEventListener('click', refreshLog);
+
+// ---------------- nav ----------------
+document.querySelectorAll('#nav button').forEach((b) => {
+  b.addEventListener('click', () => {
+    document.querySelectorAll('#nav button').forEach((x) => x.classList.remove('active'));
+    b.classList.add('active');
+    document.querySelectorAll('.page').forEach((p) => p.classList.toggle('active', p.dataset.page === b.dataset.page));
+    if (b.dataset.page === 'subs') getSubs().catch((e) => toast(e.message, true));
+    if (b.dataset.page === 'logs') refreshLog();
+    if (b.dataset.page === 'nodes') getNodes();
+    if (['routing', 'dns', 'settings'].includes(b.dataset.page)) {
+      getSettings().catch((e) => toast(e.message, true));
+    }
+  });
+});
+
+// ---------------- boot ----------------
+(async () => {
+  await checkHealth();
+  await getNodes();
+  setInterval(checkHealth, 5000);
+})();
+</script>
+</body>
+</html>

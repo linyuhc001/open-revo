@@ -13,6 +13,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 const WM_POWERBROADCAST: u32 = 0x0218;
 const WM_QUERYENDSESSION: u32 = 0x0011;
 const WM_ENDSESSION: u32 = 0x0016;
+const WM_DISPLAYCHANGE: u32 = 0x007E;
 const WM_DESTROY: u32 = 0x0002;
 
 const PBT_APMSUSPEND: u32 = 0x0004;
@@ -96,7 +97,11 @@ fn handle_system_resume_pipeline(event_name: &str) {
         crate::system::display_tuning::init_display_tuning();
     });
 
+    // Reassert all active plugin watchers after system resume (e.g. GPU undervolt curves, battery keepers)
+    crate::system::watcher_hub::reassert_active_watchers("system_resume");
+
     let cfg = crate::system::config::load_config();
+    crate::system::power::restore_ec_power_options(&cfg);
     if let Some(ec) = GLOBAL_EC.read().clone() {
         let cfg_limit = cfg.battery_limit;
         let cfg_override = cfg.battery_hardware_limit_enabled;
@@ -240,6 +245,12 @@ unsafe extern "system" fn power_wnd_proc(
                 lighting.invalidate_devices();
             }
             LRESULT(1)
+        }
+        // Display topology or mode changed (resolution/refresh switch, monitor hot-plug,
+        // projection mode). The cached mode table is stale from this moment on.
+        WM_DISPLAYCHANGE => {
+            crate::system::display::invalidate_display_mode_cache();
+            LRESULT(0)
         }
         WM_DESTROY => {
             PostQuitMessage(0);

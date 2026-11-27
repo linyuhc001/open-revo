@@ -1,0 +1,30 @@
+{
+  "id": "revo-xray",
+  "name": "Revo Xray",
+  "version": "0.9.13",
+  "author": "Community",
+  "description": "Revo Xray 代理面板：vless/vmess/trojan/ss 节点与订阅导入、一键选节点、tcping 与真连接延迟测试、系统代理开关、内核按需下载与进程托管（下载优先走自身代理、文件占用自动处理）。v2rayN 风格的路由规则集与 DNS 基础设置（直连/远程/Bootstrap + 解析策略），服务端口可自定义。插件自带伴随服务直接驱动 Xray-core，不改动宿主源码。",
+  "type": "tab",
+  "entry": "index.html",
+  "min_host_version": "0.9.4",
+  "window": {
+    "width": 1024,
+    "height": 720,
+    "resizable": true,
+    "decorations": true,
+    "transparent": false,
+    "always_on_top": false
+  },
+  "service": {
+    "executable": "sidecar/xray-service.exe",
+    "args": ["--serve", "--port", "18957"],
+    "elevated": false,
+    "auto_start": true,
+    "auto_stop": true,
+    "port": 18957,
+    "health_url": "http://127.0.0.1:18957/api/health"
+  },
+  "permissions": [
+    "storage"
+  ]
+}

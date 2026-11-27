@@ -1,7 +1,10 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { HardwareState, PowerMode } from '../../types/hardware';
 import { ModelCapabilities } from '../../plugins/plugin_manifest';
-import { Zap, Shield, Flame, Sliders } from 'lucide-react';
+import { useTurboSubmode } from '../../hooks/useTurboSubmode';
+import { Zap, Shield, Flame, Sliders, Snowflake } from 'lucide-react';
 
 interface DrawerPowerModeCardProps {
   status: HardwareState;
@@ -20,6 +23,102 @@ export const DrawerPowerModeCard: React.FC<DrawerPowerModeCardProps> = ({
 }) => {
   const isThinLight = capabilities?.form_factor === 'thin_light' || capabilities?.discrete_gpu === false;
   const hasCustomMode = capabilities?.power_modes ? capabilities.power_modes.includes('custom') : !isThinLight;
+  const [gpuOc, setGpuOc] = useState<{ on: boolean; busy: boolean; error: boolean }>({ on: false, busy: false, error: false });
+  const [ocDefaults, setOcDefaults] = useState<{ core: number; mem: number }>({ core: 105, mem: 0 });
+
+  useEffect(() => {
+    invoke<any>('get_app_config')
+      .then((cfg) => {
+        if (!cfg) return;
+        const core = Number(cfg.gpu_oc_core_mhz);
+        const mem = Number(cfg.gpu_oc_mem_mhz);
+        setOcDefaults({
+          core: Number.isFinite(core) && core >= 0 ? core : 105,
+          mem: Number.isFinite(mem) && mem >= 0 ? mem : 0,
+        });
+      })
+      .catch(() => { });
+  }, []);
+  // 狂暴子模式（静音/高能）：只有能力位满足的机型才显示入口
+  const turboSub = useTurboSubmode();
+
+  // OC 状态：初始查配置与驱动 + 跟随 host 的 turbo-oc-changed / gpu-clock-offsets-changed
+  useEffect(() => {
+    let alive = true;
+    invoke<any>('get_app_config')
+      .then((cfg) => {
+        if (!alive) return;
+        if (cfg && typeof cfg.turbo_oc_enabled === 'boolean') {
+          setGpuOc((s) => ({ ...s, on: cfg.turbo_oc_enabled }));
+        }
+      })
+      .catch(() => { });
+
+    let unlistenTurboOc: any = null;
+    let unlistenOffsets: any = null;
+
+    listen('turbo-oc-changed', (e: any) => {
+      if (!alive) return;
+      const p = (e && e.payload) || {};
+      if (typeof p.enabled === 'boolean') {
+        setGpuOc((s) => ({ ...s, on: p.enabled, busy: false, error: false }));
+      }
+    }).then((f) => { unlistenTurboOc = f; }).catch(() => { });
+
+    listen('gpu-clock-offsets-changed', (e: any) => {
+      if (!alive) return;
+      const p = (e && e.payload) || {};
+      const core = Number(p.core_offset_mhz) || 0;
+      const mem = Number(p.mem_offset_mhz) || 0;
+      if (status.power_mode === 3) {
+        setGpuOc((s) => ({ ...s, on: core !== 0 || mem !== 0 }));
+      }
+    }).then((f) => { unlistenOffsets = f; }).catch(() => { });
+
+    return () => {
+      alive = false;
+      try { if (unlistenTurboOc) unlistenTurboOc(); } catch { /* ignore */ }
+      try { if (unlistenOffsets) unlistenOffsets(); } catch { /* ignore */ }
+    };
+  }, [status.power_mode]);
+
+  // 静音/高能 分段按钮：先确保进入狂暴档，再应用子模式
+  const applyTurboSeg = (silent: boolean) => {
+    checkOemGuard(() => {
+      if (status.power_mode !== 3) {
+        onSetPowerMode(3);
+      }
+      void turboSub.apply(silent);
+    });
+  };
+
+  // OC 开关：文字固定 OC，开=高亮，关=普通；只跟随当前激活的狂暴子模式按钮显示
+  const renderOcChip = (restricted: boolean) => {
+    if (status.power_mode !== 3 || restricted) return null;
+    return (
+      <button
+        className={`gpu-oc-chip${gpuOc.on ? ' is-applied' : ''}${gpuOc.error ? ' is-error' : ''}`}
+        title={gpuOc.on
+          ? `GPU OC 已开启（核心 +${ocDefaults.core} MHz / 显存 +${ocDefaults.mem} MHz），点击关闭`
+          : `GPU OC 未开启，点击开启（核心 +${ocDefaults.core} MHz / 显存 +${ocDefaults.mem} MHz）`}
+        onClick={async (e) => {
+          e.stopPropagation();
+          if (gpuOc.busy) return;
+          const next = !gpuOc.on;
+          setGpuOc((s) => ({ ...s, busy: true, error: false }));
+          try {
+            await invoke('set_turbo_oc_enabled', { enabled: next });
+            setGpuOc({ on: next, busy: false, error: false });
+          } catch (err) {
+            console.warn('[DrawerPowerModeCard] toggle gpu oc failed:', err);
+            setGpuOc((s) => ({ ...s, busy: false, error: true }));
+          }
+        }}
+      >
+        OC
+      </button>
+    );
+  };
 
   // Current power mode description
   const modeDesc = useMemo(() => {
@@ -50,7 +149,7 @@ export const DrawerPowerModeCard: React.FC<DrawerPowerModeCardProps> = ({
         </div>
       </div>
 
-      <div className={hasCustomMode ? "m-grid-4" : "m-grid-3"}>
+      <div className={turboSub.supported ? 'm-pwr-row' : (hasCustomMode ? 'm-grid-4' : 'm-grid-3')}>
         <button
           className="m-btn-action"
           style={
@@ -91,37 +190,72 @@ export const DrawerPowerModeCard: React.FC<DrawerPowerModeCardProps> = ({
           const isRestricted = !isThinLight && status.is_dc_online === false && !status.unlock_battery_power_limit;
           return (
             <>
-              <button
-                className="m-btn-action"
-                disabled={isRestricted}
-                style={{
-                  ...(status.power_mode === 3
-                    ? {
-                      background: 'var(--theme-pwr-dim)',
-                      borderColor: 'var(--theme-pwr-border)',
-                      color: 'var(--theme-pwr)',
-                      boxShadow: '0 0 12px var(--theme-pwr-glow)',
-                    }
-                    : {}),
-                  ...(isRestricted
-                    ? {
-                      opacity: 0.45,
-                      cursor: 'not-allowed',
-                      filter: 'grayscale(0.6)',
-                    }
-                    : {}),
-                }}
-                title={isRestricted ? '电池供电或受限供电下不可用，需接入原装电源适配器' : '狂暴模式'}
-                onClick={() => {
-                  if (isRestricted) return;
-                  checkOemGuard(() => onSetPowerMode(3));
-                }}
-              >
-                <Flame size={14} />
-                <span style={{ fontSize: '10.5px', fontWeight: 600 }}>
-                  {isRestricted ? '狂暴 (需电源)' : '狂暴'}
-                </span>
-              </button>
+            <div className="gpu-oc-wrap">
+              {turboSub.supported ? (
+                <div className="turbo-seg">
+                  <button
+                    className={`m-btn-action turbo-seg-item${status.power_mode === 3 && turboSub.silent ? ' active' : ''}`}
+                    disabled={isRestricted || turboSub.busy}
+                    title={isRestricted ? '电池供电或受限供电下不可用，需接入原装电源适配器' : '静音狂暴：狂暴档内的安静子模式'}
+                    onClick={() => { if (!isRestricted) applyTurboSeg(true); }}
+                  >
+                    {status.power_mode === 3 && turboSub.silent && renderOcChip(isRestricted)}
+                    <Snowflake size={14} />
+                    <span style={{ fontSize: '9.5px', fontWeight: 600 }}>
+                      {isRestricted ? '静音' : '静音狂暴'}
+                    </span>
+                  </button>
+                  <button
+                    className={`m-btn-action turbo-seg-item${status.power_mode === 3 && !turboSub.silent ? ' active' : ''}`}
+                    disabled={isRestricted || turboSub.busy}
+                    title={isRestricted ? '电池供电或受限供电下不可用，需接入原装电源适配器' : '高能狂暴：狂暴档内的高能/极限子模式'}
+                    onClick={() => { if (!isRestricted) applyTurboSeg(false); }}
+                  >
+                    {status.power_mode === 3 && !turboSub.silent && renderOcChip(isRestricted)}
+                    <Flame size={14} />
+                    <span style={{ fontSize: '9.5px', fontWeight: 600 }}>
+                      {isRestricted ? '高能' : '高能狂暴'}
+                    </span>
+                  </button>
+                  {turboSub.error && (
+                    <div role="alert" style={{ fontSize: '10px', color: 'var(--theme-pwr)' }}>{turboSub.error}</div>
+                  )}
+                </div>
+              ) : (
+                <button
+                  className="m-btn-action"
+                  disabled={isRestricted}
+                  style={{
+                    ...(status.power_mode === 3
+                      ? {
+                        background: 'var(--theme-pwr-dim)',
+                        borderColor: 'var(--theme-pwr-border)',
+                        color: 'var(--theme-pwr)',
+                        boxShadow: '0 0 12px var(--theme-pwr-glow)',
+                      }
+                      : {}),
+                    ...(isRestricted
+                      ? {
+                        opacity: 0.45,
+                        cursor: 'not-allowed',
+                        filter: 'grayscale(0.6)',
+                      }
+                      : {}),
+                  }}
+                  title={isRestricted ? '电池供电或受限供电下不可用，需接入原装电源适配器' : '狂暴模式'}
+                  onClick={() => {
+                    if (isRestricted) return;
+                    checkOemGuard(() => onSetPowerMode(3));
+                  }}
+                >
+                  {renderOcChip(isRestricted)}
+                  <Flame size={14} />
+                  <span style={{ fontSize: '10.5px', fontWeight: 600 }}>
+                    {isRestricted ? '狂暴 (需电源)' : '狂暴'}
+                  </span>
+                </button>
+              )}
+                </div>
 
               {hasCustomMode && (
                 <button

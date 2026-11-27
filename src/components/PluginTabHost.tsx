@@ -1,8 +1,11 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen, emit } from '@tauri-apps/api/event';
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
+import { getCurrentWindow, currentMonitor, LogicalSize, LogicalPosition } from '@tauri-apps/api/window';
 import { HardwareState, PowerMode } from '../types/hardware';
 import { CustomPluginItem } from './PluginsView';
-import { AlertCircle, FolderOpen, RotateCcw, Loader2, ExternalLink, Play, Square } from 'lucide-react';
+import { AlertCircle, FolderOpen, RotateCcw, Loader2, ExternalLink, Minimize2, Play, Square } from 'lucide-react';
 
 export interface PluginServiceStatus {
   plugin_id: string;
@@ -25,13 +28,135 @@ export const PluginTabHost: React.FC<PluginTabHostProps> = ({ plugin, status }) 
   const [error, setError] = useState<string | null>(null);
   const [serviceStatus, setServiceStatus] = useState<PluginServiceStatus | null>(null);
   const [serviceActionLoading, setServiceActionLoading] = useState(false);
+  const [isPoppedOut, setIsPoppedOut] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+
+  // Sync running state of independent pop-out window
+  useEffect(() => {
+    let unlistenClosed: (() => void) | undefined;
+    let unlistenStatus: (() => void) | undefined;
+
+    const checkRunning = async () => {
+      try {
+        const running = await invoke<string[]>('get_running_widgets');
+        setIsPoppedOut(running.includes(plugin.id));
+      } catch (_) {}
+    };
+
+    checkRunning();
+
+    listen<string>('widget-closed', (event) => {
+      if (event.payload === plugin.id) {
+        setIsPoppedOut(false);
+      }
+    }).then((un) => {
+      unlistenClosed = un;
+    });
+
+    listen<{ plugin_id: string; active: boolean }>('widget-status-changed', (event) => {
+      if (event.payload?.plugin_id === plugin.id) {
+        setIsPoppedOut(!!event.payload.active);
+      }
+    }).then((un) => {
+      unlistenStatus = un;
+    });
+
+    return () => {
+      if (unlistenClosed) unlistenClosed();
+      if (unlistenStatus) unlistenStatus();
+    };
+  }, [plugin.id]);
+
+  // Expose OpenRevo Bridge to iframe parent context
+  useEffect(() => {
+    (window as any).__OPENREVO_BRIDGE__ = {
+      invoke,
+      listen: (event: string, handler: any) => listen(event, handler),
+      emit: (event: string, payload: any) => emit(event, payload),
+      getCurrentWebviewWindow: () => getCurrentWebviewWindow(),
+      getCurrentWindow: () => getCurrentWindow(),
+      currentMonitor: () => currentMonitor(),
+      LogicalSize,
+      LogicalPosition,
+      pluginId: plugin.id,
+      registerWatcher: (watcher: any) =>
+        invoke('register_custom_watcher', {
+          watcher: { ...watcher, plugin_id: plugin.id },
+        }),
+      unregisterWatcher: (watcherId: string) =>
+        invoke('unregister_custom_watcher', { id: watcherId }),
+      getRegisteredWatchers: () => invoke('get_registered_watchers'),
+      storage: {
+        get: () => invoke('get_plugin_storage', { pluginId: plugin.id }),
+        set: (data: any) => invoke('set_plugin_storage', { pluginId: plugin.id, data }),
+        getItem: async (key: string) => {
+          const all: any = await invoke('get_plugin_storage', { pluginId: plugin.id });
+          return all ? all[key] : undefined;
+        },
+        setItem: async (key: string, val: any) => {
+          const all: any = (await invoke('get_plugin_storage', { pluginId: plugin.id })) || {};
+          all[key] = val;
+          return invoke('set_plugin_storage', { pluginId: plugin.id, data: all });
+        },
+        readFile: (path: string) => invoke('read_plugin_file', { pluginId: plugin.id, path }),
+        writeFile: (path: string, content: string) => invoke('write_plugin_file', { pluginId: plugin.id, path, content }),
+        deleteFile: (path: string) => invoke('delete_plugin_file', { pluginId: plugin.id, path }),
+        listFiles: (subDir?: string) => invoke('list_plugin_files', { pluginId: plugin.id, subDir }),
+      },
+    };
+  }, [plugin.id]);
+
+  // Injected runtime bridge scripts for sandboxed iframe
+  const preparedHtml = useMemo(() => {
+    if (!htmlContent) return '';
+    const bridgeScript = `
+<script>
+(function() {
+  var b = window.parent.__OPENREVO_BRIDGE__ || {};
+  window.__OPENREVO_PLUGIN_ID__ = "${plugin.id}";
+  window.OpenRevo = {
+    invoke: b.invoke || function() { return Promise.reject("Bridge unavailable"); },
+    listen: b.listen || function() { return Promise.resolve(function() {}); },
+    emit: b.emit || function() { return Promise.resolve(); },
+    pluginId: "${plugin.id}",
+    registerWatcher: function(w) { return b.registerWatcher ? b.registerWatcher(w) : (b.invoke ? b.invoke('register_custom_watcher', { watcher: Object.assign({}, w, { plugin_id: "${plugin.id}" }) }) : Promise.reject("Bridge unavailable")); },
+    unregisterWatcher: function(id) { return b.unregisterWatcher ? b.unregisterWatcher(id) : (b.invoke ? b.invoke('unregister_custom_watcher', { id: id }) : Promise.reject("Bridge unavailable")); },
+    getRegisteredWatchers: function() { return b.getRegisteredWatchers ? b.getRegisteredWatchers() : (b.invoke ? b.invoke('get_registered_watchers') : Promise.reject("Bridge unavailable")); },
+    storage: b.storage || {
+      get: function() { return b.invoke('get_plugin_storage', { pluginId: "${plugin.id}" }); },
+      set: function(data) { return b.invoke('set_plugin_storage', { pluginId: "${plugin.id}", data: data }); },
+      getItem: async function(k) { var all = await b.invoke('get_plugin_storage', { pluginId: "${plugin.id}" }); return all ? all[k] : undefined; },
+      setItem: async function(k, v) { var all = (await b.invoke('get_plugin_storage', { pluginId: "${plugin.id}" })) || {}; all[k] = v; return b.invoke('set_plugin_storage', { pluginId: "${plugin.id}", data: all }); },
+      readFile: function(p) { return b.invoke('read_plugin_file', { pluginId: "${plugin.id}", path: p }); },
+      writeFile: function(p, c) { return b.invoke('write_plugin_file', { pluginId: "${plugin.id}", path: p, content: c }); },
+      deleteFile: function(p) { return b.invoke('delete_plugin_file', { pluginId: "${plugin.id}", path: p }); },
+      listFiles: function(d) { return b.invoke('list_plugin_files', { pluginId: "${plugin.id}", subDir: d }); }
+    }
+  };
+  window.__TAURI__ = {
+    core: { invoke: b.invoke },
+    event: { listen: b.listen, emit: b.emit },
+    webviewWindow: { getCurrentWebviewWindow: b.getCurrentWebviewWindow },
+    window: { getCurrentWindow: b.getCurrentWindow, currentMonitor: b.currentMonitor },
+    dpi: { LogicalSize: b.LogicalSize, LogicalPosition: b.LogicalPosition }
+  };
+})();
+</script>
+`;
+    if (htmlContent.includes('<head>')) {
+      return htmlContent.replace('<head>', `<head>${bridgeScript}`);
+    } else if (htmlContent.includes('<html>')) {
+      return htmlContent.replace('<html>', `<html><head>${bridgeScript}</head>`);
+    } else {
+      return `${bridgeScript}${htmlContent}`;
+    }
+  }, [htmlContent, plugin.id]);
 
   const fetchHtml = async () => {
     setLoading(true);
     setError(null);
     try {
-      const html = await invoke<string>('load_plugin_html', { pluginId: plugin.id });
+      const html = await invoke<string>('load_plugin_html', { pluginId: plugin.id, surface: 'tab' });
       setHtmlContent(html);
     } catch (err: any) {
       console.error('Failed to load plugin html:', err);
@@ -122,6 +247,23 @@ export const PluginTabHost: React.FC<PluginTabHostProps> = ({ plugin, status }) 
     }
   }, [plugin.id]);
 
+  // Register telemetry consumer for current plugin tab
+  useEffect(() => {
+    if (plugin.telemetry?.enabled) {
+      invoke('register_telemetry_consumer', {
+        consumerId: plugin.id,
+        sensors: plugin.telemetry.sensors || null,
+      }).catch(() => {});
+    }
+    return () => {
+      if (plugin.telemetry?.enabled) {
+        invoke('unregister_telemetry_consumer', {
+          consumerId: plugin.id,
+        }).catch(() => {});
+      }
+    };
+  }, [plugin.id, plugin.telemetry?.enabled]);
+
   // Push telemetry snapshot to iframe whenever status updates
   useEffect(() => {
     if (!iframeRef.current || !iframeRef.current.contentWindow) return;
@@ -201,31 +343,87 @@ export const PluginTabHost: React.FC<PluginTabHostProps> = ({ plugin, status }) 
           case 'RAW_EC_READ':
             if (payload) {
               try {
-                const val = await invoke('raw_ec_read', { request: payload });
-                iframeRef.current?.contentWindow?.postMessage({ type: 'OPENREVO_RAW_EC_READ_RESULT', success: true, payload: val }, '*');
+                const val = await invoke('raw_ec_read', { request: payload.request || payload });
+                iframeRef.current?.contentWindow?.postMessage({ type: 'OPENREVO_RAW_EC_READ_RESULT', success: true, payload: val, reqId: payload.reqId }, '*');
               } catch (e: any) {
-                iframeRef.current?.contentWindow?.postMessage({ type: 'OPENREVO_RAW_EC_READ_RESULT', success: false, error: String(e) }, '*');
+                iframeRef.current?.contentWindow?.postMessage({ type: 'OPENREVO_RAW_EC_READ_RESULT', success: false, error: String(e), reqId: payload.reqId }, '*');
               }
             }
             break;
           case 'RAW_EC_WRITE':
             if (payload) {
               try {
-                const ok = await invoke('raw_ec_write', { request: payload });
-                iframeRef.current?.contentWindow?.postMessage({ type: 'OPENREVO_RAW_EC_WRITE_RESULT', success: true, payload: ok }, '*');
+                const ok = await invoke('raw_ec_write', { request: payload.request || payload });
+                iframeRef.current?.contentWindow?.postMessage({ type: 'OPENREVO_RAW_EC_WRITE_RESULT', success: true, payload: ok, reqId: payload.reqId }, '*');
               } catch (e: any) {
-                iframeRef.current?.contentWindow?.postMessage({ type: 'OPENREVO_RAW_EC_WRITE_RESULT', success: false, error: String(e) }, '*');
+                iframeRef.current?.contentWindow?.postMessage({ type: 'OPENREVO_RAW_EC_WRITE_RESULT', success: false, error: String(e), reqId: payload.reqId }, '*');
               }
             }
             break;
           case 'RAW_MAILBOX_INVOKE':
             if (payload) {
               try {
-                const out = await invoke('raw_mailbox_invoke', { request: payload });
-                iframeRef.current?.contentWindow?.postMessage({ type: 'OPENREVO_RAW_MAILBOX_RESULT', success: true, payload: out }, '*');
+                const out = await invoke('raw_mailbox_invoke', { request: payload.request || payload });
+                iframeRef.current?.contentWindow?.postMessage({ type: 'OPENREVO_RAW_MAILBOX_RESULT', success: true, payload: out, reqId: payload.reqId }, '*');
               } catch (e: any) {
-                iframeRef.current?.contentWindow?.postMessage({ type: 'OPENREVO_RAW_MAILBOX_RESULT', success: false, error: String(e) }, '*');
+                iframeRef.current?.contentWindow?.postMessage({ type: 'OPENREVO_RAW_MAILBOX_RESULT', success: false, error: String(e), reqId: payload.reqId }, '*');
               }
+            }
+            break;
+          case 'GET_PLUGIN_STORAGE':
+            try {
+              const res = await invoke('get_plugin_storage', { pluginId: plugin.id });
+              iframeRef.current?.contentWindow?.postMessage({ type: 'OPENREVO_PLUGIN_STORAGE_RESULT', success: true, payload: res, reqId: payload?.reqId }, '*');
+            } catch (e: any) {
+              iframeRef.current?.contentWindow?.postMessage({ type: 'OPENREVO_PLUGIN_STORAGE_RESULT', success: false, error: String(e), reqId: payload?.reqId }, '*');
+            }
+            break;
+          case 'SET_PLUGIN_STORAGE':
+            try {
+              await invoke('set_plugin_storage', { pluginId: plugin.id, data: payload?.data ?? payload });
+              iframeRef.current?.contentWindow?.postMessage({ type: 'OPENREVO_PLUGIN_STORAGE_SAVED', success: true, reqId: payload?.reqId }, '*');
+            } catch (e: any) {
+              iframeRef.current?.contentWindow?.postMessage({ type: 'OPENREVO_PLUGIN_STORAGE_SAVED', success: false, error: String(e), reqId: payload?.reqId }, '*');
+            }
+            break;
+          case 'READ_PLUGIN_FILE':
+            try {
+              const content = await invoke('read_plugin_file', { pluginId: plugin.id, path: payload?.path || payload });
+              iframeRef.current?.contentWindow?.postMessage({ type: 'OPENREVO_PLUGIN_FILE_READ', success: true, payload: content, reqId: payload?.reqId }, '*');
+            } catch (e: any) {
+              iframeRef.current?.contentWindow?.postMessage({ type: 'OPENREVO_PLUGIN_FILE_READ', success: false, error: String(e), reqId: payload?.reqId }, '*');
+            }
+            break;
+          case 'WRITE_PLUGIN_FILE':
+            try {
+              await invoke('write_plugin_file', { pluginId: plugin.id, path: payload?.path, content: payload?.content });
+              iframeRef.current?.contentWindow?.postMessage({ type: 'OPENREVO_PLUGIN_FILE_WRITTEN', success: true, reqId: payload?.reqId }, '*');
+            } catch (e: any) {
+              iframeRef.current?.contentWindow?.postMessage({ type: 'OPENREVO_PLUGIN_FILE_WRITTEN', success: false, error: String(e), reqId: payload?.reqId }, '*');
+            }
+            break;
+          case 'DELETE_PLUGIN_FILE':
+            try {
+              const deleted = await invoke('delete_plugin_file', { pluginId: plugin.id, path: payload?.path || payload });
+              iframeRef.current?.contentWindow?.postMessage({ type: 'OPENREVO_PLUGIN_FILE_DELETED', success: true, payload: deleted, reqId: payload?.reqId }, '*');
+            } catch (e: any) {
+              iframeRef.current?.contentWindow?.postMessage({ type: 'OPENREVO_PLUGIN_FILE_DELETED', success: false, error: String(e), reqId: payload?.reqId }, '*');
+            }
+            break;
+          case 'LIST_PLUGIN_FILES':
+            try {
+              const files = await invoke('list_plugin_files', { pluginId: plugin.id, subDir: payload?.subDir });
+              iframeRef.current?.contentWindow?.postMessage({ type: 'OPENREVO_PLUGIN_FILES_LIST', success: true, payload: files, reqId: payload?.reqId }, '*');
+            } catch (e: any) {
+              iframeRef.current?.contentWindow?.postMessage({ type: 'OPENREVO_PLUGIN_FILES_LIST', success: false, error: String(e), reqId: payload?.reqId }, '*');
+            }
+            break;
+          case 'EMIT':
+            if (payload?.event) {
+              await invoke('emit_plugin_broadcast', {
+                event: payload.event,
+                payload: payload.payload ?? null,
+              });
             }
             break;
           default:
@@ -249,8 +447,18 @@ export const PluginTabHost: React.FC<PluginTabHostProps> = ({ plugin, status }) 
   const handlePopOut = async () => {
     try {
       await invoke('open_custom_widget', { pluginId: plugin.id });
+      setIsPoppedOut(true);
     } catch (err) {
       console.error('Failed to open detached widget window:', err);
+    }
+  };
+
+  const handleClosePopOut = async () => {
+    try {
+      await invoke('close_custom_widget', { pluginId: plugin.id });
+      setIsPoppedOut(false);
+    } catch (err) {
+      console.error('Failed to close detached widget window:', err);
     }
   };
 
@@ -284,7 +492,7 @@ export const PluginTabHost: React.FC<PluginTabHostProps> = ({ plugin, status }) 
           </div>
           <h3 style={{ margin: '0 0 8px 0', fontSize: '16px', color: 'var(--text-primary)' }}>插件加载失败</h3>
           <p style={{ margin: '0 0 20px 0', fontSize: '13px', color: 'var(--text-muted)', lineHeight: '1.5' }}>
-            {error || '未在插件目录中找到 index.html 入口文件。请检查插件目录结构或查阅《OpenRevo 第三方插件开发手册》。'}
+            {error || '未在插件目录中找到 index.html 入口文件。请检查插件目录结构或查阅《OpenRevo 插件与扩展文档》。'}
           </p>
           <div style={{ display: 'flex', justifyContent: 'center', gap: '10px' }}>
             <button onClick={fetchHtml} className="toggle-btn">
@@ -392,21 +600,33 @@ export const PluginTabHost: React.FC<PluginTabHostProps> = ({ plugin, status }) 
             <RotateCcw size={12} />
             <span>刷新</span>
           </button>
-          <button
-            onClick={handlePopOut}
-            className="toggle-btn active-indigo"
-            title="以独立原生窗口弹出运行，支持在玩游戏或脱离主控制台时随时调优"
-            style={{ height: '26px', padding: '0 10px', fontSize: '11px' }}
-          >
-            <ExternalLink size={12} />
-            <span>独立视窗运行</span>
-          </button>
+          {isPoppedOut ? (
+            <button
+              onClick={handleClosePopOut}
+              className="toggle-btn active-cyan"
+              title="当前正以独立原生视窗运行，点击收回并关闭独立视窗"
+              style={{ height: '26px', padding: '0 10px', fontSize: '11px' }}
+            >
+              <Minimize2 size={12} />
+              <span>收回视窗</span>
+            </button>
+          ) : (
+            <button
+              onClick={handlePopOut}
+              className="toggle-btn active-indigo"
+              title="以独立原生窗口弹出运行，支持在玩游戏或脱离主控制台时随时调优"
+              style={{ height: '26px', padding: '0 10px', fontSize: '11px' }}
+            >
+              <ExternalLink size={12} />
+              <span>独立视窗运行</span>
+            </button>
+          )}
         </div>
       </div>
 
       <iframe
         ref={iframeRef}
-        srcDoc={htmlContent}
+        srcDoc={preparedHtml}
         title={plugin.name}
         sandbox="allow-scripts allow-forms allow-same-origin"
         style={{

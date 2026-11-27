@@ -17,6 +17,17 @@ pub fn switch_refresh_rate(hz: u32) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn toggle_screen_flip(app: AppHandle) -> Result<bool, String> {
+    let is_flipped = display::toggle_primary_display_orientation()?;
+    crate::system::osd_window::show_device_switch("screen_flip", is_flipped);
+    crate::system::osd_window::wake_osd_if_enabled(&app);
+    let _ = app.emit("screen-flip-changed", is_flipped);
+    let _ = app.emit_to("main", "screen-flip-changed", is_flipped);
+    let _ = app.emit_to("osd", "screen-flip-changed", is_flipped);
+    Ok(is_flipped)
+}
+
+#[tauri::command]
 pub fn get_display_monitors() -> Result<Vec<display::DisplayMonitor>, String> {
     Ok(display::get_all_monitors())
 }
@@ -102,11 +113,9 @@ pub fn apply_display_color_preset(
     } else {
         let _ = display_tuning::save_custom_preset_file(&preset);
     }
+    cfg.enabled = true;
     display_tuning::save_display_tuning_config(&cfg);
-
-    if cfg.enabled {
-        display_tuning::apply_color_preset(&preset)?;
-    }
+    display_tuning::apply_color_preset(&preset)?;
     Ok(())
 }
 
@@ -337,30 +346,6 @@ fn write_oem_miniled_registry(enabled: bool) {
     }
 }
 
-fn execute_miniled_cmd_fallback(cmd: u64) -> bool {
-    use std::os::windows::process::CommandExt;
-    use std::process::Command;
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-
-    let ps_script = format!(
-        r#"$inst = Get-CimInstance -Namespace 'root\WMI' -ClassName 'AcpiTest_MULong' -ErrorAction Stop | Where-Object {{ $_.InstanceName -like '*1_1' }} | Select-Object -First 1; if (-not $inst) {{ $inst = Get-CimInstance -Namespace 'root\WMI' -ClassName 'AcpiTest_MULong' -ErrorAction Stop | Select-Object -First 1 }}; if ($inst) {{ $cmd = [uint64]{}; Invoke-CimMethod -InputObject $inst -MethodName 'GetSetULong' -Arguments @{{ Data = $cmd }} -ErrorAction Stop; exit 0 }} else {{ exit 1 }}"#,
-        cmd
-    );
-
-    let status = Command::new("powershell")
-        .creation_flags(CREATE_NO_WINDOW)
-        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &ps_script])
-        .status();
-
-    match status {
-        Ok(s) => s.success(),
-        Err(e) => {
-            crate::log_warn!("MINILED", "PowerShell CIM fallback failed to launch: {}", e);
-            false
-        }
-    }
-}
-
 #[tauri::command]
 pub fn get_miniled_status() -> Result<bool, String> {
     if let Some(oem_status) = read_oem_miniled_registry() {
@@ -370,28 +355,29 @@ pub fn get_miniled_status() -> Result<bool, String> {
     Ok(cfg.miniled_enabled)
 }
 
+pub fn set_miniled_hardware_state(enabled: bool) -> bool {
+    let cmd = if enabled {
+        crate::hal::vault::miniled::CMD_MINILED_ON
+    } else {
+        crate::hal::vault::miniled::CMD_MINILED_OFF
+    };
+
+    let ok = crate::driver::wmi_mulong::mulong_exec_raw(cmd);
+    if ok {
+        write_oem_miniled_registry(enabled);
+    }
+    ok
+}
+
 #[tauri::command]
 pub async fn set_miniled_status(enabled: bool) -> Result<bool, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let cmd = if enabled {
-            crate::hal::vault::miniled::CMD_MINILED_ON
-        } else {
-            crate::hal::vault::miniled::CMD_MINILED_OFF
-        };
-
-        let mut ok = crate::driver::wmi_mulong::mulong_exec_raw(cmd);
-        if !ok {
-            crate::log_info!("MINILED", "Native COM mulong_exec_raw returned false, running resilient CIM fallback...");
-            ok = execute_miniled_cmd_fallback(cmd);
-        }
+        let ok = set_miniled_hardware_state(enabled);
 
         if ok {
             let mut cfg = crate::system::config::load_config();
             cfg.miniled_enabled = enabled;
             crate::system::config::save_config(&cfg);
-
-            // Sync with OEM registry so official control center UI stays coherent
-            write_oem_miniled_registry(enabled);
 
             crate::log_info!("MINILED", "MiniLED local dimming toggled to: {}", enabled);
             Ok(enabled)
@@ -405,3 +391,66 @@ pub async fn set_miniled_status(enabled: bool) -> Result<bool, String> {
 }
 
 
+
+
+// ---------------------------------------------------------------------------
+// Cloud ICC Retrieval Commands (for Tongfang / Uniwill OEM factory profiles)
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn get_cloud_icc_identity() -> Result<crate::system::cloud_icc::CloudIccIdentity, String> {
+    tauri::async_runtime::spawn_blocking(crate::system::cloud_icc::get_cloud_icc_identity)
+        .await
+        .map_err(|e| format!("Task spawn error: {}", e))?
+}
+
+#[tauri::command]
+pub async fn fetch_cloud_icc_profile(
+    candidate: String,
+    method: Option<String>,
+    server_url: Option<String>,
+) -> Result<crate::system::cloud_icc::CloudIccFetchHit, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let m = method.as_deref().unwrap_or("auto").to_lowercase();
+
+        let target_servers: Vec<&str> = if let Some(ref s) = server_url {
+            vec![s.as_str()]
+        } else if m == "40" || m == "mac" {
+            vec![
+                crate::system::cloud_icc::SERVER_UNIWILL,
+                crate::system::cloud_icc::SERVER_AISTONE,
+            ]
+        } else if m == "50" || m == "sn" {
+            vec![
+                crate::system::cloud_icc::SERVER_AISTONE,
+                crate::system::cloud_icc::SERVER_UNIWILL,
+            ]
+        } else {
+            let is_mac_candidate = candidate
+                .split('_')
+                .last()
+                .map(|s| s.len() == 12 && s.chars().all(|c| c.is_ascii_hexdigit()))
+                .unwrap_or(false);
+            if is_mac_candidate {
+                vec![
+                    crate::system::cloud_icc::SERVER_UNIWILL,
+                    crate::system::cloud_icc::SERVER_AISTONE,
+                ]
+            } else {
+                vec![
+                    crate::system::cloud_icc::SERVER_AISTONE,
+                    crate::system::cloud_icc::SERVER_UNIWILL,
+                ]
+            }
+        };
+
+        for srv in target_servers {
+            if let Some(hit) = crate::system::cloud_icc::probe_single_candidate(srv, &candidate, 6) {
+                return Ok(hit);
+            }
+        }
+        Err(format!("No cloud ICC found for candidate '{}'", candidate))
+    })
+    .await
+    .map_err(|e| format!("Task spawn error: {}", e))?
+}

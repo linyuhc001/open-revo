@@ -79,6 +79,31 @@ impl IteStreamerController {
         GLOBAL_KEYBOARD_PROBE_CACHE.store(-1, Ordering::Relaxed);
     }
 
+    /// 判断 HID 接口路径（须先 to_lowercase）是否属于 ITE 逐键 RGB 键盘。
+    /// 判据：VID 048D + MI_01 接口 + PID 属于 is_perkey_pid()。
+    /// 与 `StreamerDevice::open()` 使用同一套规则，杜绝"探测得到但打不开"的分裂。
+    pub(crate) fn is_perkey_path(path_lower: &str) -> bool {
+        if !path_lower.contains("vid_048d") || !path_lower.contains("mi_01") {
+            return false;
+        }
+        let idx = match path_lower.find("pid_") {
+            Some(i) => i,
+            None => return false,
+        };
+        // HID 接口路径里的 PID 是十六进制文本，Windows 习惯补零成 4 位（pid_600b / pid_ce00），
+        // 但不能假定定长：若遇到 pid_600 这种非补零写法，旧的 idx+4..idx+8 会切到分隔符而漏判。
+        // 这里扫描连续的十六进制字符，最多 4 位，不足 4 位也照常解析。
+        let hex: String = path_lower[idx + 4..]
+            .chars()
+            .take_while(|c| c.is_ascii_hexdigit())
+            .take(4)
+            .collect();
+        if hex.is_empty() {
+            return false;
+        }
+        u16::from_str_radix(&hex, 16).map(is_perkey_pid).unwrap_or(false)
+    }
+
     pub fn probe_exists() -> bool {
         let cached = GLOBAL_KEYBOARD_PROBE_CACHE.load(Ordering::Relaxed);
         if cached != -1 {
@@ -124,7 +149,9 @@ impl IteStreamerController {
                         let mut path_len = 0;
                         while *path_ptr.add(path_len) != 0 { path_len += 1; }
                         let path_str = String::from_utf16_lossy(std::slice::from_raw_parts(path_ptr, path_len)).to_lowercase();
-                        if path_str.contains("vid_048d") && path_str.contains("pid_600b") && (path_str.contains("&mi_01") || path_str.contains("mi_01")) {
+                        // ITE 8291 逐键 RGB 控制接口：048D:xxxx & MI_01。
+                        // 不能只认 0x600B —— 蛟龙 GM7ZG7S 等机型用 0xCE00，同为 0x33 逐键协议（实机验证）。
+                        if Self::is_perkey_path(&path_str) {
                             found = true;
                             break;
                         }
@@ -188,8 +215,13 @@ impl IteStreamerController {
         }
 
         if let Some(val) = crate::driver::wmi_ec::wmi_read_ec(ADDR_BACKLIGHT_WHITE) {
-            if (val & 0x02) != 0 {
-                let _ = crate::driver::wmi_ec::wmi_write_ec(ADDR_BACKLIGHT_WHITE, val & !0x02);
+            let target = if enabled && brightness_idx > 0 {
+                val & !0x02
+            } else {
+                val | 0x02
+            };
+            if target != val {
+                let _ = crate::driver::wmi_ec::wmi_write_ec(ADDR_BACKLIGHT_WHITE, target);
             }
         }
 
@@ -222,6 +254,63 @@ impl IteStreamerController {
         }
     }
 
+    /// Re-compiles `<config_dir>/custom_effects/<id>.{brfx,revo-fx,rhai}` into the
+    /// custom FX engine. The compiled Rhai AST is memory-only, so a cold boot starts
+    /// with an empty engine; without this the streamer falls back to the built-in
+    /// approximation used for effects >= 200 and the user's script settings are
+    /// silently dropped.
+    fn restore_custom_script(script_id: &str) {
+        let id = script_id.trim();
+        if id.is_empty() {
+            return;
+        }
+        let dir = crate::system::config::get_config_dir().join("custom_effects");
+        let mut path = None;
+        for ext in ["brfx", "revo-fx", "rhai"] {
+            let candidate = dir.join(format!("{}.{}", id, ext));
+            if candidate.is_file() {
+                path = Some(candidate);
+                break;
+            }
+        }
+        let path = match path {
+            Some(p) => p,
+            None => {
+                crate::log_warn!(
+                    "KEYBOARD",
+                    "init_from_saved_config: custom script '{}' not found in {}",
+                    id,
+                    dir.display()
+                );
+                return;
+            }
+        };
+        match std::fs::read_to_string(&path) {
+            Ok(content) => {
+                match crate::driver::custom_fx_engine::get_custom_fx_engine().load_script(id, &content) {
+                    Ok(()) => crate::log_info!(
+                        "KEYBOARD",
+                        "init_from_saved_config: restored custom BRFX script '{}' from {}",
+                        id,
+                        path.display()
+                    ),
+                    Err(err) => crate::log_warn!(
+                        "KEYBOARD",
+                        "init_from_saved_config: failed to compile custom script '{}': {}",
+                        id,
+                        err
+                    ),
+                }
+            }
+            Err(err) => crate::log_warn!(
+                "KEYBOARD",
+                "init_from_saved_config: failed to read custom script '{}': {}",
+                id,
+                err
+            ),
+        }
+    }
+
     pub fn init_from_saved_config() {
         if !Self::probe_exists() {
             crate::log_info!("KEYBOARD", "init_from_saved_config: No ITE 8291 RGB keyboard device detected, skipping streamer/mcu initialization");
@@ -247,6 +336,12 @@ impl IteStreamerController {
             );
         } else {
             crate::log_info!("KEYBOARD", "init_from_saved_config: activating BetterRGB Streamer Engine (effect={})", cfg.lighting.streamer_effect);
+            // BRFX scripts are compiled to an in-memory Rhai AST, so they must be
+            // re-loaded on every cold boot. Without this the streamer keeps running
+            // but renders the built-in fallback instead of the user's saved script.
+            if cfg.lighting.kb_engine == "custom" {
+                Self::restore_custom_script(&cfg.lighting.custom_script_id);
+            }
             let brightness_pct = match cfg.lighting.kb_brightness {
                 0 => 0,
                 1 => 20,
@@ -486,6 +581,34 @@ impl IteStreamerController {
         }
     }
 
+    /// 把键盘控制权交还 OEM / 官方控制台。
+    ///
+    /// 与 `handover_to_hardware_on_exit()` 不同：那个是「退出时让 MCU 自己跑效果」，
+    /// 这个是「彻底让出」—— 停流式线程、让 MCU 退出 0x33 自定义模式、释放独占的 HID 句柄。
+    ///
+    /// 归还时必须调用，否则官方控制台即使服务已恢复也抢不回灯控：HID 是单点独占，
+    /// 且 MCU 停在 0x33 自定义模式下不会响应 OEM 指令（实机验证：只调 resume_oem_services()
+    /// 后官方控制台点效果仍然无效，必须重启本程序才能夺回）。
+    pub fn release_to_oem(&self) {
+        self.stop();
+        Self::invalidate_probe_cache();
+        if !Self::probe_exists() {
+            crate::log_info!("STREAMER", "release_to_oem: no ITE keyboard present, nothing to release");
+            return;
+        }
+        // worker 线程收尾时已经发过 stop_mcu；这里再补一次，覆盖「流式线程没在跑，
+        // 但 MCU 被 apply_hardware 停在自定义模式」的情况（kb_engine == "hardware"）。
+        if let Some(dev) = StreamerDevice::open() {
+            let _ = dev.stop_mcu();
+            sleep(Duration::from_millis(20));
+            drop(dev);
+        }
+        crate::log_info!(
+            "STREAMER",
+            "release_to_oem: streamer stopped, MCU left 0x33 mode, HID handle released back to OEM"
+        );
+    }
+
     pub fn suspend_for_sleep(&self) {
         crate::log_info!("STREAMER", "suspend_for_sleep: stopping streamer thread");
         self.stop();
@@ -514,13 +637,26 @@ impl IteStreamerController {
         self.stop();
         self.set_unsupported(false);
 
+        let cfg = crate::system::config::load_config();
+        let kb_is_on = cfg.lighting.kb_enabled && cfg.lighting.kb_brightness > 0;
+
         if let Some(val) = crate::driver::wmi_ec::wmi_read_ec(ADDR_BACKLIGHT_WHITE) {
-            if (val & 0x02) != 0 {
-                let _ = crate::driver::wmi_ec::wmi_write_ec(ADDR_BACKLIGHT_WHITE, val & !0x02);
+            let target = if kb_is_on {
+                val & !0x02
+            } else {
+                val | 0x02
+            };
+            if target != val {
+                let _ = crate::driver::wmi_ec::wmi_write_ec(ADDR_BACKLIGHT_WHITE, target);
             }
         }
 
-        let cfg = crate::system::config::load_config();
+        if !kb_is_on {
+            self.turn_off();
+            crate::log_info!("STREAMER", "resume_after_wake: keyboard is disabled in user config, keeping streamer stopped & dark");
+            return;
+        }
+
         if cfg.lighting.kb_engine == "hardware" {
             let hw_effect = if cfg.lighting.kb_effect > 0 && cfg.lighting.kb_effect < 100 {
                 cfg.lighting.kb_effect

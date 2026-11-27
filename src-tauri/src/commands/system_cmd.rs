@@ -49,8 +49,16 @@ pub struct HardwareState {
     pub model_name: String,
     pub power_presets: FactoryPowerPresets,
     pub is_dc_online: bool,
+    #[serde(default)]
+    pub battery_level: u8,
+    #[serde(default)]
+    pub is_charging: bool,
+    #[serde(default)]
+    pub is_ac_online: bool,
     pub cpu_power_w: f32,
     pub gpu_power_w: f32,
+    #[serde(default)]
+    pub balanced_gpu_dynamic_boost: bool,
 }
 
 pub fn get_machine_model() -> String {
@@ -138,11 +146,32 @@ pub fn collect_hardware_state(
     };
 
     let cpu = get_cpu_monitor();
-    let cpu_temp = cpu.get_temp();
+    let cpu_temp = {
+        let manifest_has_temp = crate::hal::declarative::load_matched_manifest()
+            .map(|m| m.actions.contains_key("read_cpu_temp"))
+            .unwrap_or(false);
+
+        if manifest_has_temp {
+            let hal = crate::hal::get_hardware_driver();
+            if let Ok(t) = hal.read_cpu_temp() {
+                if t > 0 && t < 125 {
+                    cpu.set_temp(t as i32);
+                    t as i32
+                } else {
+                    cpu.get_temp()
+                }
+            } else {
+                cpu.get_temp()
+            }
+        } else {
+            cpu.get_temp()
+        }
+    };
     let oem_running = process::is_oem_service_running();
     let oem_installed = process::is_oem_installed();
     let is_intel_13_14_gen = cpu.is_intel_13_14_gen();
-    let autostart_enabled = autostart::is_autostart_enabled();
+    let autostart_enabled = autostart::is_autostart_enabled_cached();
+    let (battery_level, is_ac_online, is_charging) = crate::commands::power_cmd::get_live_power_status();
 
     let cfg = crate::system::config::load_config();
 
@@ -183,8 +212,12 @@ pub fn collect_hardware_state(
         model_name: get_machine_model(),
         power_presets: get_factory_power_presets(has_gpu),
         is_dc_online: is_dc_round_plugged_in(),
+        battery_level,
+        is_charging,
+        is_ac_online,
         cpu_power_w: cpu.get_power_w(),
         gpu_power_w,
+        balanced_gpu_dynamic_boost: cfg.balanced_gpu_dynamic_boost,
     }
 }
 
@@ -204,6 +237,60 @@ pub fn get_app_config() -> crate::system::config::AppConfig {
 #[tauri::command]
 pub fn save_app_config(cfg: crate::system::config::AppConfig) -> Result<(), String> {
     crate::system::config::save_config(&cfg);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_classic_webview() -> bool {
+    crate::system::config::load_config().use_classic_webview
+}
+
+#[tauri::command]
+pub fn set_classic_webview(enabled: bool) -> Result<(), String> {
+    let mut cfg = crate::system::config::load_config();
+    cfg.use_classic_webview = enabled;
+    crate::system::config::save_config(&cfg);
+    if enabled {
+        crate::system::osd_window::shutdown_osd_process();
+    }
+    crate::log_info!("CONFIG", "use_classic_webview set to: {}", enabled);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_update_channel() -> String {
+    crate::system::config::load_config().update_channel
+}
+
+#[tauri::command]
+pub fn set_update_channel(channel: String) -> Result<(), String> {
+    let mut cfg = crate::system::config::load_config();
+    cfg.update_channel = channel.clone();
+    crate::system::config::save_config(&cfg);
+    crate::log_info!("CONFIG", "update_channel set to: {}", channel);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn restart_app(app: AppHandle) -> Result<(), String> {
+    crate::log_info!("APP", "Restarting application...");
+    crate::system::tray::IS_EXPLICIT_EXIT.store(true, std::sync::atomic::Ordering::SeqCst);
+    if let Ok(exe) = std::env::current_exe() {
+        let mut cmd = std::process::Command::new(&exe);
+        cmd.arg(format!("--relaunch-wait={}", std::process::id()))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0000_0008 | 0x0000_0200);
+        }
+        if let Err(e) = cmd.spawn() {
+            crate::log_error!("APP", "Failed to spawn relaunch process {:?}: {}", exe, e);
+        }
+    }
+    app.exit(0);
     Ok(())
 }
 
@@ -232,6 +319,8 @@ pub fn set_unlock_battery_power_limit(
         crate::system::config::save_config(&cfg);
         ec_state.lock().set_power_mode(target_mode);
         crate::update_tray_power_mode(target_mode);
+        crate::system::slint_window::sync_slint_switches_state();
+        crate::system::slint_window::sync_slint_power_targets(target_mode);
         let _ = app.emit("physical-mode-switched", target_mode);
         let _ = app.emit_to("main", "physical-mode-switched", target_mode);
         let _ = app.emit_to("osd", "physical-mode-switched", target_mode);
@@ -309,20 +398,22 @@ pub fn toggle_oem_service(
             {
                 let ec = ec_clone.lock();
                 ec.set_power_mode(effective_mode);
-                ec.set_battery_limit(cfg_clone.battery_limit);
+                if cfg_clone.battery_limit < 95 || cfg_clone.battery_hardware_limit_enabled {
+                    ec.set_battery_limit(cfg_clone.battery_limit);
+                }
             }
             if let Some(v) = crate::driver::wmi_ec::wmi_read_ec(crate::driver::wmi_ec::ADDR_AC_RECOVERY) {
                 let mut new_v = if cfg_clone.ac_recovery_enabled { v | crate::driver::wmi_ec::AC_RECOVERY_BITMASK } else { v & !crate::driver::wmi_ec::AC_RECOVERY_BITMASK };
                 if effective_mode == 4 {
-                    new_v |= crate::driver::wmi_ec::MASK_QKEY_WHITE_1830;
+                    new_v |= crate::driver::wmi_ec::MASK_QKEY_WHITE_AC_RECOVERY;
                 } else {
-                    new_v &= !crate::driver::wmi_ec::MASK_QKEY_WHITE_1830;
+                    new_v &= !crate::driver::wmi_ec::MASK_QKEY_WHITE_AC_RECOVERY;
                 }
                 crate::driver::wmi_ec::wmi_write_ec(crate::driver::wmi_ec::ADDR_AC_RECOVERY, new_v);
             }
             if effective_mode == 4 {
                 if let Some(v) = crate::driver::wmi_ec::wmi_read_ec(crate::driver::wmi_ec::ADDR_CAMERA_CUTOFF) {
-                    crate::driver::wmi_ec::wmi_write_ec(crate::driver::wmi_ec::ADDR_CAMERA_CUTOFF, v | crate::driver::wmi_ec::MASK_QKEY_WHITE_1831);
+                    crate::driver::wmi_ec::wmi_write_ec(crate::driver::wmi_ec::ADDR_CAMERA_CUTOFF, v | crate::driver::wmi_ec::MASK_QKEY_WHITE_CAMERA_CUTOFF);
                 }
             }
             if let Some(v) = crate::driver::wmi_ec::wmi_read_ec(crate::driver::wmi_ec::ADDR_TRIGGER_BYTE) {
@@ -335,6 +426,11 @@ pub fn toggle_oem_service(
             crate::log_info!("TAKEOVER", "Successfully synchronized power mode and battery limit after takeover");
         });
     } else {
+        // 顺序不能反：先让键盘彻底松手，再恢复 OEM 服务。
+        // 流式线程退出时会发 stop_mcu（MCU 离开 0x33 自定义模式）并释放独占的 HID 句柄；
+        // 若只调 resume_oem_services()，官方控制台即使服务已起来也抢不回灯控 —— 实机验证，
+        // 用户必须手动重启本程序才能恢复。这是 takeover_oem 双向切换的对称性缺口。
+        crate::driver::ite_streamer::get_global_streamer().release_to_oem();
         let _ = service_mgr::resume_oem_services();
     }
 
@@ -746,11 +842,30 @@ pub struct PluginWindowConfig {
     pub decorations: bool,
     #[serde(default = "default_true", alias = "skipTaskbar")]
     pub skip_taskbar: bool,
+    #[serde(default, alias = "clickThrough", alias = "click_through")]
+    pub click_through: bool,
 }
 
 fn default_widget_width() -> f64 { 240.0 }
 fn default_widget_height() -> f64 { 320.0 }
 fn default_true() -> bool { true }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PluginTabConfig {
+    pub entry: Option<String>,
+    #[serde(default, alias = "type", alias = "engine", alias = "plugin_type")]
+    pub plugin_type: Option<String>,
+    pub title: Option<String>,
+    pub icon: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PluginWidgetConfig {
+    pub entry: Option<String>,
+    #[serde(default, alias = "type", alias = "engine", alias = "plugin_type")]
+    pub plugin_type: Option<String>,
+    pub window: Option<PluginWindowConfig>,
+}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CustomPluginItem {
@@ -772,8 +887,27 @@ pub struct CustomPluginItem {
     pub watchers: Option<Vec<crate::system::watcher_hub::WatcherDefinition>>,
     pub permissions: Option<Vec<String>>,
     pub min_host_version: Option<String>,
+    #[serde(default)]
+    pub order: Option<f64>,
     pub is_compatible: bool,
     pub compatibility_notice: Option<String>,
+    // --- Unified Capability Declarations ---
+    #[serde(default)]
+    pub has_tab: bool,
+    #[serde(default)]
+    pub has_widget: bool,
+    #[serde(default)]
+    pub has_slot: bool,
+    #[serde(default)]
+    pub has_service: bool,
+    #[serde(default)]
+    pub has_skin: bool,
+    #[serde(default)]
+    pub has_background: bool,
+    #[serde(default)]
+    pub is_headless: bool,
+    pub tab: Option<PluginTabConfig>,
+    pub widget: Option<PluginWidgetConfig>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -806,6 +940,12 @@ pub struct RawPluginManifest {
     pub permissions: Option<Vec<String>>,
     #[serde(default, alias = "openrevo_version", alias = "min_version")]
     pub min_host_version: Option<String>,
+    #[serde(default)]
+    pub order: Option<f64>,
+    #[serde(default)]
+    pub tab: Option<PluginTabConfig>,
+    #[serde(default)]
+    pub widget: Option<PluginWidgetConfig>,
 }
 
 pub fn check_version_compatibility(min_host_version: Option<&str>) -> (bool, Option<String>) {
@@ -1136,9 +1276,15 @@ fn extract_attribute_value<'a>(tag: &'a str, attr_name: &str) -> Option<&'a str>
     }
 }
 
+/// Returns the authoritative plugins directory resolved by the host microkernel.
+/// Strictly points to <get_config_dir()>/plugins (%APPDATA%\OpenRevo\plugins, portable exe/data/plugins, or user-migrated custom directory).
+pub fn get_plugins_dir() -> std::path::PathBuf {
+    crate::system::config::get_config_dir().join("plugins")
+}
+
 #[tauri::command]
 pub fn open_plugins_dir() -> Result<(), String> {
-    let dir = crate::system::config::get_config_dir().join("plugins");
+    let dir = get_plugins_dir();
     let _ = std::fs::create_dir_all(&dir);
     #[cfg(target_os = "windows")]
     {
@@ -1151,7 +1297,7 @@ pub fn open_plugins_dir() -> Result<(), String> {
 
 #[tauri::command]
 pub fn get_custom_plugins() -> Result<Vec<CustomPluginItem>, String> {
-    let plugins_dir = crate::system::config::get_config_dir().join("plugins");
+    let plugins_dir = get_plugins_dir();
     let _ = std::fs::create_dir_all(&plugins_dir);
 
     let cfg = crate::system::config::load_config();
@@ -1165,51 +1311,124 @@ pub fn get_custom_plugins() -> Result<Vec<CustomPluginItem>, String> {
                 let manifest_path = path.join("manifest.json");
 
                 if manifest_path.exists() {
-                    if let Ok(content) = std::fs::read_to_string(&manifest_path) {
-                        if let Ok(manifest) = serde_json::from_str::<RawPluginManifest>(&content) {
-                            let id = manifest.id.unwrap_or_else(|| dir_name.clone());
-                            let plugin_type = manifest.plugin_type.unwrap_or_else(|| "extension".into());
-                            let (is_compatible, compatibility_notice) = check_version_compatibility(manifest.min_host_version.as_deref());
-                            let enabled = if !is_compatible {
-                                false
-                            } else if plugin_type == "skin" {
-                                cfg.active_skin.as_ref() == Some(&id)
-                            } else if plugin_type == "background" {
-                                cfg.active_background.as_ref() == Some(&id)
-                            } else {
-                                cfg.custom_plugin_toggles.get(&id).copied().unwrap_or(true)
-                            };
-                            list.push(CustomPluginItem {
-                                id: id.clone(),
-                                name: manifest.name.unwrap_or_else(|| dir_name.clone()),
-                                version: manifest.version.unwrap_or_else(|| "1.0.0".into()),
-                                author: manifest.author.unwrap_or_else(|| "第三方开发者".into()),
-                                description: manifest.description.unwrap_or_else(|| "无插件描述".into()),
-                                plugin_type,
-                                enabled,
-                                dir_name: dir_name.clone(),
-                                window: manifest.window,
-                                telemetry: manifest.telemetry,
-                                entry: manifest.entry,
-                                target_slot: manifest.target_slot,
-                                slot_height: manifest.slot_height,
-                                service: manifest.service,
-                                shortcuts: manifest.shortcuts.clone(),
-                                watchers: manifest.watchers.clone(),
-                                permissions: manifest.permissions.clone(),
-                                min_host_version: manifest.min_host_version.clone(),
-                                is_compatible,
-                                compatibility_notice,
-                            });
-                            if enabled && is_compatible {
-                                if let Some(ref scs) = manifest.shortcuts {
-                                    crate::system::shortcuts::load_plugin_shortcuts(&id, scs.clone());
+                    match std::fs::read_to_string(&manifest_path) {
+                        Ok(content) => match serde_json::from_str::<RawPluginManifest>(&content) {
+                            Ok(manifest) => {
+                                let id = manifest.id.unwrap_or_else(|| dir_name.clone());
+                                let raw_p_type = manifest.plugin_type.as_deref().unwrap_or("extension");
+
+                                let has_explicit_tab = manifest.tab.is_some();
+                                let has_explicit_widget = manifest.widget.is_some();
+
+                                let has_skin = raw_p_type.eq_ignore_ascii_case("skin") || manifest.theme_css.is_some();
+                                let has_background = raw_p_type.eq_ignore_ascii_case("background") || manifest.background_css.is_some() || manifest.image.is_some();
+                                let has_slot = raw_p_type.eq_ignore_ascii_case("slot") || manifest.target_slot.is_some();
+                                let has_service = manifest.service.is_some();
+
+                                let has_widget = has_explicit_widget || (raw_p_type.eq_ignore_ascii_case("widget") && !has_explicit_tab);
+                                let has_tab = has_explicit_tab || raw_p_type.eq_ignore_ascii_case("tab") || (manifest.entry.is_some() && !has_widget && !has_slot && !has_skin && !has_background);
+                                let is_headless = !has_tab && !has_widget && !has_slot && !has_skin && !has_background;
+
+                                let plugin_type = if has_skin {
+                                    "skin".to_string()
+                                } else if has_background {
+                                    "background".to_string()
+                                } else if has_tab && has_widget {
+                                    "app".to_string()
+                                } else if has_widget {
+                                    "widget".to_string()
+                                } else if has_tab {
+                                    "tab".to_string()
+                                } else if has_slot {
+                                    "slot".to_string()
+                                } else {
+                                    "service".to_string()
+                                };
+
+                                let tab_cfg = manifest.tab.clone().or_else(|| {
+                                    if has_tab {
+                                        Some(PluginTabConfig {
+                                            entry: manifest.entry.clone(),
+                                            plugin_type: manifest.plugin_type.clone(),
+                                            title: manifest.name.clone(),
+                                            icon: None,
+                                        })
+                                    } else {
+                                        None
+                                    }
+                                });
+
+                                let widget_cfg = manifest.widget.clone().or_else(|| {
+                                    if has_widget {
+                                        Some(PluginWidgetConfig {
+                                            entry: manifest.entry.clone(),
+                                            plugin_type: manifest.plugin_type.clone(),
+                                            window: manifest.window.clone(),
+                                        })
+                                    } else {
+                                        None
+                                    }
+                                });
+
+                                let (is_compatible, compatibility_notice) = check_version_compatibility(manifest.min_host_version.as_deref());
+                                let enabled = if !is_compatible {
+                                    false
+                                } else if plugin_type == "skin" {
+                                    cfg.active_skin.as_ref() == Some(&id)
+                                } else if plugin_type == "background" {
+                                    cfg.active_background.as_ref() == Some(&id)
+                                } else {
+                                    cfg.custom_plugin_toggles.get(&id).copied().unwrap_or(true)
+                                };
+
+                                list.push(CustomPluginItem {
+                                    id: id.clone(),
+                                    name: manifest.name.unwrap_or_else(|| dir_name.clone()),
+                                    version: manifest.version.unwrap_or_else(|| "1.0.0".into()),
+                                    author: manifest.author.unwrap_or_else(|| "第三方开发者".into()),
+                                    description: manifest.description.unwrap_or_else(|| "无插件描述".into()),
+                                    plugin_type,
+                                    enabled,
+                                    dir_name: dir_name.clone(),
+                                    window: manifest.window,
+                                    telemetry: manifest.telemetry,
+                                    entry: manifest.entry,
+                                    target_slot: manifest.target_slot,
+                                    slot_height: manifest.slot_height,
+                                    service: manifest.service,
+                                    shortcuts: manifest.shortcuts.clone(),
+                                    watchers: manifest.watchers.clone(),
+                                    permissions: manifest.permissions.clone(),
+                                    min_host_version: manifest.min_host_version.clone(),
+                                    order: manifest.order,
+                                    is_compatible,
+                                    compatibility_notice,
+                                    has_tab,
+                                    has_widget,
+                                    has_slot,
+                                    has_service,
+                                    has_skin,
+                                    has_background,
+                                    is_headless,
+                                    tab: tab_cfg,
+                                    widget: widget_cfg,
+                                });
+                                if enabled && is_compatible {
+                                    if let Some(ref scs) = manifest.shortcuts {
+                                        crate::system::shortcuts::load_plugin_shortcuts(&id, scs.clone());
+                                    }
+                                    if let Some(ref wts) = manifest.watchers {
+                                        crate::system::watcher_hub::load_plugin_watchers(&id, wts.clone());
+                                    }
                                 }
-                                if let Some(ref wts) = manifest.watchers {
-                                    crate::system::watcher_hub::load_plugin_watchers(&id, wts.clone());
-                                }
+                                continue;
                             }
-                            continue;
+                            Err(e) => {
+                                crate::log_warn!("PLUGIN", "Failed to parse manifest at {:?}: {}", manifest_path, e);
+                            }
+                        },
+                        Err(e) => {
+                            crate::log_warn!("PLUGIN", "Failed to read manifest at {:?}: {}", manifest_path, e);
                         }
                     }
                 }
@@ -1235,8 +1454,18 @@ pub fn get_custom_plugins() -> Result<Vec<CustomPluginItem>, String> {
                     watchers: None,
                     permissions: None,
                     min_host_version: None,
+                    order: None,
                     is_compatible: true,
                     compatibility_notice: None,
+                    has_tab: false,
+                    has_widget: false,
+                    has_slot: false,
+                    has_service: false,
+                    has_skin: false,
+                    has_background: false,
+                    is_headless: true,
+                    tab: None,
+                    widget: None,
                 });
             }
         }
@@ -1300,7 +1529,7 @@ pub fn set_custom_plugin_enabled(id: String, enabled: bool) -> Result<bool, Stri
 }
 
 pub fn find_plugin_dir(plugin_id: &str) -> std::path::PathBuf {
-    let base = crate::system::config::get_config_dir().join("plugins");
+    let base = get_plugins_dir();
     let direct = base.join(plugin_id);
     if direct.exists() {
         return direct;
@@ -1320,6 +1549,7 @@ pub fn find_plugin_dir(plugin_id: &str) -> std::path::PathBuf {
             }
         }
     }
+
     direct
 }
 
@@ -1444,14 +1674,24 @@ pub fn get_active_background() -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
-pub fn load_plugin_html(plugin_id: String) -> Result<String, String> {
+pub fn load_plugin_html(plugin_id: String, surface: Option<String>) -> Result<String, String> {
     let plugins_dir = find_plugin_dir(&plugin_id);
     let manifest_path = plugins_dir.join("manifest.json");
 
     let entry_file = if manifest_path.exists() {
         if let Ok(content) = std::fs::read_to_string(&manifest_path) {
             if let Ok(manifest) = serde_json::from_str::<RawPluginManifest>(&content) {
-                manifest.entry.unwrap_or_else(|| "index.html".into())
+                let s = surface.as_deref().unwrap_or_default();
+                if s.eq_ignore_ascii_case("widget") {
+                    manifest.widget.and_then(|w| w.entry).or(manifest.entry).unwrap_or_else(|| "index.html".into())
+                } else if s.eq_ignore_ascii_case("tab") {
+                    manifest.tab.and_then(|t| t.entry).or(manifest.entry).unwrap_or_else(|| "index.html".into())
+                } else {
+                    manifest.entry
+                        .or_else(|| manifest.tab.and_then(|t| t.entry))
+                        .or_else(|| manifest.widget.and_then(|w| w.entry))
+                        .unwrap_or_else(|| "index.html".into())
+                }
             } else {
                 "index.html".into()
             }
@@ -1522,6 +1762,56 @@ pub fn get_model_capabilities() -> serde_json::Value {
             }
         };
 
+        let mut effective_rgb_kb = manifest.capabilities.rgb_keyboard.clone();
+
+        // Level 0 Lighting Decision Center Sovereignty:
+        // If the user configured an active hardware override, dynamically reconstruct
+        // `effective_rgb_kb` based on the active contract, so the entire frontend reactive tree updates immediately.
+        let cfg = crate::system::config::load_config();
+        if cfg.lighting.hardware_override.enabled {
+            let contract = crate::system::model_engine::get_active_lighting_contract();
+            let mut kb = effective_rgb_kb.unwrap_or_else(|| crate::hal::declarative::model_manifest::KeyboardCapability {
+                supported: true,
+                keyboard_type: "single_zone_rgb".to_string(),
+                steps: vec![1, 2, 3],
+                hardware_autonomous: false,
+                hotkey_osd_only: false,
+                sleep_timeout_supported: true,
+                timeout_options_seconds: vec![30, 60, 300, 600],
+            });
+            match contract.keyboard_type.as_str() {
+                "PerKey" => {
+                    kb.supported = true;
+                    kb.keyboard_type = "per_key_rgb".to_string();
+                }
+                "4Zone" => {
+                    kb.supported = true;
+                    kb.keyboard_type = "four_zone_rgb".to_string();
+                }
+                "SingleZone" | "SingleZone_RGB" => {
+                    kb.supported = true;
+                    kb.keyboard_type = "single_zone_rgb".to_string();
+                }
+                "MonochromeWhite" => {
+                    kb.supported = true;
+                    kb.keyboard_type = "monochrome_stepped".to_string();
+                    kb.steps = vec![2, 1];
+                }
+                "None" => {
+                    kb.supported = false;
+                    kb.keyboard_type = "none".to_string();
+                }
+                _ => {}
+            }
+            effective_rgb_kb = Some(kb);
+        } else if let Some(ref mut kb) = effective_rgb_kb {
+            let hw_byte2 = crate::driver::wmi_ec::wmi_read_ec(crate::driver::wmi_ec::ADDR_SUPPORT_BYTE2).unwrap_or(0);
+            if (hw_byte2 & 0x04) != 0 {
+                kb.keyboard_type = "single_zone_rgb".to_string();
+                kb.supported = true;
+            }
+        }
+
         return serde_json::json!({
             "id": manifest.id,
             "name": manifest.name,
@@ -1542,7 +1832,7 @@ pub fn get_model_capabilities() -> serde_json::Value {
             "battery_charge_limit": manifest.capabilities.battery_charge_limit,
             "power_modes": manifest.capabilities.power_modes,
             "power_mode_watts": effective_pmw,
-            "rgb_keyboard": manifest.capabilities.rgb_keyboard,
+            "rgb_keyboard": effective_rgb_kb,
             "is_adapted": true,
             "is_debug_mode": is_debug,
         });
@@ -1593,6 +1883,37 @@ pub fn get_model_capabilities() -> serde_json::Value {
         crate::driver::wmi_ec::get_hardware_support_flags().has_water_cooler
     };
 
+    let cfg = crate::system::config::load_config();
+    let fallback_rgb_kb = if cfg.lighting.hardware_override.enabled {
+        let contract = crate::system::model_engine::get_active_lighting_contract();
+        let mut supported = true;
+        let kb_type = match contract.keyboard_type.as_str() {
+            "PerKey" => "per_key_rgb",
+            "4Zone" => "four_zone_rgb",
+            "SingleZone" | "SingleZone_RGB" => "single_zone_rgb",
+            "MonochromeWhite" => "monochrome_stepped",
+            _ => {
+                supported = false;
+                "none"
+            }
+        };
+        serde_json::json!({
+            "supported": supported,
+            "type": kb_type,
+            "sleep_timeout_supported": true,
+            "timeout_options_seconds": [0, 10, 15, 30, 60],
+            "steps": if kb_type == "monochrome_stepped" { vec![2, 1] } else { vec![] }
+        })
+    } else {
+        serde_json::json!({
+            "supported": !is_thin_light,
+            "type": if is_thin_light { "none" } else { "per_key_rgb" },
+            "sleep_timeout_supported": is_thin_light,
+            "timeout_options_seconds": [0, 10, 15, 30, 60],
+            "steps": Vec::<u8>::new()
+        })
+    };
+
     serde_json::json!({
         "id": if is_thin_light { "builtin_thin_light" } else { "builtin_tongfang_gaming" },
         "name": if is_thin_light { "MECHREVO Thin & Light Laptop" } else { "MECHREVO Gaming Laptop" },
@@ -1612,17 +1933,179 @@ pub fn get_model_capabilities() -> serde_json::Value {
         "cpu_name": cpu_name,
         "battery_charge_limit": true,
         "power_modes": if is_thin_light { vec!["office", "balance", "turbo"] } else { vec!["office", "balance", "turbo", "custom"] },
-        "rgb_keyboard": {
-            "supported": !is_thin_light,
-            "type": if is_thin_light { "none" } else { "per_key_rgb" },
-            "sleep_timeout_supported": is_thin_light,
-            "timeout_options_seconds": [0, 10, 15, 30, 60],
-            "steps": if is_thin_light { Vec::<u8>::new() } else { Vec::<u8>::new() }
-        },
+        "rgb_keyboard": fallback_rgb_kb,
         "is_adapted": true,
         "is_debug_mode": is_debug,
     })
 }
+
+/// Automatically loads shortcuts, watchers, and auto-starts services for all enabled and compatible plugins on host startup.
+/// Scans the single authoritative plugin directory: <get_config_dir()>/plugins.
+pub fn bootstrap_enabled_plugins() {
+    let plugins_dir = get_plugins_dir();
+    crate::log_info!("PLUGIN", "=== Initializing Plugin Subsystem at {:?} ===", plugins_dir);
+    if !plugins_dir.exists() {
+        crate::log_info!("PLUGIN", "Plugins directory does not exist yet at {:?}. Creating directory and skipping bootstrap.", plugins_dir);
+        let _ = std::fs::create_dir_all(&plugins_dir);
+        return;
+    }
+
+    let cfg = crate::system::config::load_config();
+    let Ok(entries) = std::fs::read_dir(&plugins_dir) else {
+        crate::log_warn!("PLUGIN", "Failed to read plugins directory at {:?}", plugins_dir);
+        return;
+    };
+
+    let mut total_discovered = 0;
+    let mut total_bootstrapped = 0;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let dir_name = entry.file_name().to_string_lossy().to_string();
+        let manifest_path = path.join("manifest.json");
+        if !manifest_path.exists() {
+            continue;
+        }
+
+        total_discovered += 1;
+        let content = match std::fs::read_to_string(&manifest_path) {
+            Ok(c) => c,
+            Err(err) => {
+                crate::log_error!("PLUGIN", "Failed to read manifest at {:?}: {}", manifest_path, err);
+                continue;
+            }
+        };
+
+        let manifest: RawPluginManifest = match serde_json::from_str(&content) {
+            Ok(m) => m,
+            Err(err) => {
+                crate::log_error!("PLUGIN", "Failed to parse manifest JSON at {:?}: {}", manifest_path, err);
+                continue;
+            }
+        };
+
+        let id = manifest.id.clone().unwrap_or_else(|| dir_name.clone());
+        let enabled = cfg
+            .custom_plugin_toggles
+            .get(&id)
+            .or_else(|| cfg.custom_plugin_toggles.get(&dir_name))
+            .copied()
+            .unwrap_or(true);
+        let (is_compatible, notice) = check_version_compatibility(manifest.min_host_version.as_deref());
+
+        crate::log_info!(
+            "PLUGIN",
+            "Discovered plugin candidate '{}' ({}) at {:?} [enabled: {}, compatible: {}]",
+            id,
+            manifest.name.as_deref().unwrap_or(&dir_name),
+            path,
+            enabled,
+            is_compatible
+        );
+
+        if !enabled {
+            crate::log_info!("PLUGIN", "Plugin '{}' is toggled OFF by user setting, skipping watcher mounting.", id);
+            continue;
+        }
+        if !is_compatible {
+            crate::log_warn!("PLUGIN", "Plugin '{}' skipped due to version incompatibility: {:?}", id, notice);
+            continue;
+        }
+
+        total_bootstrapped += 1;
+        crate::log_info!(
+            "PLUGIN",
+            "Bootstrapping plugin '{}': watchers={}, shortcuts={}, auto_start_service={}",
+            id,
+            manifest.watchers.as_ref().map(|w| w.len()).unwrap_or(0),
+            manifest.shortcuts.as_ref().map(|s| s.len()).unwrap_or(0),
+            manifest.service.as_ref().map(|s| s.auto_start).unwrap_or(false),
+        );
+
+        if let Some(ref scs) = manifest.shortcuts {
+            crate::system::shortcuts::load_plugin_shortcuts(&id, scs.clone());
+        }
+        if let Some(ref wts) = manifest.watchers {
+            crate::system::watcher_hub::load_plugin_watchers(&id, wts.clone());
+        }
+        if let Some(ref srv) = manifest.service {
+            if srv.auto_start {
+                crate::log_info!("PLUGIN", "Auto-starting companion service for '{}'", id);
+                let _ = crate::system::plugin_service::start_service(&id);
+            }
+        }
+    }
+
+    crate::log_info!(
+        "PLUGIN",
+        "Plugin scanning completed. Discovered: {}, Bootstrapped: {}. Triggering startup watchers...",
+        total_discovered,
+        total_bootstrapped
+    );
+
+    // Trigger all Startup-condition watchers now that microkernel and plugins are ready
+    crate::system::watcher_hub::trigger_startup_watchers();
+    crate::log_info!("PLUGIN", "=== Plugin Subsystem Bootstrap Finished ===");
+}
+
+#[tauri::command]
+pub fn plugin_log(plugin_id: String, level: String, message: String, tag: Option<String>) -> Result<(), String> {
+    let lvl = level.to_uppercase();
+    let mod_name = match tag {
+        Some(ref t) if !t.is_empty() => format!("PLUGIN:{}:{}", plugin_id, t),
+        _ => format!("PLUGIN:{}", plugin_id),
+    };
+    match lvl.as_str() {
+        "DEBUG" => crate::log_debug!(&mod_name, "{}", message),
+        "WARN" => crate::log_warn!(&mod_name, "{}", message),
+        "ERROR" => crate::log_error!(&mod_name, "{}", message),
+        _ => crate::log_info!(&mod_name, "{}", message),
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn register_telemetry_consumer(consumer_id: String, sensors: Option<Vec<String>>) -> Result<(), String> {
+    let sensor_list = sensors.unwrap_or_else(|| vec![
+        "cpu_temp".into(), "gpu_temp".into(), "cpu_power".into(), "gpu_power".into(), "fps".into()
+    ]);
+    crate::system::telemetry::register_consumer(&consumer_id, &sensor_list);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn unregister_telemetry_consumer(consumer_id: String) -> Result<(), String> {
+    crate::system::telemetry::unregister_consumer(&consumer_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn emit_plugin_broadcast(app: tauri::AppHandle, event: String, payload: serde_json::Value) -> Result<(), String> {
+    use tauri::Emitter;
+    let _ = app.emit(&event, payload.clone());
+    crate::system::native_wry::broadcast_event(&event, &payload);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_plugin_watchers(
+    plugin_id: String,
+    watchers: Vec<crate::system::watcher_hub::WatcherDefinition>,
+) -> Result<bool, String> {
+    crate::system::watcher_hub::set_plugin_watchers_runtime(&plugin_id, watchers)
+}
+
+#[tauri::command]
+pub async fn get_plugin_watchers(
+    plugin_id: String,
+) -> Result<Vec<crate::system::watcher_hub::WatcherDefinition>, String> {
+    Ok(crate::system::watcher_hub::load_plugin_watchers_from_storage(&plugin_id).unwrap_or_default())
+}
+
+
 
 
 

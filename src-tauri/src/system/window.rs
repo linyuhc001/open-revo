@@ -202,6 +202,11 @@ pub fn restore_and_sync_window(window: &WebviewWindow) {
 
     // Step 1: Determine presentation mode and apply resize/sync while window is still hidden
     let cfg = crate::system::config::load_config();
+    if !cfg.use_classic_webview {
+        crate::system::slint_window::show_slint_window();
+        return;
+    }
+
     let is_expanded = match cfg.wake_window_mode.as_str() {
         "full" => true,
         "mini" => false,
@@ -281,6 +286,15 @@ pub fn is_window_expanded(window: &WebviewWindow) -> bool {
 
 /// Explicitly switches window to Full Panel mode and updates tray checkmarks.
 pub fn switch_to_full_panel(app: &tauri::AppHandle) {
+    let mut cfg = crate::system::config::load_config();
+    if !cfg.use_classic_webview {
+        cfg.last_window_expanded = true;
+        let _ = crate::system::config::save_config(&cfg);
+        crate::system::slint_window::send_slint_ipc_message(serde_json::json!({ "action": "expand_dashboard" }));
+        crate::system::slint_window::show_slint_window();
+        crate::system::tray::update_tray_window_mode(true);
+        return;
+    }
     if let Some(window) = ensure_window_alive(app) {
         crate::system::telemetry::set_main_window_visible(true);
         let _ = crate::commands::window_cmd::resize_window(app.clone(), true);
@@ -295,6 +309,15 @@ pub fn switch_to_full_panel(app: &tauri::AppHandle) {
 
 /// Explicitly switches window to Mini Drawer mode and updates tray checkmarks.
 pub fn switch_to_mini_drawer(app: &tauri::AppHandle) {
+    let mut cfg = crate::system::config::load_config();
+    if !cfg.use_classic_webview {
+        cfg.last_window_expanded = false;
+        let _ = crate::system::config::save_config(&cfg);
+        crate::system::slint_window::send_slint_ipc_message(serde_json::json!({ "action": "collapse_dashboard" }));
+        crate::system::slint_window::show_slint_window();
+        crate::system::tray::update_tray_window_mode(false);
+        return;
+    }
     if let Some(window) = ensure_window_alive(app) {
         crate::system::telemetry::set_main_window_visible(true);
         let _ = crate::commands::window_cmd::resize_window(app.clone(), false);
@@ -309,13 +332,55 @@ pub fn switch_to_mini_drawer(app: &tauri::AppHandle) {
     }
 }
 
-/// Safely retrieves the main WebviewWindow instance if alive.
+/// Dynamically builds the main WebviewWindow instance when classic WebView2 mode is active.
+pub fn create_main_webview_window(app: &tauri::AppHandle) -> Option<WebviewWindow> {
+    if let Some(win) = app.get_webview_window("main") {
+        return Some(win);
+    }
+    let target_url = tauri::WebviewUrl::App("index.html".into());
+    let builder = tauri::WebviewWindowBuilder::new(app, "main", target_url)
+        .title("OpenRevo")
+        .inner_size(395.0, 622.0)
+        .resizable(false)
+        .fullscreen(false)
+        .decorations(false)
+        .transparent(true)
+        .shadow(true)
+        .drag_and_drop(false)
+        .visible(false);
+
+    match builder.build() {
+        Ok(win) => {
+            init_main_window(&win);
+            Some(win)
+        }
+        Err(e) => {
+            crate::log_error!("WINDOW", "Failed to dynamically create 'main' WebviewWindow: {:?}", e);
+            None
+        }
+    }
+}
+
+/// Safely retrieves or creates the main WebviewWindow instance when classic WebView2 is enabled.
 pub fn ensure_window_alive(app: &tauri::AppHandle) -> Option<WebviewWindow> {
-    app.get_webview_window("main")
+    let cfg = crate::system::config::load_config();
+    if !cfg.use_classic_webview {
+        return None;
+    }
+    if let Some(win) = app.get_webview_window("main") {
+        Some(win)
+    } else {
+        create_main_webview_window(app)
+    }
 }
 
 /// Toggles between hiding and restoring the mini drawer window.
 pub fn show_or_toggle_drawer(app: &tauri::AppHandle) {
+    let cfg = crate::system::config::load_config();
+    if !cfg.use_classic_webview {
+        crate::system::slint_window::toggle_slint_window();
+        return;
+    }
     if let Some(window) = ensure_window_alive(app) {
         let is_min = window.is_minimized().unwrap_or(false);
         let is_vis = window.is_visible().unwrap_or(false);
@@ -331,6 +396,7 @@ pub fn show_or_toggle_drawer(app: &tauri::AppHandle) {
 /// Setup helper to initialize window dimensions, position, and saved coordinate state on boot.
 pub fn init_main_window(window: &WebviewWindow) {
     crate::log_info!("WINDOW", "Startup: 'main' WebviewWindow successfully initialized");
+    suppress_native_border(window);
     let cfg = crate::system::config::load_config();
     if let (Some(x), Some(y)) = (cfg.full_window_x, cfg.full_window_y) {
         crate::commands::hardware_cmd::update_full_window_pos(x, y);
@@ -343,6 +409,95 @@ pub fn init_main_window(window: &WebviewWindow) {
         let _ = window.set_size(tauri::LogicalSize::new(395.0, mini_h));
         align_window_to_tray(window);
     }
+}
+
+/// On Windows 11, undecorated windows that keep the native shadow get a light 1px DWM border,
+/// and tao reserves a 1px non-client strip at the top edge so that border does not cover the
+/// client area. Both show up as rims around the translucent UI. Hide the border, then give the
+/// top strip back to the client area, keeping the native rounded corners and shadow.
+/// With the strip gone, DWM still paints a few caption-colored pixels where the top corners
+/// round off, so the caption color is set to the UI top edge (`.acrylic-container` border plus
+/// inset highlight, measured as rgb(52, 54, 58)) to blend them in.
+/// No-op on Windows 10 (no DWM border color support, and tao reserves no top strip there).
+fn suppress_native_border(window: &WebviewWindow) {
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::Graphics::Dwm::{
+            DwmSetWindowAttribute, DWMWINDOWATTRIBUTE, DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_COLOR_NONE,
+        };
+        use windows::Win32::UI::Shell::SetWindowSubclass;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SetWindowPos, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+        };
+
+        // COLORREF layout: 0x00BBGGRR
+        const UI_TOP_EDGE_COLORREF: u32 = (58 << 16) | (54 << 8) | 52;
+
+        let Ok(hwnd) = window.hwnd() else { return };
+        let win_hwnd = windows::Win32::Foundation::HWND(hwnd.0 as _);
+
+        let set_color = |attr: DWMWINDOWATTRIBUTE, color: u32| {
+            DwmSetWindowAttribute(
+                win_hwnd,
+                attr,
+                &color as *const u32 as *const core::ffi::c_void,
+                std::mem::size_of::<u32>() as u32,
+            )
+        };
+
+        if let Err(e) = set_color(DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE) {
+            // Without the border hidden, the top strip is still needed: keep tao's layout.
+            crate::log_debug!("WINDOW", "DWMWA_BORDER_COLOR not applied (pre-Windows 11?): {}", e);
+            return;
+        }
+        if let Err(e) = set_color(DWMWA_CAPTION_COLOR, UI_TOP_EDGE_COLORREF) {
+            crate::log_debug!("WINDOW", "DWMWA_CAPTION_COLOR not applied: {}", e);
+        }
+
+        if SetWindowSubclass(win_hwnd, Some(reclaim_top_inset_proc), RECLAIM_TOP_INSET_SUBCLASS_ID, 0).as_bool() {
+            // Force a WM_NCCALCSIZE so the reclaimed strip takes effect immediately.
+            let _ = SetWindowPos(
+                win_hwnd,
+                windows::Win32::Foundation::HWND::default(),
+                0,
+                0,
+                0,
+                0,
+                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        } else {
+            crate::log_debug!("WINDOW", "SetWindowSubclass failed; top non-client strip kept");
+        }
+    }
+}
+
+#[cfg(windows)]
+const RECLAIM_TOP_INSET_SUBCLASS_ID: usize = 0x4F52_5442; // "ORTB"
+
+/// Runs before tao's own subclass: lets tao compute the client rect, then restores the original
+/// top edge so no non-client row is left above the UI. Maximized windows keep tao's layout.
+#[cfg(windows)]
+unsafe extern "system" fn reclaim_top_inset_proc(
+    hwnd: windows::Win32::Foundation::HWND,
+    msg: u32,
+    wparam: windows::Win32::Foundation::WPARAM,
+    lparam: windows::Win32::Foundation::LPARAM,
+    _id: usize,
+    _ref_data: usize,
+) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass};
+    use windows::Win32::UI::WindowsAndMessaging::{IsZoomed, NCCALCSIZE_PARAMS, WM_NCCALCSIZE, WM_NCDESTROY};
+
+    if msg == WM_NCDESTROY {
+        let _ = RemoveWindowSubclass(hwnd, Some(reclaim_top_inset_proc), RECLAIM_TOP_INSET_SUBCLASS_ID);
+    } else if msg == WM_NCCALCSIZE && wparam.0 != 0 && !IsZoomed(hwnd).as_bool() {
+        let params = lparam.0 as *mut NCCALCSIZE_PARAMS;
+        let original_top = (*params).rgrc[0].top;
+        let result = DefSubclassProc(hwnd, msg, wparam, lparam);
+        (*params).rgrc[0].top = original_top;
+        return result;
+    }
+    DefSubclassProc(hwnd, msg, wparam, lparam)
 }
 
 /// Focus lost guard hook placeholder for future auto-collapse policies.
@@ -450,6 +605,17 @@ pub fn handle_window_event(window: &Window, event: &WindowEvent) {
             }
         }
         WindowEvent::CloseRequested { api, .. } => {
+            let label = window.label();
+            if label.starts_with("widget_") {
+                // Secondary widget or standalone pop-out tab window: allow standard OS/user termination!
+                // Do NOT prevent close here. Let OS & Tauri destroy the window naturally.
+                let plugin_id = label.trim_start_matches("widget_").replace('_', "-");
+                let app = window.app_handle().clone();
+                crate::system::widget_manager::cleanup_widget_on_close(&app, &plugin_id);
+                crate::log_info!("WINDOW", "Widget window '{}' close granted and cleaned up smoothly.", label);
+                return;
+            }
+
             api.prevent_close();
             let scale = window.scale_factor().unwrap_or(1.0);
             if let Ok(sz) = window.inner_size() {

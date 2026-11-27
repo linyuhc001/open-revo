@@ -183,13 +183,17 @@ pub fn is_thin_and_light_or_pure_igpu() -> bool {
         return true;
     }
 
-    // 2. Driver backend check
-    let hal = crate::hal::get_hardware_driver();
-    if hal.kind() != crate::hal::DriverKind::TongfangAcpi {
-        return true;
+    // 2. Declarative model manifest form factor check
+    if let Some(manifest) = crate::hal::declarative::load_matched_manifest() {
+        if manifest.identity.form_factor == "thin_light" || manifest.identity.form_factor == "ultrabook" {
+            return true;
+        }
+        if manifest.identity.form_factor == "gaming" {
+            return false;
+        }
     }
 
-    // 3. Physical discrete GPU presence check
+    // 3. Physical discrete GPU presence check: pure iGPU without dGPU is always treated as thin-and-light power topology
     if !check_dgpu_present() {
         return true;
     }
@@ -237,8 +241,22 @@ pub fn is_dc_round_plugged_in() -> bool {
     decide_power_online_status(is_thin_and_light, ec_pwr, is_ac)
 }
 
-#[tauri::command]
-pub fn set_power_mode(mode: u8, app: AppHandle, ec_state: State<'_, SharedEcBridge>) -> Result<(), String> {
+pub fn set_power_mode_internal(
+    mode: u8,
+    app: Option<&AppHandle>,
+    ec_state: &SharedEcBridge,
+) -> Result<(), String> {
+    set_power_mode_internal_impl(mode, app, ec_state, false)
+}
+
+/// Shared implementation. `blocking` only chooses whether the EC apply runs
+/// inline (used by the single-intent turbo profile path) or on a worker thread.
+fn set_power_mode_internal_impl(
+    mode: u8,
+    app: Option<&AppHandle>,
+    ec_state: &SharedEcBridge,
+    blocking: bool,
+) -> Result<(), String> {
     let is_thin_and_light = is_thin_and_light_or_pure_igpu();
     let is_dc = is_dc_round_plugged_in();
     let mut cfg = crate::system::config::load_config();
@@ -261,7 +279,11 @@ pub fn set_power_mode(mode: u8, app: AppHandle, ec_state: State<'_, SharedEcBrid
     if is_tongfang_acpi_channel {
         // Tongfang ODM models (both Gaming laptops and Thin & Lights like Wujie 14X/15X):
         // Must invoke apply_full_power_mode to commit physical MODE_INDEX, TRIGGER_BYTE, and PL targets!
-        ec_state.lock().set_power_mode(mode);
+        if blocking {
+            apply_power_mode_blocking(ec_state, mode);
+        } else {
+            ec_state.lock().set_power_mode(mode);
+        }
     } else if is_thin_and_light || is_declarative {
         let hal = crate::hal::get_hardware_driver();
         let hw_mode = match mode {
@@ -292,7 +314,11 @@ pub fn set_power_mode(mode: u8, app: AppHandle, ec_state: State<'_, SharedEcBrid
             crate::driver::bld_driver_mgr::restore_bld_fan_auto();
         }
     } else {
-        ec_state.lock().set_power_mode(mode);
+        if blocking {
+            apply_power_mode_blocking(ec_state, mode);
+        } else {
+            ec_state.lock().set_power_mode(mode);
+        }
     }
     cfg.power_mode = mode;
     if is_dc {
@@ -300,20 +326,42 @@ pub fn set_power_mode(mode: u8, app: AppHandle, ec_state: State<'_, SharedEcBrid
     } else {
         cfg.power_mode_battery = mode;
     }
+    if mode == 3 || mode == 4 {
+        cfg.power_mode_ac = mode;
+    }
     crate::system::config::save_config(&cfg);
     crate::update_tray_power_mode(mode);
-    crate::system::osd_window::wake_osd_if_enabled(&app);
-    let _ = app.emit("physical-mode-switched", mode);
-    let _ = app.emit_to("main", "physical-mode-switched", mode);
-    let _ = app.emit_to("osd", "physical-mode-switched", mode);
+    crate::system::osd_window::show_power_mode(mode);
+    if let Some(app) = app {
+        crate::system::osd_window::wake_osd_if_enabled(app);
+        let _ = app.emit("physical-mode-switched", mode);
+        let _ = app.emit_to("main", "physical-mode-switched", mode);
+        let _ = app.emit_to("osd", "physical-mode-switched", mode);
+    }
+    crate::system::native_wry::broadcast_event("physical-mode-switched", &serde_json::json!(mode));
+    crate::system::watcher_hub::notify_power_event("mode_switched");
+    crate::system::slint_window::sync::sync_slint_switches_state();
     Ok(())
 }
 
+/// Update the cache under the EC lock, then apply the mode inline after releasing it.
+///
+/// Used by the single-intent turbo profile path so the sub-mode write can never
+/// race with the asynchronous mode-3 replay.
+fn apply_power_mode_blocking(ec_state: &SharedEcBridge, mode: u8) {
+    ec_state.lock().mark_power_mode(mode);
+    crate::system::power_mode::apply_full_power_mode(mode);
+}
+
 #[tauri::command]
-pub fn set_fan_boost(
-    app: AppHandle,
+pub fn set_power_mode(mode: u8, app: AppHandle, ec_state: State<'_, SharedEcBridge>) -> Result<(), String> {
+    set_power_mode_internal(mode, Some(&app), &ec_state)
+}
+
+pub fn set_fan_boost_internal(
     enable: bool,
-    ec_state: State<'_, SharedEcBridge>,
+    app: Option<&AppHandle>,
+    ec_state: &SharedEcBridge,
 ) -> Result<(), String> {
     let support_flags = crate::driver::wmi_ec::get_hardware_support_flags();
     if !support_flags.has_fan_boost {
@@ -326,19 +374,32 @@ pub fn set_fan_boost(
     crate::system::config::save_config(&cfg);
     crate::update_tray_fan_boost(enable);
 
-    crate::system::osd_window::wake_osd_if_enabled(&app);
-    let _ = app.emit("fan-boost-changed", enable);
-    let _ = app.emit_to("main", "fan-boost-changed", enable);
-    let _ = app.emit_to("osd", "fan-boost-changed", enable);
-    let _ = app.emit("physical-fan-boost-switched", enable);
-    let _ = app.emit_to("main", "physical-fan-boost-switched", enable);
-    let _ = app.emit_to("osd", "physical-fan-boost-switched", enable);
+    crate::system::osd_window::show_fan_boost(enable);
+    if let Some(app) = app {
+        crate::system::osd_window::wake_osd_if_enabled(app);
+        let _ = app.emit("fan-boost-changed", enable);
+        let _ = app.emit_to("main", "fan-boost-changed", enable);
+        let _ = app.emit_to("osd", "fan-boost-changed", enable);
+        let _ = app.emit("physical-fan-boost-switched", enable);
+        let _ = app.emit_to("main", "physical-fan-boost-switched", enable);
+        let _ = app.emit_to("osd", "physical-fan-boost-switched", enable);
+    }
+    crate::system::native_wry::broadcast_event("fan-boost-changed", &serde_json::json!(enable));
+    crate::system::slint_window::sync::sync_slint_switches_state();
 
     Ok(())
 }
 
 #[tauri::command]
-pub fn set_battery_limit(limit: u8, ec_state: State<'_, SharedEcBridge>) -> Result<(), String> {
+pub fn set_fan_boost(
+    app: AppHandle,
+    enable: bool,
+    ec_state: State<'_, SharedEcBridge>,
+) -> Result<(), String> {
+    set_fan_boost_internal(enable, Some(&app), &ec_state)
+}
+
+pub fn set_battery_limit_internal(limit: u8, ec_state: &SharedEcBridge) -> Result<(), String> {
     ec_state.lock().set_battery_limit(limit);
     let mut cfg = crate::system::config::load_config();
     cfg.battery_limit = limit;
@@ -354,9 +415,16 @@ pub fn set_battery_limit(limit: u8, ec_state: State<'_, SharedEcBridge>) -> Resu
 }
 
 #[tauri::command]
-pub fn get_power_settings(
-    ec_state: State<'_, SharedEcBridge>,
-) -> PowerSettingsInfo {
+pub fn set_battery_limit(limit: u8, ec_state: State<'_, SharedEcBridge>) -> Result<(), String> {
+    set_battery_limit_internal(limit, &ec_state)
+}
+
+#[tauri::command(async)]
+pub fn get_power_settings(ec_state: State<'_, SharedEcBridge>) -> PowerSettingsInfo {
+    read_power_settings(ec_state.inner())
+}
+
+pub fn read_power_settings(ec_state: &SharedEcBridge) -> PowerSettingsInfo {
     let cfg = crate::system::config::load_config();
     let (percent, _, is_charging) = get_live_power_status();
     let is_dc = is_dc_round_plugged_in();
@@ -370,29 +438,7 @@ pub fn get_power_settings(
         "balance".to_string()
     };
 
-    let usb_charge = if let Some(v) = crate::driver::wmi_ec::wmi_read_ec(crate::driver::wmi_ec::ADDR_TRIGGER_BYTE) {
-        let is_on = (v & crate::driver::wmi_ec::TRIGGER_USB_CHARGE) != 0;
-        if cfg.usb_charge_enabled && !is_on {
-            crate::driver::wmi_ec::wmi_write_ec(crate::driver::wmi_ec::ADDR_TRIGGER_BYTE, v | crate::driver::wmi_ec::TRIGGER_USB_CHARGE);
-            true
-        } else {
-            is_on
-        }
-    } else {
-        cfg.usb_charge_enabled
-    };
-
-    let ac_recovery = if let Some(v) = crate::driver::wmi_ec::wmi_read_ec(crate::driver::wmi_ec::ADDR_AC_RECOVERY) {
-        let is_on = (v & crate::driver::wmi_ec::AC_RECOVERY_BITMASK) != 0;
-        if cfg.ac_recovery_enabled && !is_on {
-            crate::driver::wmi_ec::wmi_write_ec(crate::driver::wmi_ec::ADDR_AC_RECOVERY, v | crate::driver::wmi_ec::AC_RECOVERY_BITMASK);
-            true
-        } else {
-            is_on
-        }
-    } else {
-        cfg.ac_recovery_enabled
-    };
+    let (usb_charge, ac_recovery) = read_ec_power_options(&cfg, crate::driver::wmi_ec::wmi_read_ec);
 
 #[cfg(target_os = "windows")]
 fn get_active_power_scheme_guid() -> String {
@@ -686,42 +732,13 @@ pub fn set_battery_hardware_limit(
     Ok(get_power_settings(ec_state))
 }
 
-#[tauri::command]
-pub fn set_power_option(
-    option: String,
-    enable: bool,
-    ec_state: State<'_, SharedEcBridge>,
-) -> Result<PowerSettingsInfo, String> {
+#[tauri::command(async)]
+pub fn set_power_option(option: String, enable: bool, ec_state: State<'_, SharedEcBridge>) -> Result<PowerSettingsInfo, String> {
     let mut cfg = crate::system::config::load_config();
-    match option.as_str() {
-        "usb_charge" => {
-            cfg.usb_charge_enabled = enable;
-            if let Some(mut val) = crate::driver::wmi_ec::wmi_read_ec(crate::driver::wmi_ec::ADDR_TRIGGER_BYTE) {
-                if enable { val |= crate::driver::wmi_ec::TRIGGER_USB_CHARGE; } else { val &= !crate::driver::wmi_ec::TRIGGER_USB_CHARGE; }
-                crate::driver::wmi_ec::wmi_write_ec(crate::driver::wmi_ec::ADDR_TRIGGER_BYTE, val);
-            } else {
-                crate::driver::wmi_ec::wmi_write_ec(crate::driver::wmi_ec::ADDR_TRIGGER_BYTE, if enable { crate::driver::wmi_ec::TRIGGER_USB_CHARGE } else { 0x00 });
-            }
-        }
-        "ac_recovery" => {
-            cfg.ac_recovery_enabled = enable;
-            if let Some(mut val) = crate::driver::wmi_ec::wmi_read_ec(crate::driver::wmi_ec::ADDR_AC_RECOVERY) {
-                if enable { val |= crate::driver::wmi_ec::AC_RECOVERY_BITMASK; } else { val &= !crate::driver::wmi_ec::AC_RECOVERY_BITMASK; }
-                crate::driver::wmi_ec::wmi_write_ec(crate::driver::wmi_ec::ADDR_AC_RECOVERY, val);
-            } else {
-                crate::driver::wmi_ec::wmi_write_ec(crate::driver::wmi_ec::ADDR_AC_RECOVERY, if enable { crate::driver::wmi_ec::AC_RECOVERY_BITMASK } else { 0x00 });
-            }
-        }
-        "high_perf" => {
-            cfg.high_perf_scheme = enable;
-            if enable {
-                crate::system::power_mode::apply_windows_power_overlay(cfg.power_mode);
-            }
-        }
-        _ => return Err("Invalid power option".into()),
-    }
-    crate::system::config::save_config(&cfg);
-    Ok(get_power_settings(ec_state))
+    crate::system::config::ensure_config_writable()?;
+    apply_power_option(&mut cfg, &option, enable, crate::driver::wmi_ec::wmi_modify_ec_mask, crate::system::power_mode::set_windows_power_overlay)?;
+    crate::system::config::try_save_config(&cfg)?;
+    Ok(read_power_settings(ec_state.inner()))
 }
 
 #[cfg(target_os = "windows")]
@@ -860,4 +877,328 @@ mod tests {
         assert_eq!(parsed.power_mode_ac, 3); // defaulted
         assert_eq!(parsed.power_mode_battery, 2); // defaulted
     }
+}
+
+
+fn read_ec_power_options(
+    cfg: &crate::system::config::AppConfig,
+    mut read: impl FnMut(u16) -> Option<u8>,
+) -> (bool, bool) {
+    // Recovery hooks own writes; this view combines preferences and observed bits.
+    let usb = read(crate::driver::wmi_ec::ADDR_TRIGGER_BYTE)
+        .map(|value| {
+            cfg.usb_charge_enabled || value & crate::driver::wmi_ec::TRIGGER_USB_CHARGE != 0
+        })
+        .unwrap_or(cfg.usb_charge_enabled);
+    let ac = read(crate::driver::wmi_ec::ADDR_AC_RECOVERY)
+        .map(|value| {
+            cfg.ac_recovery_enabled || value & crate::driver::wmi_ec::AC_RECOVERY_BITMASK != 0
+        })
+        .unwrap_or(cfg.ac_recovery_enabled);
+    (usb, ac)
+}
+
+pub fn apply_power_option(
+    cfg: &mut crate::system::config::AppConfig,
+    option: &str,
+    enable: bool,
+    modify: impl FnOnce(u16, u8, bool) -> Option<u8>,
+    overlay: impl FnOnce(u8) -> Result<(), String>,
+) -> Result<(), String> {
+    match option {
+        "usb_charge" | "ac_recovery" => {
+            crate::hal::power_options::apply_ec_option(option, enable, modify)?;
+            if option == "usb_charge" {
+                cfg.usb_charge_enabled = enable;
+            } else {
+                cfg.ac_recovery_enabled = enable;
+            }
+        }
+        "high_perf" => {
+            if enable {
+                overlay(cfg.power_mode)?;
+            }
+            cfg.high_perf_scheme = enable;
+        }
+        _ => return Err("Invalid power option".into()),
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod power_option_tests {
+    use super::*;
+
+    #[test]
+    fn regression_power_option_updates_only_its_setting_after_ec_acknowledgement() {
+        use crate::driver::wmi_ec;
+        for (option, field, address, bits) in [
+            (
+                "usb_charge",
+                "usb_charge_enabled",
+                wmi_ec::ADDR_TRIGGER_BYTE,
+                wmi_ec::TRIGGER_USB_CHARGE,
+            ),
+            (
+                "ac_recovery",
+                "ac_recovery_enabled",
+                wmi_ec::ADDR_AC_RECOVERY,
+                wmi_ec::AC_RECOVERY_BITMASK,
+            ),
+        ] {
+            for initial in [false, true] {
+                for enable in [false, true] {
+                    for acknowledged in [false, true] {
+                        let mut cfg = crate::system::config::AppConfig::default();
+                        cfg.usb_charge_enabled = initial;
+                        cfg.ac_recovery_enabled = initial;
+                        let mut expected = serde_json::to_value(&cfg).unwrap();
+                        let mut calls = 0;
+                        let result = apply_power_option(
+                            &mut cfg,
+                            option,
+                            enable,
+                            |actual, mask, target| {
+                                calls += 1;
+                                assert_eq!((actual, mask, target), (address, bits, enable));
+                                acknowledged.then_some(if target { mask } else { 0 })
+                            },
+                            |_| panic!("EC options must not alter the Windows overlay"),
+                        );
+                        assert_eq!(calls, 1);
+                        assert_eq!(result.is_ok(), acknowledged);
+                        if acknowledged {
+                            expected[field] = serde_json::json!(enable);
+                        }
+                        assert_eq!(serde_json::to_value(cfg).unwrap(), expected);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn regression_enabling_overlay_from_disabled_applies_before_saving_and_reports_failure() {
+        let mut cfg = crate::system::config::AppConfig::default();
+        cfg.high_perf_scheme = false;
+        cfg.power_mode = 3;
+        let failed = apply_power_option(
+            &mut cfg,
+            "high_perf",
+            true,
+            |_, _, _| panic!("Windows overlay must not use EC I/O"),
+            |mode| {
+                assert_eq!(mode, 3);
+                Err("overlay rejected".into())
+            },
+        );
+        assert_eq!(failed.unwrap_err(), "overlay rejected");
+        assert!(!cfg.high_perf_scheme);
+        let mut applied = false;
+        apply_power_option(
+            &mut cfg,
+            "high_perf",
+            true,
+            |_, _, _| panic!("Windows overlay must not use EC I/O"),
+            |mode| {
+                assert_eq!(mode, 3);
+                applied = true;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(applied && cfg.high_perf_scheme);
+        apply_power_option(
+            &mut cfg,
+            "high_perf",
+            false,
+            |_, _, _| panic!("Disabling overlay linkage must not use EC I/O"),
+            |_| panic!("Disabling linkage must preserve the current Windows setting"),
+        )
+        .unwrap();
+        assert!(!cfg.high_perf_scheme);
+    }
+
+    #[test]
+    fn regression_unknown_power_option_never_reaches_hardware_or_changes_settings() {
+        let mut cfg = crate::system::config::AppConfig::default();
+        let original = serde_json::to_value(&cfg).unwrap();
+        for option in ["", "USB_CHARGE", "unknown"] {
+            assert!(apply_power_option(
+                &mut cfg,
+                option,
+                true,
+                |_, _, _| panic!("Unknown option reached EC I/O"),
+                |_| panic!("Unknown option reached Windows I/O")
+            )
+            .is_err());
+            assert_eq!(serde_json::to_value(&cfg).unwrap(), original);
+        }
+    }
+
+    #[test]
+    fn regression_power_option_query_preserves_preference_semantics_without_reasserting_hardware() {
+        use crate::driver::wmi_ec;
+        let mut cfg = crate::system::config::AppConfig::default();
+        cfg.usb_charge_enabled = true;
+        cfg.ac_recovery_enabled = true;
+        let mut reads = Vec::new();
+        assert_eq!(
+            read_ec_power_options(&cfg, |address| {
+                reads.push(address);
+                Some(0)
+            }),
+            (true, true)
+        );
+        assert_eq!(reads, [wmi_ec::ADDR_TRIGGER_BYTE, wmi_ec::ADDR_AC_RECOVERY]);
+        assert!(cfg.usb_charge_enabled && cfg.ac_recovery_enabled);
+        cfg.ac_recovery_enabled = false;
+        assert_eq!(read_ec_power_options(&cfg, |_| None), (true, false));
+        cfg.usb_charge_enabled = false;
+        assert_eq!(read_ec_power_options(&cfg, |_| Some(0)), (false, false));
+        assert_eq!(
+            read_ec_power_options(&cfg, |address| Some(
+                if address == wmi_ec::ADDR_TRIGGER_BYTE {
+                    wmi_ec::TRIGGER_USB_CHARGE
+                } else {
+                    wmi_ec::AC_RECOVERY_BITMASK
+                }
+            )),
+            (true, true)
+        );
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct TurboSubmodeState {
+    pub supported: bool,
+    pub silent: bool,
+}
+
+#[tauri::command]
+pub fn get_turbo_submode_state() -> TurboSubmodeState {
+    let supported = crate::system::power::turbo_submode::is_supported();
+    let silent = crate::system::power::turbo_submode::current_silent().unwrap_or(false);
+    TurboSubmodeState { supported, silent }
+}
+
+/// Apply the requested sub-mode and persist it only after the hardware confirms.
+fn apply_turbo_submode_and_persist(silent: bool) -> Result<TurboSubmodeState, String> {
+    crate::system::power::turbo_submode::apply_silent(silent)?;
+    // `apply_silent` already verified the EC readback against `silent`, so the
+    // confirmed state is known here; only the preference write is left. Skip the
+    // write (and its config I/O) when the preference already matches.
+    let mut cfg = crate::system::config::load_config();
+    if cfg.turbo_silent != silent {
+        cfg.turbo_silent = silent;
+        crate::system::config::save_config(&cfg);
+    }
+    Ok(TurboSubmodeState {
+        // `apply_silent` only returns Ok when `is_supported()` was true.
+        supported: true,
+        silent,
+    })
+}
+
+/// Publish a state the EC already confirmed via `apply_silent`'s readback.
+///
+/// No extra hardware read and no `silent=false` fallback: the caller only
+/// reaches this point after `apply_silent` matched the register readback, so a
+/// read failure has already turned into an `Err` and never lights up 高能狂暴.
+fn emit_confirmed_turbo_submode(state: &TurboSubmodeState) {
+    crate::system::turbo_events::publish_turbo_submode_changed(state.supported, state.silent);
+}
+
+#[tauri::command]
+pub fn set_turbo_submode(silent: bool) -> Result<TurboSubmodeState, String> {
+    let state = apply_turbo_submode_and_persist(silent)?;
+    emit_confirmed_turbo_submode(&state);
+    Ok(state)
+}
+
+/// Single UI intent for 狂暴 mode: ensure mode 3, then apply the sub-mode.
+///
+/// The target `cfg.turbo_silent` is persisted before mode 3 is applied so the
+/// replay inside `ec_mode` can never overwrite it with the previous value.
+/// The event is emitted only after the hardware apply/readback succeeded.
+#[tauri::command]
+pub fn apply_turbo_profile(
+    silent: bool,
+    app: AppHandle,
+    ec_state: State<'_, SharedEcBridge>,
+) -> Result<TurboSubmodeState, String> {
+    if !crate::system::power::turbo_submode::is_supported() {
+        return Err("当前硬件平台不支持狂暴子模式".to_string());
+    }
+
+    let current_mode = ec_state.lock().get_power_mode();
+
+    if current_mode != 3 {
+        // Persist the target first: entering mode 3 replays cfg.turbo_silent.
+        let mut cfg = crate::system::config::load_config();
+        let previous = cfg.turbo_silent;
+        if previous != silent {
+            cfg.turbo_silent = silent;
+            crate::system::config::save_config(&cfg);
+        }
+        if let Err(err) = set_power_mode_internal_impl(3, Some(&app), &ec_state, true) {
+            // The guard rejected the mode switch before touching hardware, so the
+            // remembered sub-mode must not be left pointing at the new target.
+            if previous != silent {
+                let mut cfg = crate::system::config::load_config();
+                cfg.turbo_silent = previous;
+                crate::system::config::save_config(&cfg);
+            }
+            return Err(err);
+        }
+    }
+
+    // A failure here emits nothing; the target stays persisted as the user's
+    // preference for the next mode-3 entry.
+    let state = match apply_turbo_submode_and_persist(silent) {
+        Ok(st) => {
+            emit_confirmed_turbo_submode(&st);
+            st
+        }
+        Err(e) => {
+            crate::log_warn!("POWER_CMD", "apply_turbo_submode_and_persist failed: {}", e);
+            TurboSubmodeState {
+                supported: true,
+                silent,
+            }
+        }
+    };
+    Ok(state)
+}
+
+#[tauri::command]
+pub fn set_turbo_oc_enabled(enabled: bool, app: AppHandle) -> Result<bool, String> {
+    let mut cfg = crate::system::config::load_config();
+    cfg.turbo_oc_enabled = enabled;
+    crate::system::config::save_config(&cfg);
+
+    if cfg.power_mode == 3 && crate::driver::gpu_bridge::is_nvidia_dgpu_available() {
+        let (core, mem) = if enabled {
+            (
+                cfg.gpu_oc_core_mhz.clamp(0, 250),
+                cfg.gpu_oc_mem_mhz.clamp(0, 1000),
+            )
+        } else {
+            (0, 0)
+        };
+        let _ = crate::commands::tuning_cmd::apply_gpu_oc(core, mem);
+        let _ = app.emit(
+            "gpu-clock-offsets-changed",
+            serde_json::json!({
+                "core_offset_mhz": core,
+                "mem_offset_mhz": mem
+            }),
+        );
+    }
+    let _ = app.emit(
+        "turbo-oc-changed",
+        serde_json::json!({ "enabled": enabled }),
+    );
+    crate::system::slint_window::sync::sync_slint_power_state();
+    Ok(enabled)
 }

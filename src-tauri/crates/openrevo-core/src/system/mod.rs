@@ -18,3 +18,7 @@ pub mod switches;
 pub mod takeover;
 pub mod telemetry;
 
+
+pub mod query_cache;
+pub mod shortcuts;
+pub mod config_io;

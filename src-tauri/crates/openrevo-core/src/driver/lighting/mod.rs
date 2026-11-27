@@ -28,9 +28,11 @@ pub struct IteLightingManager {
     kb_dev: Arc<Mutex<Option<IteLightingDevice>>>,
     lb_dev: Arc<Mutex<Option<IteLightingDevice>>>,
     hinge_dev: Arc<Mutex<Option<IteLightingDevice>>>,
+    strip_dev: Arc<Mutex<Option<IteLightingDevice>>>,
     pub lb_strategy: Usb7001LightbarStrategy,
     pub hinge_strategy: Usb7000LightbarStrategy,
     pub ec_hinge_strategy: EcDirectLightbarStrategy,
+    pub strip_strategy: Ite8291StripLightbarStrategy,
     pub state: Mutex<LightingPresetState>,
     pub is_sleeping: std::sync::atomic::AtomicBool,
 }
@@ -81,18 +83,22 @@ impl IteLightingManager {
         let kb_dev = Arc::new(Mutex::new(None));
         let lb_dev = Arc::new(Mutex::new(None));
         let hinge_dev = Arc::new(Mutex::new(None));
+        let strip_dev = Arc::new(Mutex::new(None));
 
         let lb_strategy = Usb7001LightbarStrategy::new(Arc::clone(&lb_dev));
         let hinge_strategy = Usb7000LightbarStrategy::new(Arc::clone(&hinge_dev));
         let ec_hinge_strategy = EcDirectLightbarStrategy;
+        let strip_strategy = Ite8291StripLightbarStrategy::new(Arc::clone(&strip_dev));
 
         let mgr = Self {
             kb_dev,
             lb_dev,
             hinge_dev,
+            strip_dev,
             lb_strategy,
             hinge_strategy,
             ec_hinge_strategy,
+            strip_strategy,
             state: Mutex::new(saved_state),
             is_sleeping: std::sync::atomic::AtomicBool::new(false),
         };
@@ -129,7 +135,7 @@ impl IteLightingManager {
 
     pub fn has_base_lightbar_device(&self) -> bool {
         self.refresh_devices();
-        self.lb_dev.lock().is_some() || Self::is_ec_lightbar_supported()
+        self.lb_dev.lock().is_some() || self.strip_dev.lock().is_some() || Self::is_ec_lightbar_supported() || Self::probe_ambient_strip_exists()
     }
 
     pub fn has_usb_base_lightbar(&self) -> bool {
@@ -159,7 +165,14 @@ impl IteLightingManager {
     }
 
     /// Static probe to determine if physical ITE 7001 base lightbar/logo device is attached
+    pub fn probe_ambient_strip_exists() -> bool {
+        Self::open_hid_device(ITE_VID, ITE_PID_AMBIENT_STRIP, 0).is_some()
+    }
+
     pub fn probe_lightbar_device_exists() -> bool {
+        if Self::probe_ambient_strip_exists() {
+            return true;
+        }
         if let Some(dev) = Self::open_hid_device(ITE_VID, ITE_PID_LIGHTBAR_BASE, USAGE_LIGHTBAR) {
             if let Some(cap) = dev.probe_capability() {
                 // Official LM_ITE_RGB.cs: Base coastline bar supported on 1, 3, 4, 5, 7, 9, 11
@@ -201,8 +214,14 @@ impl IteLightingManager {
         false
     }
 
-    /// Static probe to determine if physical USB Lettering Logo (streamer hardware) is supported
-    pub fn probe_usb_logo_supported() -> bool {
+    /// Probe whether the machine physically possesses USB Lettering Logo hardware (ITE 7000 or 7001 capability 5/8/9/10/11).
+    /// Note: Canglong Series (ProjectID 25/26) uses EC Shield Logo and is excluded here.
+    pub fn probe_raw_usb_logo_hardware() -> bool {
+        let project_id = crate::driver::wmi_ec::wmi_read_ec(crate::driver::wmi_ec::ADDR_PROJECT_ID).unwrap_or(0);
+        if project_id == 25 || project_id == 26 {
+            return false;
+        }
+
         // 1. Dedicated USB 7000 chip (e.g. Kuangshi 16 water-cooled series)
         if Self::open_hid_device(ITE_VID, ITE_PID_LIGHTBAR_HINGE, 0).is_some() {
             return true;
@@ -211,12 +230,29 @@ impl IteLightingManager {
         Self::probe_7001_has_usb_logo()
     }
 
+    /// Static probe to determine if physical USB Lettering Logo (streamer hardware) is supported
+    pub fn probe_usb_logo_supported() -> bool {
+        // 0. Manual Topology Override takes absolute priority
+        let cfg = crate::system::config::load_config();
+        if cfg.lighting.hardware_override.enabled {
+            if cfg.lighting.hardware_override.logo == "letter" {
+                return true;
+            } else if cfg.lighting.hardware_override.logo == "shield" || cfg.lighting.hardware_override.logo == "none" {
+                return false;
+            }
+        }
+
+        Self::probe_raw_usb_logo_hardware()
+    }
+
     /// Invalidate and drop cached HID device handles (e.g. before sleep or upon error)
     pub fn invalidate_devices(&self) {
         crate::driver::ite_streamer::IteStreamerController::invalidate_probe_cache();
+        crate::system::model_engine::invalidate_lighting_contract_cache();
         *self.kb_dev.lock() = None;
         *self.lb_dev.lock() = None;
         *self.hinge_dev.lock() = None;
+        *self.strip_dev.lock() = None;
     }
 
     /// Gracefully release keyboard handle for BetterRGB streamer engine.
@@ -275,11 +311,13 @@ impl IteLightingManager {
     pub fn refresh_devices(&self) {
         let contract = self.active_contract();
 
-        // 1. Backend Isolation: If machine is purely EC-driven (e.g. thinbook white backlight) or no lighting,
-        // physically isolate the USB stack! Strictly avoid scanning, opening or polling USB HID bus.
-        if contract.backend != "USB_HID" {
-            return;
-        }
+        // 1. Keyboard USB Stack Isolation:
+        // The USB HID bus may only be touched for the KEYBOARD when its backend actually
+        // needs it. NOTE: this must NOT gate the lightbar / logo / hinge channels.
+        // On hybrid machines (EC SingleZone keyboard + USB ITE 048D:7001 lettering logo,
+        // e.g. GM6IX9B) gating everything on `backend` silently kills A-Cover LOGO control
+        // while the Machine Constitution still declares has_logo = true.
+        let keyboard_needs_usb = contract.backend == "USB_HID";
 
         // 2. Base Lightbar & Lettering Logo Channel:
         // Gated strictly by has_coastline or has_logo!
@@ -287,6 +325,15 @@ impl IteLightingManager {
             let mut lb = self.lb_dev.lock();
             if lb.is_none() {
                 *lb = Self::open_hid_device(ITE_VID, ITE_PID_LIGHTBAR_BASE, USAGE_LIGHTBAR);
+            }
+        }
+
+        // 2b. ITE 8291 Companion Ambient Strip Channel (048D:6008, e.g. Titan PLUS GM7TG0M):
+        // Gated by has_coastline or has_air_vent!
+        if contract.has_coastline || contract.has_air_vent {
+            let mut strip = self.strip_dev.lock();
+            if strip.is_none() {
+                *strip = Self::open_hid_device(ITE_VID, ITE_PID_AMBIENT_STRIP, 0);
             }
         }
 
@@ -301,7 +348,7 @@ impl IteLightingManager {
 
         // 4. Keyboard Channel:
         // Gated strictly by keyboard_type!
-        if contract.keyboard_type == "4Zone" && Self::probe_four_zone_keyboard_exists() {
+        if keyboard_needs_usb && contract.keyboard_type == "4Zone" && Self::probe_four_zone_keyboard_exists() {
             let mut kb = self.kb_dev.lock();
             if kb.is_none() {
                 *kb = IteLightingDevice::open_exact(ITE_VID, ITE_PID_KEYBOARD_FOURZONE, 0, USAGE_PAGE_FOURZONE);
@@ -319,15 +366,19 @@ impl IteLightingManager {
 
     pub fn force_refresh_lightbar(&self) {
         let contract = self.active_contract();
-        if contract.backend == "USB_HID" && (contract.has_coastline || contract.has_logo) {
+        if contract.has_coastline || contract.has_logo {
             let mut lb = self.lb_dev.lock();
             *lb = Self::open_hid_device(ITE_VID, ITE_PID_LIGHTBAR_BASE, USAGE_LIGHTBAR);
+        }
+        if contract.has_coastline || contract.has_air_vent {
+            let mut strip = self.strip_dev.lock();
+            *strip = Self::open_hid_device(ITE_VID, ITE_PID_AMBIENT_STRIP, 0);
         }
     }
 
     pub fn force_refresh_hinge(&self) {
         let contract = self.active_contract();
-        if contract.backend == "USB_HID" && contract.has_air_vent {
+        if contract.has_air_vent {
             let mut hg = self.hinge_dev.lock();
             *hg = Self::open_hid_device(ITE_VID, ITE_PID_LIGHTBAR_HINGE, 0);
         }
@@ -354,39 +405,40 @@ impl IteLightingManager {
 
     /// Apply Monochrome White Backlight level directly via Motherboard EC (for Thin & Light laptops)
     pub fn apply_monochrome_white_ec(&self, enabled: bool, brightness_idx: u8) -> bool {
-        self.is_sleeping.store(false, std::sync::atomic::Ordering::SeqCst);
+        if enabled && brightness_idx > 0 {
+            self.is_sleeping.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
 
         // Branch 1: Declarative HAL / Thin & Light models (IP3, Baolongda, Xingyao, etc.)
-        let hal = crate::hal::get_hardware_driver();
-        if hal.kind() != crate::hal::DriverKind::TongfangAcpi {
+        let is_tongfang = crate::driver::wmi_ec::is_acpi_driver_available()
+            || crate::hal::platform_probe::is_tongfang_family()
+            || crate::hal::get_hardware_driver().kind() == crate::hal::DriverKind::TongfangAcpi;
+
+        if !is_tongfang {
+            let hal = crate::hal::get_hardware_driver();
             let lvl = if enabled { brightness_idx } else { 0 };
             return hal.set_monochrome_backlight(lvl).is_ok();
         }
 
-        let cur_val = crate::driver::wmi_ec::wmi_read_ec(ADDR_BACKLIGHT_WHITE).unwrap_or(0);
-
-        if !enabled || brightness_idx == 0 {
-            // Set disable bit (Bit 1 = 1)
-            let target = cur_val | 0x02;
-            let ok = crate::driver::wmi_ec::wmi_write_ec(ADDR_BACKLIGHT_WHITE, target);
-            if let Some(cur_trigger_byte) = crate::driver::wmi_ec::wmi_read_ec(crate::driver::wmi_ec::ADDR_TRIGGER_BYTE) {
-                let _ = crate::driver::wmi_ec::wmi_write_ec(crate::driver::wmi_ec::ADDR_TRIGGER_BYTE, cur_trigger_byte | 0x20);
+        // Branch 2: Tongfang EC Direct Monochrome White Backlight (e.g. Wujie 14X, 15X, CODE series)
+        // Hardware ground-truth:
+        // - OFF:   0x01 (Bit 0 mode enabled, brightness nibble = 0, no bit 1 cutoff)
+        // - LOW:   0x21 (Bit 5 = 50% PWM + Bit 0 base)
+        // - HIGH:  0x41 (Bit 6 = 100% PWM + Bit 0 base)
+        let target = if !enabled || brightness_idx == 0 {
+            0x01
+        } else {
+            match brightness_idx {
+                1 => 0x21,
+                _ => 0x41,
             }
-            crate::log_info!("LIGHTING_ARBITER", "Monochrome white backlight disabled (EC=0x{:02X}) -> ok={}", target, ok);
-            return ok;
-        }
-
-        // Map brightness index (1 -> 50% (0x20), 2..=4 -> 100% (0x40))
-        let level_step = match brightness_idx {
-            1 => 0x20,
-            _ => 0x40,
         };
-        let target = (cur_val & !0x02 & 0x0F) | level_step | 0x01;
+
         let ok = crate::driver::wmi_ec::wmi_write_ec(ADDR_BACKLIGHT_WHITE, target);
         if let Some(cur_trigger_byte) = crate::driver::wmi_ec::wmi_read_ec(crate::driver::wmi_ec::ADDR_TRIGGER_BYTE) {
             let _ = crate::driver::wmi_ec::wmi_write_ec(crate::driver::wmi_ec::ADDR_TRIGGER_BYTE, cur_trigger_byte | 0x20);
         }
-        crate::log_info!("LIGHTING_ARBITER", "Monochrome white backlight set: level_idx={} (EC=0x{:02X}) -> ok={}", brightness_idx, target, ok);
+        crate::log_info!("LIGHTING_ARBITER", "Monochrome white backlight applied: on={}, level_idx={} (EC=0x{:02X}) -> ok={}", enabled && brightness_idx > 0, brightness_idx, target, ok);
         ok
     }
 
@@ -399,11 +451,18 @@ impl IteLightingManager {
         _speed_idx: u8,
         color_hex: &str,
     ) -> bool {
-        self.is_sleeping.store(false, std::sync::atomic::Ordering::SeqCst);
+        let is_on = enabled && brightness_idx > 0;
+        if is_on {
+            self.is_sleeping.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
 
         // Branch 1: Declarative HAL / Non-Tongfang platforms (e.g. Baolongda MRID6)
-        let hal = crate::hal::get_hardware_driver();
-        if hal.kind() != crate::hal::DriverKind::TongfangAcpi {
+        let is_tongfang = crate::driver::wmi_ec::is_acpi_driver_available()
+            || crate::hal::platform_probe::is_tongfang_family()
+            || crate::hal::get_hardware_driver().kind() == crate::hal::DriverKind::TongfangAcpi;
+
+        if !is_tongfang {
+            let hal = crate::hal::get_hardware_driver();
             let is_on = enabled && brightness_idx > 0;
             let level = if is_on { brightness_idx.min(3) } else { 0 };
             let (r, g, b) = if is_on {
@@ -430,7 +489,7 @@ impl IteLightingManager {
 
         let mut new_bl_white = cur_bl_white;
         if is_on {
-            new_bl_white &= !0x02; // Bit 1 清零 = 启用背光供电
+            new_bl_white &= !0x03; // Bit 1 清零 = 启用背光供电; Bit 0 清零 = 确保单区全彩RGB模式(而非单白模式)
             new_bl_white &= 0x0F;  // 保留低 4 位，清零旧亮度高 4 位
             let high_nibble = match brightness_idx {
                 1 => 0x30,
@@ -508,7 +567,9 @@ impl IteLightingManager {
         direction_idx: u8,
         color_hex: &str,
     ) -> bool {
-        self.is_sleeping.store(false, std::sync::atomic::Ordering::SeqCst);
+        if enabled && brightness_idx > 0 {
+            self.is_sleeping.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
 
         let contract = self.active_contract();
         if contract.backend == "None" || contract.keyboard_type == "None" {
@@ -554,7 +615,9 @@ impl IteLightingManager {
         color_hex: &str,
         zone_colors: Option<&[String; 4]>,
     ) -> bool {
-        self.is_sleeping.store(false, std::sync::atomic::Ordering::SeqCst);
+        if enabled && brightness_idx > 0 {
+            self.is_sleeping.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
         self.refresh_devices();
 
         // Hardware Power Guard: Ensure EC Backlight Disable Bit is cleared (0 = Enabled)
@@ -677,7 +740,9 @@ impl IteLightingManager {
         speed_idx: u8,
         color_hex: &str,
     ) -> bool {
-        self.is_sleeping.store(false, std::sync::atomic::Ordering::SeqCst);
+        if enabled {
+            self.is_sleeping.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
 
         // Hardware Constitution Gate:
         if !self.is_coastline_allowed() {
@@ -688,6 +753,8 @@ impl IteLightingManager {
         self.refresh_devices();
         if self.lb_strategy.is_connected() {
             self.lb_strategy.apply_lightbar(enabled, effect, brightness_idx, speed_idx, color_hex)
+        } else if self.strip_strategy.is_connected() {
+            self.strip_strategy.apply_lightbar(enabled, effect, brightness_idx, speed_idx, color_hex)
         } else if Self::is_ec_lightbar_supported() {
             lightbar::EcDirectLightbarStrategy.apply_lightbar(enabled, effect, brightness_idx, speed_idx, color_hex)
         } else {
@@ -704,7 +771,9 @@ impl IteLightingManager {
         speed_idx: u8,
         color_hex: &str,
     ) -> bool {
-        self.is_sleeping.store(false, std::sync::atomic::Ordering::SeqCst);
+        if enabled {
+            self.is_sleeping.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
 
         // Hardware Constitution Gate:
         if !self.is_air_vent_allowed() {
@@ -716,6 +785,8 @@ impl IteLightingManager {
 
         if self.hinge_strategy.is_connected() {
             self.hinge_strategy.apply_lightbar(enabled, effect, brightness_idx, speed_idx, color_hex)
+        } else if self.strip_strategy.is_connected() {
+            self.strip_strategy.apply_lightbar(enabled, effect, brightness_idx, speed_idx, color_hex)
         } else if self.ec_hinge_strategy.is_connected() {
             self.ec_hinge_strategy.apply_lightbar(enabled, effect, brightness_idx, speed_idx, color_hex)
         } else {
@@ -730,9 +801,14 @@ impl IteLightingManager {
 
     /// Check if machine has motherboard EC-controlled A-Cover Logo
     pub fn is_ec_logo_supported() -> bool {
-        // Physical USB Lettering Logo hardware takes precedence
-        if Self::probe_usb_logo_supported() {
-            return false;
+        // 0. Manual Topology Override takes absolute priority
+        let cfg = crate::system::config::load_config();
+        if cfg.lighting.hardware_override.enabled {
+            if cfg.lighting.hardware_override.logo == "shield" {
+                return true;
+            } else if cfg.lighting.hardware_override.logo == "letter" || cfg.lighting.hardware_override.logo == "none" {
+                return false;
+            }
         }
 
         // SingleZone RGB or SingleColor keyboards physically wire registers 1897~1899 to keyboard backlighting PWM;
@@ -745,23 +821,30 @@ impl IteLightingManager {
             return false;
         }
 
-        // Check operating mode index bit 0 (official isSupportECALogo hardware capability bit)
+        // 1. Definite EC Shield Logo hardware: Canglong Series ProjectID 25, 26
+        let project_id = crate::driver::wmi_ec::wmi_read_ec(crate::driver::wmi_ec::ADDR_PROJECT_ID).unwrap_or(0);
+        if project_id == 25 || project_id == 26 {
+            return true;
+        }
+
+        // 2. Physical USB Lettering Logo hardware takes absolute precedence:
+        // If the machine physically possesses USB Lettering Logo hardware (e.g. Yaoshi 16 Super / Kuangshi 16),
+        // it CANNOT be an EC Shield Logo!
+        if Self::probe_raw_usb_logo_hardware() {
+            return false;
+        }
+
+        // 3. Check operating mode index bit 0 (official isSupportECALogo hardware capability bit)
         let raw_mode_index = crate::driver::wmi_ec::wmi_read_ec(ADDR_MODE_INDEX).unwrap_or(0);
         if (raw_mode_index & 0x01) == 0x01 {
             return true;
         }
 
-        // Check OEM registry Support\MBALogo
+        // 4. Check OEM registry Support\MBALogo
         if let Some(mba) = read_hklm_dword(r"SOFTWARE\OEM\GamingCenter2\Support", "MBALogo") {
             if mba == 1 {
                 return true;
             }
-        }
-
-        // Check product project ID (e.g. Canglong Series ProjectID 25, 26)
-        let project_id = crate::driver::wmi_ec::wmi_read_ec(crate::driver::wmi_ec::ADDR_PROJECT_ID).unwrap_or(0);
-        if project_id == 25 || project_id == 26 {
-            return true;
         }
 
         false
@@ -839,16 +922,19 @@ impl IteLightingManager {
             let _ = crate::driver::wmi_ec::wmi_write_ec(ADDR_RGB_RED, 0);
             let _ = crate::driver::wmi_ec::wmi_write_ec(ADDR_RGB_GREEN, 0);
             let _ = crate::driver::wmi_ec::wmi_write_ec(ADDR_RGB_BLUE, 0);
-            let next_trigger = cur_trigger_byte & !0x80;
+            let next_trigger = (cur_trigger_byte & !0x80) | 0x40 | 0x20;
             let _ = crate::driver::wmi_ec::wmi_write_ec(ADDR_TRIGGER_BYTE, next_trigger);
             let _ = crate::driver::wmi_ec::wmi_write_ec(ADDR_RGB_CONTROL, cur_rgb_ctrl & 0xF8);
             crate::log_info!("ITE_LIGHTING", "A-Cover Logo EC synchronized: OFF (support_bit={})", support_bit);
         } else {
+            // Power rail guard: Ensure Bit 1 is cleared (0 = power rail enabled) and Bit 4 set (0x10 = commit enabled)
+            let new_bl_white = (cur_bl_white & !0x02) | 0x10;
+            let _ = crate::driver::wmi_ec::wmi_write_ec(ADDR_BACKLIGHT_WHITE, new_bl_white);
+
             let (r, g, b) = parse_hex_color(color_hex);
 
             match effect {
                 1 => {
-                    let _ = crate::driver::wmi_ec::wmi_write_ec(ADDR_TRIGGER_BYTE, cur_trigger_byte & !0x80);
                     let _ = crate::driver::wmi_ec::wmi_write_ec(ADDR_RGB_CONTROL, cur_rgb_ctrl & 0xF8);
 
                     let r_ec = ((r as u32 * 50) / 255).min(50) as u8;
@@ -858,11 +944,12 @@ impl IteLightingManager {
                     let _ = crate::driver::wmi_ec::wmi_write_ec(ADDR_RGB_RED, r_ec);
                     let _ = crate::driver::wmi_ec::wmi_write_ec(ADDR_RGB_GREEN, g_ec);
                     let _ = crate::driver::wmi_ec::wmi_write_ec(ADDR_RGB_BLUE, b_ec);
+
+                    // Pulse Logo Trigger (0x40) and PWM Latch (0x20), clear Rainbow (0x80)
+                    let next_trigger = (cur_trigger_byte & !0x80) | 0x40 | 0x20;
+                    let _ = crate::driver::wmi_ec::wmi_write_ec(ADDR_TRIGGER_BYTE, next_trigger);
                 }
                 2 => {
-                    let next_trigger = cur_trigger_byte & !0x80;
-                    let _ = crate::driver::wmi_ec::wmi_write_ec(ADDR_TRIGGER_BYTE, next_trigger);
-
                     // EC supports 7 fixed breathing colors:
                     //   1=White  2=Red  3=Green  4=Blue  5=Yellow  6=Purple  7=Cyan
                     // Map the user's arbitrary RGB to the nearest EC palette entry
@@ -892,6 +979,8 @@ impl IteLightingManager {
 
                     let new_rgb_ctrl = (cur_rgb_ctrl & 0xF8) | best_code;
                     let _ = crate::driver::wmi_ec::wmi_write_ec(ADDR_RGB_CONTROL, new_rgb_ctrl);
+                    let next_trigger = (cur_trigger_byte & !0x80) | 0x40 | 0x20;
+                    let _ = crate::driver::wmi_ec::wmi_write_ec(ADDR_TRIGGER_BYTE, next_trigger);
                     crate::log_info!(
                         "ITE_LIGHTING",
                         "EC Shield Logo Breathing: color=({},{},{}) -> palette_code={} (dist={})",
@@ -900,14 +989,14 @@ impl IteLightingManager {
                 }
                 _ => {
                     let _ = crate::driver::wmi_ec::wmi_write_ec(ADDR_RGB_CONTROL, cur_rgb_ctrl & 0xF8);
-                    let next_trigger = cur_trigger_byte | 0x80;
+                    let next_trigger = cur_trigger_byte | 0x80 | 0x40 | 0x20;
                     let _ = crate::driver::wmi_ec::wmi_write_ec(ADDR_TRIGGER_BYTE, next_trigger);
                 }
             }
 
             let new_mode_index = (cur_mode_index & 0x1F) | b_byte | support_bit;
             let _ = crate::driver::wmi_ec::wmi_write_ec(ADDR_MODE_INDEX, new_mode_index);
-            let _ = crate::driver::wmi_ec::wmi_write_ec(ADDR_BACKLIGHT_WHITE, cur_bl_white | 0x10);
+            let _ = crate::driver::wmi_ec::wmi_write_ec(ADDR_BACKLIGHT_WHITE, new_bl_white);
 
             crate::log_info!(
                 "ITE_LIGHTING",
@@ -937,13 +1026,42 @@ impl IteLightingManager {
             return false;
         }
 
-        // Hardware Ground-Truth Logo Routing:
-        // If this machine does NOT have physical USB Lettering Logo hardware, route to Motherboard EC PWM
-        if !Self::probe_usb_logo_supported() && Self::is_ec_logo_supported() {
+        // 1. Manual Topology Override Check
+        let cfg = crate::system::config::load_config();
+        if cfg.lighting.hardware_override.enabled {
+            if cfg.lighting.hardware_override.logo == "shield" {
+                return Self::sync_ec_logo(enabled, effect, brightness_idx, color_hex);
+            } else if cfg.lighting.hardware_override.logo == "none" {
+                return false;
+            }
+            // if "letter", proceed to USB HID dispatch below
+        }
+
+        // 2. Hardware Ground-Truth Logo Routing:
+        // If this machine has Motherboard EC PWM Logo, route to Motherboard EC PWM
+        if Self::is_ec_logo_supported() {
             return Self::sync_ec_logo(enabled, effect, brightness_idx, color_hex);
         }
 
+        if !Self::probe_usb_logo_supported() {
+            return false;
+        }
+
         self.refresh_devices();
+
+        // Defensive fallback: if the cached handle is still missing even though the firmware
+        // reports a USB lettering logo, open the device on demand instead of silently
+        // turning the request into a no-op (which used to be reported to the UI as success).
+        if Self::probe_usb_logo_supported() {
+            let mut lb = self.lb_dev.lock();
+            if lb.is_none() {
+                crate::log_warn!(
+                    "LIGHTING_ARBITER",
+                    "apply_logo: cached 7001 handle missing, opening device on demand"
+                );
+                *lb = Self::open_hid_device(ITE_VID, ITE_PID_LIGHTBAR_BASE, USAGE_LIGHTBAR);
+            }
+        }
 
         let light = LIGHTBAR_BRIGHTNESS_MAP
             .get(brightness_idx as usize)
@@ -1046,6 +1164,7 @@ impl IteLightingManager {
             lightbar::EcDirectLightbarStrategy.turn_off();
         }
         self.hinge_strategy.turn_off();
+        self.strip_strategy.turn_off();
 
         let has_ec_logo = Self::is_ec_logo_supported();
         if !has_ec_logo {
@@ -1075,21 +1194,30 @@ impl IteLightingManager {
         if has_ec_logo {
             Self::sync_ec_logo(false, 1, 0, "#000000");
         }
+
+        // 无论各硬件通道执行了何种熄灯动作，最终必须严格确立处于睡眠状态
+        self.is_sleeping.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Restore all lighting zones to their saved preset states
     pub fn restore_all(&self) {
-        // Clear EC ADDR_BACKLIGHT_WHITE Bit 1 so hardware rail is active
+        let st = self.state.lock().clone();
+        // Hardware Rail Power Gate: Enable hardware rail if keyboard OR logo is active & bright;
+        // otherwise assert hardware rail cutoff (Bit 1 = 1) to prevent auto-light upon boot.
         if let Some(cur_bl) = crate::driver::wmi_ec::wmi_read_ec(ADDR_BACKLIGHT_WHITE) {
-            if (cur_bl & 0x02) != 0 {
-                let _ = crate::driver::wmi_ec::wmi_write_ec(ADDR_BACKLIGHT_WHITE, cur_bl & !0x02);
+            let target = if (st.kb_enabled && st.kb_brightness > 0) || (st.logo_enabled && st.logo_brightness > 0) {
+                cur_bl & !0x02
+            } else {
+                cur_bl | 0x02
+            };
+            if target != cur_bl {
+                let _ = crate::driver::wmi_ec::wmi_write_ec(ADDR_BACKLIGHT_WHITE, target);
+                if let Some(cur_trigger) = crate::driver::wmi_ec::wmi_read_ec(crate::driver::wmi_ec::ADDR_TRIGGER_BYTE) {
+                    let _ = crate::driver::wmi_ec::wmi_write_ec(crate::driver::wmi_ec::ADDR_TRIGGER_BYTE, cur_trigger | 0x20);
+                }
             }
         }
-        if let Some(cur_trigger) = crate::driver::wmi_ec::wmi_read_ec(crate::driver::wmi_ec::ADDR_TRIGGER_BYTE) {
-            let _ = crate::driver::wmi_ec::wmi_write_ec(crate::driver::wmi_ec::ADDR_TRIGGER_BYTE, cur_trigger | 0x20);
-        }
         self.refresh_devices();
-        let st = self.state.lock().clone();
         if self.has_keyboard_device() {
             if self.has_perkey_keyboard_device() {
                 if st.kb_engine == "hardware" {
@@ -1268,11 +1396,22 @@ impl IteLightingManager {
         let is_single_zone = (raw_kb_support & 0x04) != 0;
         let cur_st = self.state.lock().clone();
         let is_streamer = cur_st.kb_engine == "streamer";
+        let kb_is_on = cur_st.kb_enabled && cur_st.kb_brightness > 0;
 
         std::thread::spawn(move || {
             crate::log_info!("LIGHTING", "Startup Ceremony launched across detected hardware tier");
 
-            if has_perkey {
+            let logo_is_on = cur_st.logo_enabled && cur_st.logo_brightness > 0;
+            if !kb_is_on {
+                // If keyboard lighting is disabled by user, strictly respect preference and do NOT light up keyboard!
+                crate::log_info!("LIGHTING", "Startup Ceremony: keyboard is disabled in user presets, keeping keyboard dark");
+                if !logo_is_on {
+                    if let Some(cur_bl) = crate::driver::wmi_ec::wmi_read_ec(ADDR_BACKLIGHT_WHITE) {
+                        let _ = crate::driver::wmi_ec::wmi_write_ec(ADDR_BACKLIGHT_WHITE, cur_bl | 0x02);
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(1500));
+            } else if has_perkey {
                 // T1 旗舰全彩逐键：若为推流引擎，注入 60FPS 绚丽星光烟花流光 (Sparkle 111)；若为硬件 MCU，下发全彩波浪 (Wave 3)
                 if is_streamer {
                     let streamer = crate::driver::ite_streamer::get_global_streamer();
@@ -1348,15 +1487,49 @@ impl IteLightingManager {
         }
         self.invalidate_devices();
 
-        // 3. Reset conflicting EC registers
+        // 3. Reset conflicting EC registers (Strictly Tongfang platforms only; never pollute Baolongda / non-Tongfang models)
         if override_cfg.enabled {
-            if override_cfg.keyboard == "single_white" {
-                if let Some(val) = crate::driver::wmi_ec::wmi_read_ec(ADDR_BACKLIGHT_WHITE) {
-                    let _ = crate::driver::wmi_ec::wmi_write_ec(ADDR_BACKLIGHT_WHITE, val | 0x01);
-                }
-            } else if override_cfg.keyboard == "single_zone" {
-                if let Some(val) = crate::driver::wmi_ec::wmi_read_ec(ADDR_BACKLIGHT_WHITE) {
-                    let _ = crate::driver::wmi_ec::wmi_write_ec(ADDR_BACKLIGHT_WHITE, val & !0x01);
+            let is_tongfang = crate::driver::wmi_ec::is_acpi_driver_available()
+                || crate::hal::platform_probe::is_tongfang_family()
+                || crate::hal::get_hardware_driver().kind() == crate::hal::DriverKind::TongfangAcpi;
+
+            if is_tongfang {
+                match override_cfg.keyboard.as_str() {
+                    "single_white" => {
+                        if let Some(val) = crate::driver::wmi_ec::wmi_read_ec(ADDR_BACKLIGHT_WHITE) {
+                            // Bit 0 = 1 (single white mode), Bit 1 = 0 (unmute power)
+                            let target = (val | 0x01) & !0x02;
+                            let _ = crate::driver::wmi_ec::wmi_write_ec(ADDR_BACKLIGHT_WHITE, target);
+                        }
+                        if let Some(tb) = crate::driver::wmi_ec::wmi_read_ec(crate::driver::wmi_ec::ADDR_TRIGGER_BYTE) {
+                            let _ = crate::driver::wmi_ec::wmi_write_ec(crate::driver::wmi_ec::ADDR_TRIGGER_BYTE, tb | 0x20);
+                        }
+                    }
+                    "single_zone" => {
+                        if let Some(val) = crate::driver::wmi_ec::wmi_read_ec(ADDR_BACKLIGHT_WHITE) {
+                            // Bit 0 = 0 (RGB mode), Bit 1 = 0 (unmute power)
+                            let target = val & !0x03;
+                            let _ = crate::driver::wmi_ec::wmi_write_ec(ADDR_BACKLIGHT_WHITE, target);
+                        }
+                        if let Some(tb) = crate::driver::wmi_ec::wmi_read_ec(crate::driver::wmi_ec::ADDR_TRIGGER_BYTE) {
+                            let _ = crate::driver::wmi_ec::wmi_write_ec(crate::driver::wmi_ec::ADDR_TRIGGER_BYTE, tb | 0x20);
+                        }
+                    }
+                    "four_zone" | "per_key" => {
+                        if let Some(val) = crate::driver::wmi_ec::wmi_read_ec(ADDR_BACKLIGHT_WHITE) {
+                            // Unmute power (Bit 1 = 0) and clear single white (Bit 0 = 0)
+                            let target = val & !0x03;
+                            let _ = crate::driver::wmi_ec::wmi_write_ec(ADDR_BACKLIGHT_WHITE, target);
+                        }
+                    }
+                    "none" => {
+                        if let Some(val) = crate::driver::wmi_ec::wmi_read_ec(ADDR_BACKLIGHT_WHITE) {
+                            // Bit 1 = 1 (cutoff power)
+                            let target = val | 0x02;
+                            let _ = crate::driver::wmi_ec::wmi_write_ec(ADDR_BACKLIGHT_WHITE, target);
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -1419,7 +1592,9 @@ impl IteLightingManager {
 
         let (kb_engine, kb_active, kb_fps) = match contract.keyboard_type.as_str() {
             "PerKey" => {
-                if cfg.lighting.kb_engine == "streamer" {
+                // "custom" runs on the same ITE streamer engine, so report the real
+                // runtime state (and real FPS) instead of a bogus "hardware" label.
+                if matches!(cfg.lighting.kb_engine.as_str(), "streamer" | "custom") {
                     let active = !is_sleep && streamer_running && streamer_params.enabled && streamer_params.brightness_pct > 0;
                     ("streamer".to_string(), active, if streamer_running { streamer_params.fps } else { 0 })
                 } else {

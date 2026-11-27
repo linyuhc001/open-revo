@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use parking_lot::Mutex;
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::commands::system_cmd::RawPluginManifest;
 
@@ -25,43 +25,28 @@ pub fn format_widget_label(plugin_id: &str) -> String {
 
 /// Open an independent, sandbox-isolated Webview window for a custom widget plugin
 #[tauri::command]
-pub async fn open_custom_widget(app: AppHandle, plugin_id: String) -> Result<String, String> {
+pub async fn open_custom_widget(_app: AppHandle, plugin_id: String) -> Result<String, String> {
     let label = format_widget_label(&plugin_id);
+    crate::log_info!("WIDGET", "open_custom_widget called for plugin '{}', label '{}'", plugin_id, label);
 
     // 1. Persist plugin toggle state
     let mut cfg = crate::system::config::load_config();
     cfg.custom_plugin_toggles.insert(plugin_id.clone(), true);
     crate::system::config::save_config(&cfg);
 
-    // 2. Fast-path: if window already exists (e.g. was hidden), restore and show it instantly
-    if let Some(win) = app.get_webview_window(&label) {
-        let _ = win.show();
-        let _ = win.unminimize();
-        crate::log_info!("WIDGET", "Restored and unhid existing widget window '{}'", label);
-        return Ok(label);
-    }
-
-    // 3. Delegate to WebviewOrchestrator queue for safe staggered creation with circuit-breaker protection
-    crate::system::webview_orchestrator::WebviewOrchestrator::global().enqueue_widget(plugin_id.clone());
-
-    // 4. Await orchestrator window instantiation (up to 3000ms)
-    for _ in 0..60 {
-        if let Some(win) = app.get_webview_window(&label) {
-            let _ = win.show();
-            let _ = win.unminimize();
-            return Ok(label);
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-
-    Err(format!("Timed out awaiting widget '{}' creation from orchestrator", plugin_id))
+    // Unconditionally delegate to native unmanaged Wry popout:
+    // Ensures 100% borderless transparency, zero iframe white rectangular canvas glitches,
+    // and unified high-performance telemetry event loop across both Slint and Tauri host modes.
+    crate::log_info!("WIDGET", "Opening native unmanaged Wry popout for '{}'", plugin_id);
+    crate::system::native_wry::open_popout(&plugin_id);
+    return Ok(label);
 }
 
 /// Internal asynchronous widget window creation routine executed exclusively by WebviewOrchestrator worker
 pub async fn spawn_widget_window_internal(app: &AppHandle, plugin_id: &str) -> Result<String, String> {
     let label = format_widget_label(plugin_id);
 
-    let plugins_dir = crate::system::config::get_config_dir().join("plugins").join(plugin_id);
+    let plugins_dir = crate::commands::system_cmd::find_plugin_dir(plugin_id);
     let manifest_path = plugins_dir.join("manifest.json");
 
     if !manifest_path.exists() {
@@ -78,14 +63,35 @@ pub async fn spawn_widget_window_internal(app: &AppHandle, plugin_id: &str) -> R
         return Err(notice.unwrap_or_else(|| "当前 OpenRevo 版本低于该挂件最低要求版本".into()));
     }
 
-    let win_cfg = manifest.window.clone().unwrap_or(crate::commands::system_cmd::PluginWindowConfig {
-        width: 240.0,
-        height: 320.0,
-        transparent: true,
-        always_on_top: true,
-        resizable: false,
-        decorations: false,
-        skip_taskbar: true,
+    let has_explicit_widget = manifest.widget.is_some();
+    let has_explicit_tab = manifest.tab.is_some();
+    let p_type = manifest.plugin_type.as_deref().unwrap_or_default();
+    let is_tab_plugin = !has_explicit_widget && (has_explicit_tab || p_type.eq_ignore_ascii_case("tab"));
+
+    let win_cfg = manifest.widget.as_ref().and_then(|w| w.window.clone()).or(manifest.window.clone()).unwrap_or_else(|| {
+        if is_tab_plugin {
+            crate::commands::system_cmd::PluginWindowConfig {
+                width: 1024.0,
+                height: 720.0,
+                transparent: false,
+                always_on_top: false,
+                resizable: true,
+                decorations: true,
+                skip_taskbar: false,
+                click_through: false,
+            }
+        } else {
+            crate::commands::system_cmd::PluginWindowConfig {
+                width: 240.0,
+                height: 320.0,
+                transparent: true,
+                always_on_top: true,
+                resizable: false,
+                decorations: false,
+                skip_taskbar: true,
+                click_through: false,
+            }
+        }
     });
 
     // 1. Register fine-grained telemetry sensor subscription
@@ -139,8 +145,13 @@ pub async fn spawn_widget_window_internal(app: &AppHandle, plugin_id: &str) -> R
         .shadow(has_decorations)
         .always_on_top(win_cfg.always_on_top)
         .skip_taskbar(win_cfg.skip_taskbar)
+        .drag_and_drop(false)
         .initialization_script(&init_script)
         .visible(false); // Conceal during initial DOM mount to avoid white flash
+
+    if is_tab_plugin {
+        builder = builder.min_inner_size(600.0, 480.0);
+    }
 
     let cfg = crate::system::config::load_config();
     let mut positioned = false;
@@ -172,8 +183,14 @@ pub async fn spawn_widget_window_internal(app: &AppHandle, plugin_id: &str) -> R
         builder = builder.center();
     }
 
+    crate::log_info!("WIDGET", "Executing WebviewWindowBuilder::build for widget '{}'...", label);
     match builder.build() {
         Ok(win) => {
+            crate::log_info!("WIDGET", "WebviewWindowBuilder::build SUCCESS for widget '{}'", label);
+            #[cfg(windows)]
+            if win_cfg.transparent && !has_decorations {
+                let _ = win.set_shadow(false);
+            }
             // Watchdog fallback (600ms): if frontend widget_ready event is somehow missed, show gracefully
             let win_fallback = win.clone();
             std::thread::spawn(move || {
@@ -198,6 +215,7 @@ pub async fn spawn_widget_window_internal(app: &AppHandle, plugin_id: &str) -> R
             Ok(label)
         }
         Err(e) => {
+            crate::log_error!("WIDGET", "Failed to build widget window '{}': {}", label, e);
             crate::system::telemetry::unregister_consumer(plugin_id);
             let mut active = get_active_widgets().lock();
             active.remove(plugin_id);
@@ -247,57 +265,88 @@ pub fn queue_widget_position(plugin_id: String, x: i32, y: i32) {
     }
 }
 
-/// Close and hide an active widget window, freeing all telemetry resources
+/// Clean up runtime telemetry and state when a widget or standalone window closes
+pub fn cleanup_widget_on_close(app: &AppHandle, plugin_id: &str) {
+    let mut active = get_active_widgets().lock();
+    active.remove(plugin_id);
+
+    // Unregister telemetry consumer to restore low-power heartbeat
+    crate::system::telemetry::unregister_consumer(plugin_id);
+
+    // Persist plugin toggle state
+    let mut cfg = crate::system::config::load_config();
+    cfg.custom_plugin_toggles.insert(plugin_id.to_string(), false);
+    crate::system::config::save_config(&cfg);
+
+    let _ = app.emit("widget-closed", plugin_id);
+    let _ = app.emit("widget-status-changed", serde_json::json!({
+        "plugin_id": plugin_id,
+        "active": false
+    }));
+    crate::log_info!("WIDGET", "Cleaned up widget runtime state and notified listeners for '{}'", plugin_id);
+}
+
+/// Close and destroy an active widget or standalone tab window, freeing all telemetry resources
 #[tauri::command]
 pub fn close_custom_widget(app: AppHandle, plugin_id: String) -> Result<bool, String> {
     let label = format_widget_label(&plugin_id);
 
+    crate::system::native_wry::close_popout(&plugin_id);
+
     if let Some(win) = app.get_webview_window(&label) {
-        let _ = win.hide();
-        crate::log_info!("WIDGET", "Widget window '{}' hidden.", label);
+        let _ = win.destroy();
+        crate::log_info!("WIDGET", "Widget window '{}' destroyed cleanly.", label);
     }
 
-    let mut active = get_active_widgets().lock();
-    active.remove(&plugin_id);
-
-    // Unregister telemetry consumer to restore low-power heartbeat
-    crate::system::telemetry::unregister_consumer(&plugin_id);
-
-    // Persist plugin toggle state
-    let mut cfg = crate::system::config::load_config();
-    cfg.custom_plugin_toggles.insert(plugin_id.clone(), false);
-    crate::system::config::save_config(&cfg);
-
+    cleanup_widget_on_close(&app, &plugin_id);
     Ok(true)
 }
 
 /// Get all currently active widget plugin IDs
 #[tauri::command]
 pub fn get_running_widgets() -> Result<Vec<String>, String> {
+    let mut list = crate::system::native_wry::get_running_popouts();
     let active = get_active_widgets().lock();
-    Ok(active.keys().cloned().collect())
+    for k in active.keys() {
+        if !list.contains(k) {
+            list.push(k.clone());
+        }
+    }
+    Ok(list)
 }
 
 /// Automatically restore and spawn enabled widget windows on OpenRevo boot via orchestrator queue
-pub fn restore_active_widgets_on_boot(_app: &AppHandle) {
+pub fn restore_active_widgets_on_boot(_app: Option<&AppHandle>) {
     let cfg = crate::system::config::load_config();
-    let plugins_dir = crate::system::config::get_config_dir().join("plugins");
 
     for (plugin_id, enabled) in cfg.custom_plugin_toggles.iter() {
         if *enabled {
-            let manifest_path = plugins_dir.join(plugin_id).join("manifest.json");
+            let p_dir = crate::commands::system_cmd::find_plugin_dir(plugin_id);
+            let manifest_path = p_dir.join("manifest.json");
             if manifest_path.exists() {
                 if let Ok(content) = std::fs::read_to_string(&manifest_path) {
                     if let Ok(manifest) = serde_json::from_str::<RawPluginManifest>(&content) {
-                        let p_type = manifest.plugin_type.unwrap_or_default();
-                        if p_type == "widget" || p_type == "skin" {
-                            crate::log_info!(
-                                "WIDGET",
-                                "Auto-restoring enabled widget '{}' on startup via orchestrator queue...",
-                                plugin_id
-                            );
-                            crate::system::webview_orchestrator::WebviewOrchestrator::global()
-                                .enqueue_widget(plugin_id.clone());
+                        let p_type = manifest.plugin_type.as_deref().unwrap_or_default();
+                        let has_widget = manifest.widget.is_some()
+                            || p_dir.join("widget.slint").exists()
+                            || p_type.eq_ignore_ascii_case("widget");
+
+                        if has_widget {
+                            if crate::system::slint_window::actions::plugins::is_slint_widget(plugin_id) {
+                                crate::log_info!(
+                                    "WIDGET",
+                                    "Auto-restoring enabled Slint widget '{}' on startup...",
+                                    plugin_id
+                                );
+                                let _ = crate::system::slint_window::actions::plugins::launch_slint_widget(plugin_id);
+                            } else {
+                                crate::log_info!(
+                                    "WIDGET",
+                                    "Auto-restoring enabled Web widget '{}' on startup via native Wry runtime...",
+                                    plugin_id
+                                );
+                                crate::system::native_wry::open_popout(plugin_id);
+                            }
                         }
                     }
                 }

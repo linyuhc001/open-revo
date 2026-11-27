@@ -1,0 +1,297 @@
+import { AppTheme } from "../../theme.slint";
+import { ColorPaletteRow } from "color_palette.slint";
+import { KeyboardEngineBar } from "keyboard_engine_bar.slint";
+import { KeyboardEffectsGrid } from "keyboard_effects_grid.slint";
+import { KeyboardControlsBar } from "keyboard_controls_bar.slint";
+import { BrfxScriptItem } from "lighting_types.slint";
+
+export component KeyboardLightingView inherits Rectangle {
+    in-out property <bool> kb_enabled: true;
+    in-out property <int> kb_engine: 1; // 0: hardware, 1: streamer, 2: custom
+    in-out property <int> kb_fps: 30; // 15, 30, 45, 60
+    in-out property <int> kb_effect: 101; // effect id (101: Wave, etc.)
+    in-out property <int> kb_direction: 0; // 0: Right, 1: Left, 2: Up, 3: Down
+    in-out property <int> kb_brightness: 3; // 0..4
+    in-out property <int> kb_speed: 2; // 0..4
+    in-out property <string> kb_color_hex: "#6366F1";
+    in-out property <color> kb_color: #6366f1;
+
+    // Custom BRFX Script properties
+    in-out property <[BrfxScriptItem]> custom_scripts: [];
+    in-out property <string> custom_script_id: "kamehameha";
+    in-out property <string> custom_script_name: "龟派气功 vs 终极闪光 (Kamehameha)";
+    in-out property <string> custom_script_file_name: "kamehameha.brfx";
+    in-out property <string> custom_script_author: "OpenRevo Community";
+    in-out property <string> custom_script_desc: "";
+    in-out property <int> custom_speed_x10: 12;
+    in-out property <int> custom_scale_pct: 100;
+    in-out property <bool> custom_reactive: false;
+    in-out property <bool> custom_is_marquee: false;
+    in-out property <string> custom_marquee_text: "I LOVE OPEN-REVO";
+    in-out property <int> custom_default_speed_x10: 12;
+    in-out property <int> custom_default_scale_pct: 100;
+    in-out property <int> custom_default_direction: 0;
+    in-out property <bool> custom_default_reactive: false;
+    in-out property <string> custom_default_color_hex: "#00F0FF";
+
+    in property <string> hw_desc: "键盘背光控制器";
+    in property <string> hardware_type: "PerKeyRgb";
+    in property <bool> is_four_zone: false;
+    in property <bool> is_single_zone: false;
+    in property <bool> is_single_color: false;
+
+    callback toggle_enabled();
+    callback select_engine(int);
+    callback select_fps(int);
+    callback select_effect(int);
+    callback select_direction(int);
+    callback change_brightness(int);
+    callback change_speed(int);
+    callback change_color(string, color);
+
+    callback select_custom_script_id(string);
+    callback refresh_custom_scripts();
+    callback view_custom_script_source(string);
+    callback import_custom_script();
+    callback export_custom_script(string);
+    callback update_custom_tuning(int, int, int, bool, string, string);
+    callback reset_custom_tuning();
+
+    border-radius: AppTheme.radius_md;
+    background: AppTheme.surface_card;
+    border-width: 1px;
+    border-color: AppTheme.border_subtle;
+
+    VerticalLayout {
+        padding: 18px;
+        spacing: 16px;
+        alignment: start; // Crucial: prevent vertical scattering!
+
+        // 1. Header Banner & Main Power Switch
+        HorizontalLayout {
+            alignment: space-between;
+
+            VerticalLayout {
+                spacing: 3px;
+                alignment: center;
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+
+                    Text {
+                        text: root.is_single_color ? "键盘单色背光工作台" : (root.is_single_zone ? "单区 RGB 键盘工作台" : (root.is_four_zone ? "4区 RGB 键盘工作台" : "键盘背光工作台"));
+                        font-size: 14px;
+                        font-weight: 700;
+                        color: AppTheme.text_primary;
+                        vertical-alignment: center;
+                    }
+
+                    VerticalLayout {
+                        alignment: center;
+                        Rectangle {
+                            height: 20px;
+                            border-radius: AppTheme.radius_xs;
+                            background: root.is_single_color ? #64748b20 : (root.is_single_zone ? #10b98120 : (root.is_four_zone ? #06b6d420 : #6366f120));
+                            border-width: 1px;
+                            border-color: root.is_single_color ? #64748b50 : (root.is_single_zone ? #10b98150 : (root.is_four_zone ? #06b6d450 : #6366f150));
+
+                            HorizontalLayout {
+                                padding-left: 6px;
+                                padding-right: 6px;
+                                Text {
+                                    text: root.is_single_color ? "单色白光背光 [EC硬件直通]" : (root.is_single_zone ? "单区同色 RGB [EC硬件调光]" : (root.is_four_zone ? "ITE 8291 r2 4区 RGB 控制器 (048D:CE00)" : root.hw_desc));
+                                    font-size: 10px;
+                                    font-weight: 600;
+                                    color: root.is_single_color ? #94a3b8 : (root.is_single_zone ? #34d399 : (root.is_four_zone ? #22d3ee : #818cf8));
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Text {
+                    text: root.is_single_color ? "检测到当前机型为单色 LED 背光，已自动精简无效控制项，支持开关、3档亮度与闲置熄灯" : (root.is_single_zone ? "全键盘同色调光，支持纯色常亮、彩虹呼吸与4档亮度微调" : (root.is_four_zone ? "4 分区独立调色与 6 种原厂硬件动效，支持方向、亮度与色彩微调" : "12 种硬件内建与动态特效，支持方向、亮度与色态毫秒级原生生效"));
+                    font-size: 11px;
+                    color: AppTheme.text_muted;
+                }
+            }
+
+            // Big Power Switch
+            VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 92px;
+                    height: 32px;
+                    border-radius: AppTheme.radius_sm;
+                    background: root.kb_enabled ? (root.is_single_color ? #64748b : (root.is_single_zone ? #10b981 : (root.is_four_zone ? #06b6d4 : #6366f1))) : AppTheme.surface_pill;
+                    border-width: 1px;
+                    border-color: root.kb_enabled ? (root.is_single_color ? #94a3b8 : (root.is_single_zone ? #34d399 : (root.is_four_zone ? #22d3ee : #818cf8))) : AppTheme.border_medium;
+
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.toggle_enabled(); }
+                    }
+
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 6px;
+
+                        VerticalLayout {
+                            alignment: center;
+                            Image {
+                                source: @image-url("../../assets/icons/power.svg");
+                                width: 14px;
+                                height: 14px;
+                                colorize: root.kb_enabled ? #ffffff : AppTheme.text_muted;
+                            }
+                        }
+
+                        Text {
+                            text: root.kb_enabled ? "已开启" : "已关闭";
+                            font-size: 12px;
+                            font-weight: 700;
+                            color: root.kb_enabled ? #ffffff : AppTheme.text_muted;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Engine & FPS Bar (Only for PerKey RGB)
+        if !root.is_single_color && !root.is_single_zone && !root.is_four_zone : KeyboardEngineBar {
+            kb_engine <=> root.kb_engine;
+            kb_fps <=> root.kb_fps;
+            select_engine(eng) => { root.select_engine(eng); }
+            select_fps(fps) => { root.select_fps(fps); }
+        }
+
+        // 3. Effects Grid / Custom BRFX Studio Panel
+        if !root.is_single_color : KeyboardEffectsGrid {
+            kb_engine <=> root.kb_engine;
+            kb_effect <=> root.kb_effect;
+            is_single_zone: root.is_single_zone;
+            is_four_zone: root.is_four_zone;
+            custom_scripts: root.custom_scripts;
+            custom_script_id <=> root.custom_script_id;
+            custom_script_name <=> root.custom_script_name;
+            custom_script_file_name <=> root.custom_script_file_name;
+            custom_script_author <=> root.custom_script_author;
+            custom_script_desc <=> root.custom_script_desc;
+            custom_speed_x10 <=> root.custom_speed_x10;
+            custom_scale_pct <=> root.custom_scale_pct;
+            kb_direction <=> root.kb_direction;
+            custom_reactive <=> root.custom_reactive;
+            kb_color_hex <=> root.kb_color_hex;
+            kb_color <=> root.kb_color;
+            custom_is_marquee <=> root.custom_is_marquee;
+            custom_marquee_text <=> root.custom_marquee_text;
+            custom_default_speed_x10: root.custom_default_speed_x10;
+            custom_default_scale_pct: root.custom_default_scale_pct;
+            custom_default_direction: root.custom_default_direction;
+            custom_default_reactive: root.custom_default_reactive;
+            custom_default_color_hex: root.custom_default_color_hex;
+            select_effect(eff) => { root.select_effect(eff); }
+            select_custom_script_id(id) => { root.select_custom_script_id(id); }
+            refresh_custom_scripts() => { root.refresh_custom_scripts(); }
+            view_custom_script_source(fn) => { root.view_custom_script_source(fn); }
+            import_custom_script() => { root.import_custom_script(); }
+            export_custom_script(id) => { root.export_custom_script(id); }
+            update_custom_tuning(sp, sc, dir, rx, col, txt) => { root.update_custom_tuning(sp, sc, dir, rx, col, txt); }
+            reset_custom_tuning() => { root.reset_custom_tuning(); }
+        }
+
+        // 4. Global Brightness Slider for Custom Engine (Mode 2)
+        if !root.is_single_color && !root.is_single_zone && !root.is_four_zone && root.kb_engine == 2 : Rectangle {
+            border-radius: AppTheme.radius_md;
+            background: AppTheme.surface_sunken;
+            border-width: 1px;
+            border-color: AppTheme.border_subtle;
+
+            VerticalLayout {
+                padding: 12px;
+                spacing: 6px;
+
+                HorizontalLayout {
+                    alignment: space-between;
+                    HorizontalLayout {
+                        spacing: 6px;
+                        VerticalLayout {
+                            alignment: center;
+                            Image { source: @image-url("../../assets/icons/sun.svg"); width: 12px; height: 12px; colorize: #f59e0b; }
+                        }
+                        Text { text: "全域键盘亮度"; font-size: 12px; font-weight: 600; color: AppTheme.text_secondary; vertical-alignment: center; }
+                    }
+                    Text {
+                        text: Math.max(1, root.kb_brightness) + " 档";
+                        font-size: 12px;
+                        font-weight: 700;
+                        color: #818cf8;
+                        vertical-alignment: center;
+                    }
+                }
+
+                cb_track := Rectangle {
+                    height: 18px;
+                    background: transparent;
+                    Rectangle {
+                        x: 0; y: (parent.height - self.height) / 2;
+                        width: parent.width; height: 4px;
+                        background: AppTheme.surface_pill;
+                        border-radius: 2px;
+                        Rectangle {
+                            x: 0; y: 0;
+                            width: Math.max(0px, (Math.clamp(root.kb_brightness - 1, 0, 3) / 3.0) * parent.width);
+                            height: parent.height;
+                            background: #818cf8;
+                            border-radius: 2px;
+                        }
+                    }
+                    Rectangle {
+                        x: Math.max(0px, Math.min(parent.width - self.width, (Math.clamp(root.kb_brightness - 1, 0, 3) / 3.0) * parent.width - self.width / 2));
+                        y: (parent.height - self.height) / 2;
+                        width: 14px; height: 14px; border-radius: 7px; background: #ffffff;
+                    }
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        pointer-event(event) => {
+                            if event.kind == PointerEventKind.down || (event.kind == PointerEventKind.move && self.pressed) {
+                                let ratio = Math.clamp(self.mouse-x / parent.width, 0.0, 1.0);
+                                let next_b = Math.round(1.0 + ratio * 3.0);
+                                if (next_b != root.kb_brightness || !root.kb_enabled) {
+                                    root.kb_brightness = next_b;
+                                    root.change_brightness(next_b);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4b. Direction & Sliders Row (Hardware / Streamer)
+        if root.is_single_color || root.is_single_zone || root.is_four_zone || root.kb_engine != 2 : KeyboardControlsBar {
+            is_single_color: root.is_single_color;
+            is_single_zone: root.is_single_zone;
+            is_four_zone: root.is_four_zone;
+            kb_direction <=> root.kb_direction;
+            kb_brightness <=> root.kb_brightness;
+            kb_speed <=> root.kb_speed;
+            select_direction(dir) => { root.select_direction(dir); }
+            change_brightness(b) => { root.change_brightness(b); }
+            change_speed(s) => { root.change_speed(s); }
+        }
+
+        // 5. Color Palette Row (Hardware / Streamer)
+        if !root.is_single_color && (root.is_single_zone || root.is_four_zone || root.kb_engine != 2) : ColorPaletteRow {
+            active_color_hex <=> root.kb_color_hex;
+            active_color <=> root.kb_color;
+            label_text: "定制主色调:";
+            color_selected(hex, c) => {
+                root.change_color(hex, c);
+            }
+        }
+    }
+}

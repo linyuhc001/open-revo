@@ -5,7 +5,7 @@ use parking_lot::Mutex;
 use std::sync::{Arc, OnceLock};
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
-    tray::{MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent},
+    tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter,
 };
 
@@ -45,6 +45,8 @@ pub struct TrayMenuControls {
 }
 
 pub struct TrayKeeper(#[allow(dead_code)] pub TrayIcon);
+
+pub static IS_EXPLICIT_EXIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 static GLOBAL_TRAY: OnceLock<TrayIcon> = OnceLock::new();
 static TRAY_MENU_CONTROLS: OnceLock<TrayMenuControls> = OnceLock::new();
@@ -87,6 +89,16 @@ pub fn update_tray_log_state(_enabled: bool) {
 /// Graceful hardware shutdown and MCU handover on application exit.
 pub fn safe_hardware_shutdown_on_exit() {
     println!("[OpenRevo] Tray quit requested. Safely shutting down water cooler, handing over logo & keyboard to MCU...");
+    // 1. Terminate all Slint standalone widgets & embedded child tabs
+    crate::system::slint_window::actions::plugins::terminate_all_slint_processes();
+
+    // 2. Safely shut down Slint main companion process
+    crate::system::slint_window::shutdown_slint_process();
+
+    // 3. Close and destroy all native Wry popouts & webviews
+    crate::system::native_wry::shutdown_all();
+
+    // 4. Hardware driver & MCU handovers
     crate::driver::ble_cooler::get_global_cooler().stop_and_shutdown();
     crate::driver::ite_lighting::IteLightingManager::handover_logo_on_exit();
     crate::driver::ite_streamer::get_global_streamer().handover_to_hardware_on_exit();
@@ -119,6 +131,7 @@ pub fn build_tray_menu(
 
     let fan_boost_item = CheckMenuItem::with_id(app, "toggle_fan", "一键强冷 (Fan Boost)", true, initial_fan, None::<&str>)?;
     let oem_toggle_item = MenuItem::with_id(app, "takeover_toggle", "🔄 接管/恢复 官方后台服务", true, None::<&str>)?;
+    let widget_lock_item = MenuItem::with_id(app, "toggle_widget_lock", "🧲 挂件穿透锁定 / 解锁拖动 (或按住Ctrl)", true, None::<&str>)?;
 
     let sep3 = PredefinedMenuItem::separator(app)?;
 
@@ -149,6 +162,7 @@ pub fn build_tray_menu(
             &sep2,
             &fan_boost_item,
             &oem_toggle_item,
+            &widget_lock_item,
             &sep3,
             &notice_item,
             &quit_item,
@@ -191,6 +205,8 @@ pub fn handle_tray_menu_event(
             let _ = app_handle.emit("physical-mode-switched", 1);
             let _ = app_handle.emit_to("main", "physical-mode-switched", 1);
             let _ = app_handle.emit_to("osd", "physical-mode-switched", 1);
+            crate::system::native_wry::broadcast_event("physical-mode-switched", &serde_json::json!(1));
+            crate::system::watcher_hub::notify_power_event("mode_switched");
         }
         "mode_balance" => {
             ec_clone.lock().set_power_mode(2);
@@ -208,6 +224,8 @@ pub fn handle_tray_menu_event(
             let _ = app_handle.emit("physical-mode-switched", 2);
             let _ = app_handle.emit_to("main", "physical-mode-switched", 2);
             let _ = app_handle.emit_to("osd", "physical-mode-switched", 2);
+            crate::system::native_wry::broadcast_event("physical-mode-switched", &serde_json::json!(2));
+            crate::system::watcher_hub::notify_power_event("mode_switched");
         }
         "mode_beast" => {
             let is_dc = crate::commands::hardware_cmd::is_dc_round_plugged_in();
@@ -229,6 +247,8 @@ pub fn handle_tray_menu_event(
                 let _ = app_handle.emit("physical-mode-switched", 3);
                 let _ = app_handle.emit_to("main", "physical-mode-switched", 3);
                 let _ = app_handle.emit_to("osd", "physical-mode-switched", 3);
+                crate::system::native_wry::broadcast_event("physical-mode-switched", &serde_json::json!(3));
+                crate::system::watcher_hub::notify_power_event("mode_switched");
             }
         }
         "mode_custom" => {
@@ -251,6 +271,8 @@ pub fn handle_tray_menu_event(
                 let _ = app_handle.emit("physical-mode-switched", 4);
                 let _ = app_handle.emit_to("main", "physical-mode-switched", 4);
                 let _ = app_handle.emit_to("osd", "physical-mode-switched", 4);
+                crate::system::native_wry::broadcast_event("physical-mode-switched", &serde_json::json!(4));
+                crate::system::watcher_hub::notify_power_event("mode_switched");
             }
         }
         "toggle_fan" => {
@@ -269,6 +291,7 @@ pub fn handle_tray_menu_event(
             let _ = app_handle.emit("physical-fan-boost-switched", next);
             let _ = app_handle.emit_to("main", "physical-fan-boost-switched", next);
             let _ = app_handle.emit_to("osd", "physical-fan-boost-switched", next);
+            crate::system::native_wry::broadcast_event("fan-boost-changed", &serde_json::json!(next));
         }
         "takeover_toggle" => {
             let is_running = crate::system::process::is_oem_service_running();
@@ -281,10 +304,40 @@ pub fn handle_tray_menu_event(
             let _ = app_handle.emit("oem-service-status-changed", next_state);
             let _ = app_handle.emit_to("main", "oem-service-status-changed", next_state);
         }
+        "toggle_widget_lock" => {
+            let mut cfg = crate::system::config::load_config();
+            let any_locked = cfg.widget_click_through.values().any(|&v| v);
+            let next_locked = !any_locked;
+            for val in cfg.widget_click_through.values_mut() {
+                *val = next_locked;
+            }
+            for pid in crate::system::native_wry::get_running_popouts() {
+                cfg.widget_click_through.insert(pid.clone(), next_locked);
+                crate::system::native_wry::set_popout_click_through(&pid, next_locked);
+            }
+            for (pid, &enabled) in cfg.custom_plugin_toggles.iter() {
+                if enabled {
+                    cfg.widget_click_through.insert(pid.clone(), next_locked);
+                    crate::system::slint_window::actions::plugins::send_slint_widget_click_through(pid, next_locked);
+                }
+            }
+            let _ = crate::system::config::save_config(&cfg);
+            crate::log_info!("TRAY", "Toggled all desktop widgets click-through lock state to {}", next_locked);
+        }
         "quit" => {
+            IS_EXPLICIT_EXIT.store(true, std::sync::atomic::Ordering::SeqCst);
+            crate::system::native_wry::shutdown_all();
             crate::system::webview_orchestrator::WebviewOrchestrator::global().safe_shutdown_all_subviews();
+            crate::system::osd_window::shutdown_osd_process();
+            crate::system::slint_window::shutdown_slint_process();
             safe_hardware_shutdown_on_exit();
+            crate::system::plugin_service::shutdown_all_plugin_services();
             app_handle.exit(0);
+            // Fallback watchdog: ensure process terminates cleanly within 800ms
+            std::thread::spawn(|| {
+                std::thread::sleep(std::time::Duration::from_millis(800));
+                std::process::exit(0);
+            });
         }
         _ => {}
     }
@@ -296,14 +349,36 @@ pub fn handle_tray_icon_event(tray: &TrayIcon, event: TrayIconEvent) {
     match event {
         TrayIconEvent::Click {
             button: MouseButton::Left,
+            button_state: MouseButtonState::Down,
             ..
+        } => {
+            let cfg = crate::system::config::load_config();
+            if !cfg.use_classic_webview {
+                #[cfg(windows)]
+                unsafe {
+                    use windows::Win32::UI::WindowsAndMessaging::{AllowSetForegroundWindow, ASFW_ANY};
+                    let _ = AllowSetForegroundWindow(ASFW_ANY);
+                }
+                crate::system::slint_window::send_slint_ipc_message(serde_json::json!({
+                    "action": "tray_click_guard"
+                }));
+            }
         }
-        | TrayIconEvent::DoubleClick {
+        TrayIconEvent::Click {
             button: MouseButton::Left,
+            button_state: MouseButtonState::Up,
             ..
         } => {
             let app = tray.app_handle();
-            if let Some(window) = crate::system::window::ensure_window_alive(app) {
+            let cfg = crate::system::config::load_config();
+            if !cfg.use_classic_webview {
+                #[cfg(windows)]
+                unsafe {
+                    use windows::Win32::UI::WindowsAndMessaging::{AllowSetForegroundWindow, ASFW_ANY};
+                    let _ = AllowSetForegroundWindow(ASFW_ANY);
+                }
+                crate::system::slint_window::show_slint_window();
+            } else if let Some(window) = crate::system::window::ensure_window_alive(app) {
                 crate::log_info!(
                     "TRAY",
                     "Left click triggered. Current state: is_visible={:?}, is_minimized={:?}",
@@ -313,6 +388,18 @@ pub fn handle_tray_icon_event(tray: &TrayIcon, event: TrayIconEvent) {
                 crate::system::window::restore_and_sync_window(&window);
             } else {
                 crate::log_error!("TRAY", "CRITICAL: Unable to obtain or resurrect 'main' WebviewWindow on tray click!");
+            }
+        }
+        TrayIconEvent::DoubleClick {
+            button: MouseButton::Left,
+            ..
+        } => {
+            let app = tray.app_handle();
+            let cfg = crate::system::config::load_config();
+            if !cfg.use_classic_webview {
+                crate::system::slint_window::show_slint_window();
+            } else if let Some(window) = crate::system::window::ensure_window_alive(app) {
+                crate::system::window::restore_and_sync_window(&window);
             }
         }
         _ => {}

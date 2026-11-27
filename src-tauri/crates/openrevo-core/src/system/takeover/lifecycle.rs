@@ -123,6 +123,9 @@ pub fn pause_oem_services() -> Result<(), String> {
         refresh_tray_notification_area();
 
         crate::log_info!("TAKEOVER", "=== OEM Service Takeover Sequence Completed Successfully ===");
+        // OEM processes were just terminated; drop the cached detection results so the
+        // UI reflects the takeover on the very next heartbeat instead of after the TTL.
+        crate::system::process::invalidate_oem_detection_cache();
         Ok(())
     }
     #[cfg(not(target_os = "windows"))]
@@ -177,7 +180,7 @@ pub fn resume_oem_services() -> Result<(), String> {
             if let Some(_) = crate::system::process::is_process_running("gcubridge.exe") {
                 gcubridge_active = true;
             } else {
-                let _ = run_cmd_captured("sc.exe", &["start", "GCUBridge"]);
+                let (sc_code, sc_out, sc_err) = run_cmd_captured("sc.exe", &["start", "GCUBridge"]);
                 let wait_start = Instant::now();
                 while wait_start.elapsed().as_millis() < 3000 {
                     if crate::system::process::is_process_running("gcubridge.exe").is_some() {
@@ -186,6 +189,18 @@ pub fn resume_oem_services() -> Result<(), String> {
                     }
                     std::thread::sleep(std::time::Duration::from_millis(150));
                 }
+                if !gcubridge_active {
+                    // 非管理员会话下 `sc start` 会以 Access Denied 失败，
+                    // 旧代码用 `let _ =` 把结果丢掉了 —— 用户看到的现象是「已归还，但官方控制台
+                    // 仍然点不动」，日志里却没有任何线索。这里必须留下现场。
+                    crate::log_warn!(
+                        "TAKEOVER",
+                        "GCUBridge failed to start after resume (sc exit={:?}, stdout='{}', stderr='{}'). Official control center may remain unresponsive.",
+                        sc_code,
+                        sc_out,
+                        sc_err
+                    );
+                }
             }
         }
 
@@ -193,12 +208,27 @@ pub fn resume_oem_services() -> Result<(), String> {
         let mut gcuservice_active = crate::system::process::is_process_running("gcuservice.exe").is_some();
         if !gcuservice_active && gcubridge_active {
             let gcu_wait_start = Instant::now();
-            while gcu_wait_start.elapsed().as_millis() < 6000 {
+            while gcu_wait_start.elapsed().as_millis() < 4000 {
                 if crate::system::process::is_process_running("gcuservice.exe").is_some() {
                     gcuservice_active = true;
                     break;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+        }
+
+        // Direct fallback: If GCUService was not spawned by GCUBridge, start it explicitly!
+        if !gcuservice_active {
+            let gcu_key = r"SYSTEM\CurrentControlSet\Services\GCUService";
+            if reg_key_exists(HKEY_LOCAL_MACHINE, gcu_key) {
+                let (sc_code, sc_out, sc_err) = run_cmd_captured("sc.exe", &["start", "GCUService"]);
+                crate::log_info!(
+                    "TAKEOVER",
+                    "Explicitly dispatched sc start GCUService: exit={:?}, out='{}', err='{}'",
+                    sc_code,
+                    sc_out,
+                    sc_err
+                );
             }
         }
 
@@ -260,6 +290,9 @@ pub fn resume_oem_services() -> Result<(), String> {
         // 13. Refresh notification area
         refresh_tray_notification_area();
 
+        // OEM services and processes were just restarted; drop cached detection results
+        // so the UI reflects the restoration on the very next heartbeat.
+        crate::system::process::invalidate_oem_detection_cache();
         crate::log_info!(
             "TAKEOVER",
             "=== OEM Restoration Completed in {}ms: GCUBridge={}, GCUService={} ===",

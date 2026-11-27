@@ -72,8 +72,69 @@ fn dispatch_acpi_event(
     last_switch_time: &mut Instant,
     last_brightness_time: &mut Instant,
     last_fan_boost_time: &mut Instant,
+    last_wifi_time: &mut Instant,
+    last_flip_time: &mut Instant,
 ) {
     match code {
+        208 => {
+            // Fn+Sc: TimAP_NotifyFlipScreen (Screen 180° inversion toggle)
+            if last_flip_time.elapsed() >= Duration::from_millis(500) {
+                *last_flip_time = Instant::now();
+                match crate::system::display::toggle_primary_display_orientation() {
+                    Ok(is_flipped) => {
+                        crate::log_info!(
+                            "WMI_LISTENER",
+                            "Fn+Sc / FlipScreen ACPI event 208 received! Toggled display orientation (flipped: {})",
+                            is_flipped
+                        );
+                        crate::event::osd_notify_global("screen_flip", if is_flipped { "true" } else { "false" });
+                        crate::event::emit_global("screen-flip-changed", serde_json::json!(is_flipped));
+                    }
+                    Err(e) => {
+                        crate::log_warn!("WMI_LISTENER", "Fn+Sc display toggle failed: {}", e);
+                    }
+                }
+            } else {
+                crate::log_debug!("WMI_LISTENER", "FlipScreen event 208 debounced (< 500ms)");
+            }
+        }
+        207 => {
+            // TimAP_NotifyEShutter (Camera electronic privacy shutter toggle)
+            let has_ec_switches = crate::system::switches::has_ec_device_switches();
+            let cur_cam = crate::system::switches::camera::get_realtime_camera_state(
+                has_ec_switches,
+                crate::system::config::load_config().camera_enabled,
+            );
+            crate::log_info!("WMI_LISTENER", "Fn+Camera / E-Shutter event 207 received! Camera state: {}", cur_cam);
+            crate::event::osd_notify_global("camera", if cur_cam { "true" } else { "false" });
+            crate::event::emit_global("camera-state-changed", serde_json::json!(cur_cam));
+        }
+        164 | 26 | 27 | 14 | 15 => {
+            // OSD_AIRPLANEMODE = 164 (0xA4), OSD_RADIOON = 26, OSD_RADIOOFF = 27, OSD_RFON = 14, OSD_RFOFF = 15
+            // Hardware Radio / Airplane Mode / Wi-Fi toggle on Tongfang chassis (Fn+F4)
+            if last_wifi_time.elapsed() >= Duration::from_millis(400) {
+                *last_wifi_time = Instant::now();
+                let current_wifi = crate::system::switches::radio::get_realtime_wifi_state()
+                    .unwrap_or_else(|| crate::system::config::load_config().wifi_enabled);
+                let next_wifi = match code {
+                    26 | 14 => true,
+                    27 | 15 => false,
+                    _ => !current_wifi,
+                };
+                crate::log_info!(
+                    "WMI_LISTENER",
+                    "Fn+F4 / Radio event {} received! Toggling Wi-Fi: {} -> {}",
+                    code,
+                    current_wifi,
+                    next_wifi
+                );
+                let _ = crate::system::device_switches::set_switch("wifi", next_wifi);
+                crate::event::osd_notify_global("wifi", if next_wifi { "true" } else { "false" });
+                crate::event::emit_global("wifi-state-changed", serde_json::json!(next_wifi));
+            } else {
+                crate::log_debug!("WMI_LISTENER", "Radio hotkey event {} debounced (elapsed < 400ms)", code);
+            }
+        }
         176 | 192 | 201 => {
             // QKEY_MODESWITCH / OSD_FanModeSwitch (176) / SC_SwitchOC (192) / SC_CustomMode (201)
             if last_switch_time.elapsed() >= Duration::from_millis(500) {
@@ -209,7 +270,20 @@ fn dispatch_acpi_event(
         }
         240 => {
             // EC_RGBKBBKL_LEVEL_UPDATE echo notification
-            crate::log_info!("WMI_LISTENER", "ACPI Keyboard brightness status update echo: 240");
+            if last_brightness_time.elapsed() >= Duration::from_millis(200) {
+                *last_brightness_time = Instant::now();
+                let cur_bl = crate::driver::wmi_ec::wmi_read_ec(crate::driver::wmi_ec::ADDR_BACKLIGHT_WHITE).unwrap_or(0);
+                let level = if (cur_bl & 0x40) != 0 {
+                    2
+                } else if (cur_bl & 0x20) != 0 {
+                    1
+                } else {
+                    0
+                };
+                crate::log_info!("WMI_LISTENER", "ACPI Keyboard brightness update echo: 240 (EC=0x{:02X}, level={})", cur_bl, level);
+                crate::event::osd_notify_global("keyboard_brightness", &level.to_string());
+                crate::event::emit_global("keyboard-brightness-changed", serde_json::json!(level));
+            }
         }
         _ => {
             crate::log_debug!("WMI_LISTENER", "Received other ACPI Event code: {} (0x{:X})", code, code);
@@ -220,10 +294,10 @@ fn dispatch_acpi_event(
 /// Start the background WMI ACPI Event Listener for physical chassis keys (Q-Key mode switch & Fan Boost)
 /// Pure Rust in-process implementation via Windows COM (IWbemServices::ExecNotificationQuery)
 pub fn start_wmi_event_listener(ec_bridge: SharedEcBridge) {
-    if crate::hal::platform_probe::is_ultrabook() || !crate::hal::platform_probe::has_acpi_physical_key_events() {
+    if !crate::hal::platform_probe::has_acpi_physical_key_events() {
         crate::log_info!(
             "WMI_LISTENER",
-            "Ultrabook platform: AcpiTest_EventULong listener bypassed gracefully."
+            "Non-Tongfang platform: AcpiTest_EventULong listener bypassed gracefully."
         );
         return;
     }
@@ -242,6 +316,8 @@ pub fn start_wmi_event_listener(ec_bridge: SharedEcBridge) {
             let mut last_switch_time = Instant::now() - Duration::from_secs(10);
             let mut last_brightness_time = Instant::now() - Duration::from_secs(10);
             let mut last_fan_boost_time = Instant::now() - Duration::from_secs(10);
+            let mut last_wifi_time = Instant::now() - Duration::from_secs(10);
+            let mut last_flip_time = Instant::now() - Duration::from_secs(10);
             let mut consecutive_failures = 0u32;
 
             loop {
@@ -329,6 +405,8 @@ pub fn start_wmi_event_listener(ec_bridge: SharedEcBridge) {
                                             &mut last_switch_time,
                                             &mut last_brightness_time,
                                             &mut last_fan_boost_time,
+                                            &mut last_wifi_time,
+                                            &mut last_flip_time,
                                         );
                                     }
                                 }

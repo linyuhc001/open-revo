@@ -1,0 +1,540 @@
+use crate::ipc;
+use crate::MainWindow;
+
+pub fn register(window: &MainWindow, ui_weak: slint::Weak<MainWindow>) {
+    window.on_kbd_effect_cycled(move || {
+        ipc::send_action_to_host("cycle_kbd_effect", serde_json::json!({}));
+    });
+    window.on_kbd_color_cycled(move || {
+        ipc::send_action_to_host("cycle_kbd_color", serde_json::json!({}));
+    });
+    window.on_kbd_more_clicked(move || {
+        ipc::send_action_to_host("open_lighting_studio", serde_json::json!({}));
+    });
+
+    let ui_cb = ui_weak.clone();
+    window.on_set_drawer_kbd_effect(move |effect, enabled| {
+        if let Some(ui) = ui_cb.upgrade() {
+            ui.set_kb_effect(effect);
+            ui.set_kb_enabled(enabled);
+            let mut brightness = ui.get_kb_brightness();
+            if enabled && brightness == 0 {
+                brightness = if ui.get_is_single_color() { 2 } else { 3 };
+                ui.set_kb_brightness(brightness);
+            }
+            let is_hw = ui.get_is_single_color() || ui.get_is_single_zone() || ui.get_is_four_zone();
+            let engine = if is_hw || effect < 100 {
+                "hardware".to_string()
+            } else {
+                "streamer".to_string()
+            };
+            ui.set_kb_engine(if engine == "hardware" { 0 } else { 1 });
+            ipc::send_action_to_host("apply_keyboard_lighting_patch", serde_json::json!({
+                "enabled": enabled,
+                "effect": effect,
+                "brightness": brightness,
+                "color": ui.get_kb_color_hex().as_str(),
+                "engine": engine
+            }));
+        }
+    });
+
+    let ui_cb = ui_weak.clone();
+    window.on_set_drawer_kbd_color(move |hex, _clr| {
+        if let Some(ui) = ui_cb.upgrade() {
+            ui.set_kb_color_hex(hex.clone());
+            ui.set_kb_color(_clr);
+            let is_hw = ui.get_is_single_color() || ui.get_is_single_zone() || ui.get_is_four_zone();
+            let engine = if is_hw {
+                "hardware".to_string()
+            } else if ui.get_kb_engine() == 0 {
+                "hardware".to_string()
+            } else {
+                "streamer".to_string()
+            };
+            let mut brightness = ui.get_kb_brightness();
+            if !ui.get_kb_enabled() || brightness == 0 {
+                ui.set_kb_enabled(true);
+                brightness = if ui.get_is_single_color() { 2 } else { 3 };
+                ui.set_kb_brightness(brightness);
+            }
+            ipc::send_action_to_host("apply_keyboard_lighting_patch", serde_json::json!({
+                "enabled": ui.get_kb_enabled(),
+                "color": hex.as_str(),
+                "brightness": brightness,
+                "engine": engine
+            }));
+        }
+    });
+
+    let ui_cb = ui_weak.clone();
+    window.on_set_drawer_kbd_brightness(move |b| {
+        if let Some(ui) = ui_cb.upgrade() {
+            let enabled = b > 0;
+            ui.set_kb_brightness(b);
+            ui.set_kb_enabled(enabled);
+            let is_hw = ui.get_is_single_color() || ui.get_is_single_zone() || ui.get_is_four_zone();
+            let engine = if is_hw {
+                "hardware".to_string()
+            } else if ui.get_kb_engine() == 0 {
+                "hardware".to_string()
+            } else {
+                "streamer".to_string()
+            };
+            ipc::send_action_to_host("apply_keyboard_lighting_patch", serde_json::json!({
+                "enabled": enabled,
+                "brightness": b,
+                "engine": engine
+            }));
+        }
+    });
+
+    let ui_cb = ui_weak.clone();
+    window.on_set_lighting_sleep_timer(move |mins| {
+        if let Some(ui) = ui_cb.upgrade() {
+            ui.set_sleep_minutes(mins);
+            ipc::send_action_to_host("set_lighting_sleep_timer", serde_json::json!({ "minutes": mins }));
+        }
+    });
+
+    let ui_cb = ui_weak.clone();
+    window.on_toggle_ceremony(move || {
+        if let Some(ui) = ui_cb.upgrade() {
+            let next = !ui.get_ceremony_enabled();
+            ui.set_ceremony_enabled(next);
+            ipc::send_action_to_host("set_ceremony_enabled", serde_json::json!({ "enabled": next }));
+        }
+    });
+
+    let ui_cb = ui_weak.clone();
+    window.on_preview_ceremony(move || {
+        if let Some(ui) = ui_cb.upgrade() {
+            ui.set_is_previewing_ceremony(true);
+            ipc::send_action_to_host("trigger_lighting_welcome", serde_json::json!({}));
+        }
+    });
+
+    let ui_cb = ui_weak.clone();
+    window.on_save_lighting_as_startup(move || {
+        ipc::send_action_to_host("save_current_lighting_as_startup", serde_json::json!({}));
+        if let Some(ui) = ui_cb.upgrade() {
+            ui.set_lighting_save_success(true);
+        }
+    });
+
+    window.on_reset_lighting_defaults(move |tab| {
+        ipc::send_action_to_host("reset_lighting_defaults", serde_json::json!({ "sub_tab": tab }));
+    });
+
+    // Keyboard Callbacks
+    fn kb_engine_str(ui: &MainWindow) -> &'static str {
+        if ui.get_is_single_zone() || ui.get_is_four_zone() || ui.get_is_single_color() {
+            return "hardware";
+        }
+        match ui.get_kb_engine() {
+            0 => "hardware",
+            2 => "custom",
+            _ => "streamer",
+        }
+    }
+
+    let ui_cb = ui_weak.clone();
+    window.on_toggle_kb_enabled(move || {
+        if let Some(ui) = ui_cb.upgrade() {
+            let next = !ui.get_kb_enabled();
+            ui.set_kb_enabled(next);
+            let mut target_brightness = ui.get_kb_brightness();
+            if next && target_brightness == 0 {
+                target_brightness = if ui.get_is_single_color() { 2 } else { 3 };
+                ui.set_kb_brightness(target_brightness);
+            }
+            ipc::send_action_to_host("apply_keyboard_lighting_patch", serde_json::json!({
+                "enabled": next,
+                "engine": kb_engine_str(&ui),
+                "fps": ui.get_kb_fps(),
+                "effect": ui.get_kb_effect(),
+                "direction": ui.get_kb_direction(),
+                "brightness": target_brightness,
+                "speed": ui.get_kb_speed(),
+                "color": ui.get_kb_color_hex().as_str(),
+            }));
+        }
+    });
+
+    let ui_cb = ui_weak.clone();
+    window.on_set_kb_engine(move |eng| {
+        if let Some(ui) = ui_cb.upgrade() {
+            ui.set_kb_engine(eng);
+            ipc::send_action_to_host("set_kb_engine", serde_json::json!({
+                "engine": kb_engine_str(&ui),
+            }));
+        }
+    });
+
+    let ui_cb = ui_weak.clone();
+    window.on_set_kb_fps(move |fps| {
+        if let Some(ui) = ui_cb.upgrade() {
+            ui.set_kb_fps(fps);
+            ipc::send_action_to_host("set_streamer_fps", serde_json::json!({ "fps": fps }));
+        }
+    });
+
+    let ui_cb = ui_weak.clone();
+    window.on_set_kb_effect(move |eff| {
+        if let Some(ui) = ui_cb.upgrade() {
+            ui.set_kb_effect(eff);
+            ipc::send_action_to_host("apply_keyboard_lighting_patch", serde_json::json!({
+                "enabled": ui.get_kb_enabled(),
+                "engine": kb_engine_str(&ui),
+                "fps": ui.get_kb_fps(),
+                "effect": eff,
+                "direction": ui.get_kb_direction(),
+                "brightness": ui.get_kb_brightness(),
+                "speed": ui.get_kb_speed(),
+                "color": ui.get_kb_color_hex().as_str(),
+            }));
+        }
+    });
+
+    let ui_cb = ui_weak.clone();
+    window.on_set_kb_direction(move |dir| {
+        if let Some(ui) = ui_cb.upgrade() {
+            ui.set_kb_direction(dir);
+            ipc::send_action_to_host("apply_keyboard_lighting_patch", serde_json::json!({
+                "enabled": ui.get_kb_enabled(),
+                "engine": kb_engine_str(&ui),
+                "fps": ui.get_kb_fps(),
+                "effect": ui.get_kb_effect(),
+                "direction": dir,
+                "brightness": ui.get_kb_brightness(),
+                "speed": ui.get_kb_speed(),
+                "color": ui.get_kb_color_hex().as_str(),
+            }));
+        }
+    });
+
+    let ui_cb = ui_weak.clone();
+    window.on_set_kb_brightness(move |b| {
+        if let Some(ui) = ui_cb.upgrade() {
+            let next_enabled = b > 0;
+            ui.set_kb_brightness(b);
+            ui.set_kb_enabled(next_enabled);
+            ipc::send_action_to_host("apply_keyboard_lighting_patch", serde_json::json!({
+                "enabled": next_enabled,
+                "engine": kb_engine_str(&ui),
+                "fps": ui.get_kb_fps(),
+                "effect": ui.get_kb_effect(),
+                "direction": ui.get_kb_direction(),
+                "brightness": b,
+                "speed": ui.get_kb_speed(),
+                "color": ui.get_kb_color_hex().as_str(),
+            }));
+        }
+    });
+
+    let ui_cb = ui_weak.clone();
+    window.on_set_kb_speed(move |s| {
+        if let Some(ui) = ui_cb.upgrade() {
+            ui.set_kb_speed(s);
+            ipc::send_action_to_host("apply_keyboard_lighting_patch", serde_json::json!({
+                "enabled": ui.get_kb_enabled(),
+                "engine": kb_engine_str(&ui),
+                "fps": ui.get_kb_fps(),
+                "effect": ui.get_kb_effect(),
+                "direction": ui.get_kb_direction(),
+                "brightness": ui.get_kb_brightness(),
+                "speed": s,
+                "color": ui.get_kb_color_hex().as_str(),
+            }));
+        }
+    });
+
+    let ui_cb = ui_weak.clone();
+    window.on_set_kb_color(move |hex, _c| {
+        if let Some(ui) = ui_cb.upgrade() {
+            ui.set_kb_color_hex(hex.clone());
+            ipc::send_action_to_host("apply_keyboard_lighting_patch", serde_json::json!({
+                "enabled": ui.get_kb_enabled(),
+                "engine": kb_engine_str(&ui),
+                "fps": ui.get_kb_fps(),
+                "effect": ui.get_kb_effect(),
+                "direction": ui.get_kb_direction(),
+                "brightness": ui.get_kb_brightness(),
+                "speed": ui.get_kb_speed(),
+                "color": hex.as_str(),
+            }));
+        }
+    });
+
+    // Custom BRFX Script Callbacks
+    window.on_select_custom_script_id(move |id| {
+        ipc::send_action_to_host("select_custom_script", serde_json::json!({ "id": id.as_str() }));
+    });
+
+    window.on_refresh_custom_scripts(move || {
+        ipc::send_action_to_host("refresh_custom_scripts", serde_json::json!({}));
+    });
+
+    window.on_view_custom_script_source(move |file_name| {
+        ipc::send_action_to_host("open_brfx_in_notepad", serde_json::json!({ "file_name": file_name.as_str() }));
+    });
+
+    window.on_import_custom_script(move || {
+        ipc::send_action_to_host("import_custom_script", serde_json::json!({}));
+    });
+
+    window.on_export_custom_script(move |id| {
+        ipc::send_action_to_host("export_custom_script", serde_json::json!({ "id": id.as_str() }));
+    });
+
+    window.on_update_custom_tuning(move |speed_x10, scale_pct, dir, reactive, hex, txt| {
+        ipc::send_action_to_host("update_custom_tuning", serde_json::json!({
+            "speed": (speed_x10 as f64) / 10.0,
+            "scale": (scale_pct as f64) / 100.0,
+            "direction": dir,
+            "reactive": reactive,
+            "color": hex.as_str(),
+            "marquee_text": txt.as_str(),
+        }));
+    });
+
+    let ui_cb = ui_weak.clone();
+    window.on_reset_custom_tuning(move || {
+        if let Some(ui) = ui_cb.upgrade() {
+            let sp = ui.get_custom_default_speed_x10();
+            let sc = ui.get_custom_default_scale_pct();
+            let dir = ui.get_custom_default_direction();
+            let rx = ui.get_custom_default_reactive();
+            let hex = ui.get_custom_default_color_hex();
+            ui.set_custom_speed_x10(sp);
+            ui.set_custom_scale_pct(sc);
+            ui.set_kb_direction(dir);
+            ui.set_custom_reactive(rx);
+            ui.set_kb_color_hex(hex.clone());
+            ipc::send_action_to_host("update_custom_tuning", serde_json::json!({
+                "speed": (sp as f64) / 10.0,
+                "scale": (sc as f64) / 100.0,
+                "direction": dir,
+                "reactive": rx,
+                "color": hex.as_str(),
+            }));
+        }
+    });
+
+    // Lightbar Callbacks
+    let ui_cb = ui_weak.clone();
+    window.on_toggle_lb_enabled(move || {
+        if let Some(ui) = ui_cb.upgrade() {
+            let next = !ui.get_lb_enabled();
+            ui.set_lb_enabled(next);
+            ipc::send_action_to_host("apply_lightbar_lighting", serde_json::json!({
+                "enabled": next,
+                "effect": ui.get_lb_effect(),
+                "brightness": ui.get_lb_brightness(),
+                "speed": ui.get_lb_speed(),
+                "color": ui.get_lb_color_hex().as_str(),
+            }));
+        }
+    });
+
+    let ui_cb = ui_weak.clone();
+    window.on_set_lb_effect(move |eff| {
+        if let Some(ui) = ui_cb.upgrade() {
+            ui.set_lb_effect(eff);
+            ipc::send_action_to_host("apply_lightbar_lighting", serde_json::json!({
+                "enabled": ui.get_lb_enabled(),
+                "effect": eff,
+                "brightness": ui.get_lb_brightness(),
+                "speed": ui.get_lb_speed(),
+                "color": ui.get_lb_color_hex().as_str(),
+            }));
+        }
+    });
+
+    let ui_cb = ui_weak.clone();
+    window.on_set_lb_brightness(move |b| {
+        if let Some(ui) = ui_cb.upgrade() {
+            ui.set_lb_brightness(b);
+            ipc::send_action_to_host("apply_lightbar_lighting", serde_json::json!({
+                "enabled": ui.get_lb_enabled(),
+                "effect": ui.get_lb_effect(),
+                "brightness": b,
+                "speed": ui.get_lb_speed(),
+                "color": ui.get_lb_color_hex().as_str(),
+            }));
+        }
+    });
+
+    let ui_cb = ui_weak.clone();
+    window.on_set_lb_speed(move |s| {
+        if let Some(ui) = ui_cb.upgrade() {
+            ui.set_lb_speed(s);
+            ipc::send_action_to_host("apply_lightbar_lighting", serde_json::json!({
+                "enabled": ui.get_lb_enabled(),
+                "effect": ui.get_lb_effect(),
+                "brightness": ui.get_lb_brightness(),
+                "speed": s,
+                "color": ui.get_lb_color_hex().as_str(),
+            }));
+        }
+    });
+
+    let ui_cb = ui_weak.clone();
+    window.on_set_lb_color(move |hex, _c| {
+        if let Some(ui) = ui_cb.upgrade() {
+            ui.set_lb_color_hex(hex.clone());
+            ipc::send_action_to_host("apply_lightbar_lighting", serde_json::json!({
+                "enabled": ui.get_lb_enabled(),
+                "effect": ui.get_lb_effect(),
+                "brightness": ui.get_lb_brightness(),
+                "speed": ui.get_lb_speed(),
+                "color": hex.as_str(),
+            }));
+        }
+    });
+
+    // Ambient / Hinge Callbacks
+    let ui_cb = ui_weak.clone();
+    window.on_toggle_hinge_enabled(move || {
+        if let Some(ui) = ui_cb.upgrade() {
+            let next = !ui.get_hinge_enabled();
+            ui.set_hinge_enabled(next);
+            ipc::send_action_to_host("apply_hinge_lighting", serde_json::json!({
+                "enabled": next,
+                "effect": ui.get_hinge_effect(),
+                "brightness": ui.get_hinge_brightness(),
+                "speed": ui.get_hinge_speed(),
+                "color": ui.get_hinge_color_hex().as_str(),
+            }));
+        }
+    });
+
+    let ui_cb = ui_weak.clone();
+    window.on_set_hinge_effect(move |eff| {
+        if let Some(ui) = ui_cb.upgrade() {
+            ui.set_hinge_effect(eff);
+            ipc::send_action_to_host("apply_hinge_lighting", serde_json::json!({
+                "enabled": ui.get_hinge_enabled(),
+                "effect": eff,
+                "brightness": ui.get_hinge_brightness(),
+                "speed": ui.get_hinge_speed(),
+                "color": ui.get_hinge_color_hex().as_str(),
+            }));
+        }
+    });
+
+    let ui_cb = ui_weak.clone();
+    window.on_set_hinge_brightness(move |b| {
+        if let Some(ui) = ui_cb.upgrade() {
+            ui.set_hinge_brightness(b);
+            ipc::send_action_to_host("apply_hinge_lighting", serde_json::json!({
+                "enabled": ui.get_hinge_enabled(),
+                "effect": ui.get_hinge_effect(),
+                "brightness": b,
+                "speed": ui.get_hinge_speed(),
+                "color": ui.get_hinge_color_hex().as_str(),
+            }));
+        }
+    });
+
+    let ui_cb = ui_weak.clone();
+    window.on_set_hinge_speed(move |s| {
+        if let Some(ui) = ui_cb.upgrade() {
+            ui.set_hinge_speed(s);
+            ipc::send_action_to_host("apply_hinge_lighting", serde_json::json!({
+                "enabled": ui.get_hinge_enabled(),
+                "effect": ui.get_hinge_effect(),
+                "brightness": ui.get_hinge_brightness(),
+                "speed": s,
+                "color": ui.get_hinge_color_hex().as_str(),
+            }));
+        }
+    });
+
+    let ui_cb = ui_weak.clone();
+    window.on_set_hinge_color(move |hex, _c| {
+        if let Some(ui) = ui_cb.upgrade() {
+            ui.set_hinge_color_hex(hex.clone());
+            ipc::send_action_to_host("apply_hinge_lighting", serde_json::json!({
+                "enabled": ui.get_hinge_enabled(),
+                "effect": ui.get_hinge_effect(),
+                "brightness": ui.get_hinge_brightness(),
+                "speed": ui.get_hinge_speed(),
+                "color": hex.as_str(),
+            }));
+        }
+    });
+
+    // Logo Callbacks
+    let ui_cb = ui_weak.clone();
+    window.on_toggle_logo_enabled(move || {
+        if let Some(ui) = ui_cb.upgrade() {
+            let next = !ui.get_logo_enabled();
+            ui.set_logo_enabled(next);
+            ipc::send_action_to_host("apply_logo_lighting", serde_json::json!({
+                "enabled": next,
+                "effect": ui.get_logo_effect(),
+                "brightness": ui.get_logo_brightness(),
+                "color": ui.get_logo_color_hex().as_str(),
+            }));
+        }
+    });
+
+    let ui_cb = ui_weak.clone();
+    window.on_set_logo_effect(move |eff| {
+        if let Some(ui) = ui_cb.upgrade() {
+            ui.set_logo_effect(eff);
+            ipc::send_action_to_host("apply_logo_lighting", serde_json::json!({
+                "enabled": ui.get_logo_enabled(),
+                "effect": eff,
+                "brightness": ui.get_logo_brightness(),
+                "color": ui.get_logo_color_hex().as_str(),
+            }));
+        }
+    });
+
+    let ui_cb = ui_weak.clone();
+    window.on_set_logo_brightness(move |b| {
+        if let Some(ui) = ui_cb.upgrade() {
+            ui.set_logo_brightness(b);
+            ipc::send_action_to_host("apply_logo_lighting", serde_json::json!({
+                "enabled": ui.get_logo_enabled(),
+                "effect": ui.get_logo_effect(),
+                "brightness": b,
+                "color": ui.get_logo_color_hex().as_str(),
+            }));
+        }
+    });
+
+    let ui_cb = ui_weak.clone();
+    window.on_set_logo_color(move |hex, _c| {
+        if let Some(ui) = ui_cb.upgrade() {
+            ui.set_logo_color_hex(hex.clone());
+            ipc::send_action_to_host("apply_logo_lighting", serde_json::json!({
+                "enabled": ui.get_logo_enabled(),
+                "effect": ui.get_logo_effect(),
+                "brightness": ui.get_logo_brightness(),
+                "color": hex.as_str(),
+            }));
+        }
+    });
+
+    // Topology Callbacks
+    window.on_apply_lighting_topology(move |kb_str, lb_str, amb_str, logo_str| {
+        let is_all_auto = kb_str == "auto" && lb_str == "auto" && amb_str == "auto" && logo_str == "auto";
+        ipc::send_action_to_host("apply_lighting_hardware_override", serde_json::json!({
+            "override_cfg": {
+                "enabled": !is_all_auto,
+                "keyboard": kb_str.as_str(),
+                "front_bar": lb_str.as_str(),
+                "ambient": amb_str.as_str(),
+                "logo": logo_str.as_str(),
+            }
+        }));
+    });
+
+    window.on_reset_lighting_topology(move || {
+        ipc::send_action_to_host("reset_lighting_hardware_override", serde_json::json!({}));
+    });
+}
+

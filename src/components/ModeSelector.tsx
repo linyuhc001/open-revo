@@ -1,7 +1,10 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { POWER_MODES, PowerMode } from '../types/hardware';
 import { ModelCapabilities } from '../plugins/plugin_manifest';
-import { Shield, Zap, Flame, Sliders, Settings2 } from 'lucide-react';
+import { useTurboSubmode } from '../hooks/useTurboSubmode';
+import { Shield, Zap, Flame, Snowflake, Sliders, Settings2 } from 'lucide-react';
 
 interface ModeSelectorProps {
   currentMode: PowerMode | number;
@@ -12,6 +15,7 @@ interface ModeSelectorProps {
   onOpenCustomTuning?: () => void;
   capabilities?: ModelCapabilities;
   isThinLight?: boolean;
+  checkOemGuard?: (action: () => void) => void;
 }
 
 export const ModeSelector: React.FC<ModeSelectorProps> = ({
@@ -23,11 +27,110 @@ export const ModeSelector: React.FC<ModeSelectorProps> = ({
   onOpenCustomTuning,
   capabilities,
   isThinLight = false,
+  checkOemGuard,
 }) => {
   const isLight = isThinLight || capabilities?.form_factor === 'thin_light';
   const isUnadapted = capabilities?.is_adapted === false;
   const hasCustomMode = !isUnadapted && (capabilities?.power_modes ? capabilities.power_modes.includes('custom') : !isLight);
   const availableModes = POWER_MODES.filter((m) => hasCustomMode || m.id !== 4);
+
+  // 狂暴子模式（静音/高能）：只有能力位满足的机型才拆成两段
+  const turboSub = useTurboSubmode();
+  const [gcuOc, setGcuOc] = useState<{ on: boolean; busy: boolean; error: boolean }>({ on: false, busy: false, error: false });
+  const [ocDefaults, setOcDefaults] = useState<{ core: number; mem: number }>({ core: 105, mem: 0 });
+
+  // GPU OC 默认值来自设置页（config.json 持久化），开启时使用
+  useEffect(() => {
+    invoke<any>('get_app_config')
+      .then((cfg) => {
+        if (!cfg) return;
+        const core = Number(cfg.gpu_oc_core_mhz);
+        const mem = Number(cfg.gpu_oc_mem_mhz);
+        setOcDefaults({
+          core: Number.isFinite(core) && core >= 0 ? core : 105,
+          mem: Number.isFinite(mem) && mem >= 0 ? mem : 0,
+        });
+      })
+      .catch(() => { });
+  }, []);
+
+  // OC 状态：初始查配置与驱动 + 跟随 host 的 turbo-oc-changed / gpu-clock-offsets-changed
+  useEffect(() => {
+    let alive = true;
+    invoke<any>('get_app_config')
+      .then((cfg) => {
+        if (!alive) return;
+        if (cfg && typeof cfg.turbo_oc_enabled === 'boolean') {
+          setGcuOc((s) => ({ ...s, on: cfg.turbo_oc_enabled }));
+        }
+      })
+      .catch(() => { });
+
+    let unlistenTurboOc: any = null;
+    let unlistenOffsets: any = null;
+
+    listen('turbo-oc-changed', (e: any) => {
+      if (!alive) return;
+      const p = (e && e.payload) || {};
+      if (typeof p.enabled === 'boolean') {
+        setGcuOc((s) => ({ ...s, on: p.enabled, busy: false, error: false }));
+      }
+    }).then((f) => { unlistenTurboOc = f; }).catch(() => { });
+
+    listen('gpu-clock-offsets-changed', (e: any) => {
+      if (!alive) return;
+      const p = (e && e.payload) || {};
+      const core = Number(p.core_offset_mhz) || 0;
+      const mem = Number(p.mem_offset_mhz) || 0;
+      if (currentMode === 3) {
+        setGcuOc((s) => ({ ...s, on: core !== 0 || mem !== 0 }));
+      }
+    }).then((f) => { unlistenOffsets = f; }).catch(() => { });
+
+    return () => {
+      alive = false;
+      try { if (unlistenTurboOc) unlistenTurboOc(); } catch { /* ignore */ }
+      try { if (unlistenOffsets) unlistenOffsets(); } catch { /* ignore */ }
+    };
+  }, [currentMode]);
+
+  const applyTurboSeg = (silent: boolean, isRestricted: boolean) => {
+    if (isRestricted) return;
+    const apply = () => {
+      if (currentMode !== 3) {
+        onSelectMode(3);
+      }
+      void turboSub.apply(silent);
+    };
+    if (checkOemGuard) checkOemGuard(apply);
+    else apply();
+  };
+
+  const toggleGcuOc = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (gcuOc.busy) return;
+    const next = !gcuOc.on;
+    setGcuOc((s) => ({ ...s, busy: true, error: false }));
+    try {
+      await invoke('set_turbo_oc_enabled', { enabled: next });
+      setGcuOc({ on: next, busy: false, error: false });
+    } catch (err) {
+      console.warn('[ModeSelector] toggle gpu oc failed:', err);
+      setGcuOc((s) => ({ ...s, busy: false, error: true }));
+    }
+  };
+
+  const gcuOcChip = () => (
+    <div
+      className={`mode-oc-chip${gcuOc.on ? ' is-applied' : ''}${gcuOc.error ? ' is-error' : ''}`}
+      title={gcuOc.on
+        ? `GPU OC 已开启（核心 +${ocDefaults.core} MHz / 显存 +${ocDefaults.mem} MHz），点击关闭`
+        : `GPU OC 未开启，点击开启（核心 +${ocDefaults.core} MHz / 显存 +${ocDefaults.mem} MHz）`}
+      onClick={toggleGcuOc}
+    >
+      {gcuOc.busy ? 'OC...' : gcuOc.error ? 'GPU OC !' : gcuOc.on ? 'GPU OC ON' : 'GPU OC OFF'}
+    </div>
+  );
 
   const getIcon = (id: PowerMode) => {
     switch (id) {
@@ -67,6 +170,43 @@ export const ModeSelector: React.FC<ModeSelectorProps> = ({
         const isCustom = mode.id === 4;
         const isRestricted = !isLight && (mode.id === 3 || mode.id === 4) && isDcOnline === false && !unlockBatteryLimit;
 
+        // 狂暴档：支持子模式 -> 拆成「静音狂暴 / 高能狂暴」两段
+        if (mode.id === 3 && turboSub.supported) {
+          const silentActive = isActive && turboSub.silent;
+          const extremeActive = isActive && !turboSub.silent;
+          return (
+            <div key={mode.id} className="mode-seg-wrap">
+              <div className="mode-seg">
+                <button
+                  disabled={disabled || isRestricted || turboSub.busy}
+                  onClick={() => applyTurboSeg(true, isRestricted)}
+                  className={`mode-btn mode-seg-btn mode-beast ${silentActive ? 'active-beast' : ''}`}
+                  title={isRestricted ? '电池供电或受限供电下不可用，需接入原装电源适配器' : '静音狂暴：狂暴档内的安静子模式'}
+                  style={isRestricted ? { opacity: 0.45, cursor: 'not-allowed', filter: 'grayscale(0.6)' } : undefined}
+                >
+                  {silentActive && !isRestricted && gcuOcChip()}
+                  <div style={{ marginBottom: '2px' }}><Snowflake className="w-4 h-4 text-cyan-300" /></div>
+                  <div className="mode-title">静音狂暴</div>
+                  <div className="mode-sub">{isRestricted ? '需圆口DC' : silentActive ? '● 当前' : '静音'}</div>
+                </button>
+                <button
+                  disabled={disabled || isRestricted || turboSub.busy}
+                  onClick={() => applyTurboSeg(false, isRestricted)}
+                  className={`mode-btn mode-seg-btn mode-beast ${extremeActive ? 'active-beast' : ''}`}
+                  title={isRestricted ? '电池供电或受限供电下不可用，需接入原装电源适配器' : '高能狂暴：狂暴档内的高能/极限子模式'}
+                  style={isRestricted ? { opacity: 0.45, cursor: 'not-allowed', filter: 'grayscale(0.6)' } : undefined}
+                >
+                  {extremeActive && !isRestricted && gcuOcChip()}
+                  <div style={{ marginBottom: '2px' }}><Flame className="w-4 h-4 text-rose-400" /></div>
+                  <div className="mode-title">高能狂暴</div>
+                  <div className="mode-sub">{isRestricted ? '需圆口DC' : extremeActive ? '● 当前' : '高能'}</div>
+                </button>
+              </div>
+              {turboSub.error && <div role="alert" className="mode-sub">{turboSub.error}</div>}
+            </div>
+          );
+        }
+
         return (
           <button
             key={mode.id}
@@ -79,7 +219,7 @@ export const ModeSelector: React.FC<ModeSelectorProps> = ({
                 onSelectMode(mode.id);
               }
             }}
-            className={`mode-btn ${getActiveClass(mode.id)}`}
+            className={`mode-btn ${mode.id === 3 ? 'mode-beast' : ''} ${getActiveClass(mode.id)}`}
             title={
               isRestricted
                 ? '电池供电或受限供电下不可用，需接入原装电源适配器'
@@ -98,6 +238,9 @@ export const ModeSelector: React.FC<ModeSelectorProps> = ({
                 : {}),
             }}
           >
+            {/* 狂暴档 GCU OC 快捷按钮（左上角） */}
+            {mode.id === 3 && isActive && !isRestricted && gcuOcChip()}
+
             {/* Corner Badge for Custom Mode Tuning */}
             {isCustom && (isActive || isLight) && onOpenCustomTuning && !isRestricted && (
               <div

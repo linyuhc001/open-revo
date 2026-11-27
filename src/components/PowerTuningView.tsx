@@ -1,8 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Zap, Battery, Plug, ShieldCheck, Globe, Ban, Lock, Clock, Moon, Snowflake, Info } from 'lucide-react';
 import { RevBadge, RevSwitch } from './ui';
-import { ExtensionSlot } from './common/ExtensionSlot';
 
 interface PowerSettingsInfo {
   battery_percent: number;
@@ -48,22 +47,24 @@ export const PowerTuningView: React.FC = () => {
   });
 
   const [loading, setLoading] = useState(false);
+  const [controlError, setControlError] = useState<string | null>(null);
+  const busy = useRef(false);
+  const revision = useRef(0);
 
   useEffect(() => {
-    invoke<PowerSettingsInfo>('get_power_settings')
-      .then((res) => {
-        if (res) setPowerInfo(res);
-      })
-      .catch((e) => console.error('Failed to get power settings:', e));
-
-    const timer = setInterval(() => {
+    let disposed = false;
+    const refresh = () => {
+      if (busy.current) return;
+      const requestRevision = ++revision.current;
       invoke<PowerSettingsInfo>('get_power_settings')
         .then((res) => {
-          if (res) setPowerInfo(res);
+          if (!disposed && !busy.current && revision.current === requestRevision && res) setPowerInfo(res);
         })
-        .catch(() => { });
-    }, 5000);
-    return () => clearInterval(timer);
+        .catch((error) => console.error('Failed to get power settings:', error));
+    };
+    refresh();
+    const timer = setInterval(refresh, 5000);
+    return () => { disposed = true; clearInterval(timer); };
   }, []);
 
   const handleSelectBatteryMode = async (mode: string) => {
@@ -81,24 +82,19 @@ export const PowerTuningView: React.FC = () => {
   };
 
   const handleToggleOption = async (option: 'usb_charge' | 'ac_recovery' | 'high_perf') => {
-    if (loading) return;
+    if (busy.current || loading) return;
+    busy.current = true;
+    revision.current += 1;
     setLoading(true);
-
-    const keyMap = {
-      usb_charge: 'usb_charge_enabled',
-      ac_recovery: 'ac_recovery_enabled',
-      high_perf: 'high_perf_scheme',
-    } as const;
-
-    const nextVal = !powerInfo[keyMap[option]];
-    setPowerInfo((prev) => ({ ...prev, [keyMap[option]]: nextVal }));
-
+    setControlError(null);
+    const keyMap = { usb_charge: 'usb_charge_enabled', ac_recovery: 'ac_recovery_enabled', high_perf: 'high_perf_scheme' } as const;
     try {
-      const res = await invoke<PowerSettingsInfo>('set_power_option', { option, enable: nextVal });
+      const res = await invoke<PowerSettingsInfo>('set_power_option', { option, enable: !powerInfo[keyMap[option]] });
       if (res) setPowerInfo(res);
-    } catch (e) {
-      console.error(`Failed to toggle ${option}:`, e);
+    } catch (error) {
+      setControlError('更改电源设置失败：' + String(error));
     } finally {
+      busy.current = false;
       setLoading(false);
     }
   };
@@ -173,7 +169,8 @@ export const PowerTuningView: React.FC = () => {
   };
 
   return (
-    <div className="power-view-container">
+    <div className="power-view-container" aria-busy={loading}>
+      {controlError && <p className="sys-row-desc" role="alert">{controlError}</p>}
       {/* 1. Top Header Bar with Auto Office Checkbox */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0, gap: '12px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
@@ -211,9 +208,6 @@ export const PowerTuningView: React.FC = () => {
               activeColor="var(--accent-pwr)"
             />
           </div>
-
-          {/* Top Right: 预留微插槽位 (锁定充电上限插件) */}
-          <ExtensionSlot name="power.hardware_limit" style={{ width: 'auto' }} />
         </div>
       </div>
 
@@ -529,9 +523,6 @@ export const PowerTuningView: React.FC = () => {
               <div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                   <span style={{ fontSize: '11.5px', fontWeight: 700, color: 'var(--text-primary)' }}>长效模式</span>
-                  {powerInfo.battery_hardware_limit_enabled && (
-                    <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--status-ok)' }}>(100%)</span>
-                  )}
                 </div>
                 <div style={{ fontSize: '9.5px', color: 'var(--text-dim)', lineHeight: '1.35', marginTop: '1px' }}>
                   适合很长时间使用电池工作的环境。
@@ -550,9 +541,6 @@ export const PowerTuningView: React.FC = () => {
               <div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                   <span style={{ fontSize: '11.5px', fontWeight: 700, color: 'var(--text-primary)' }}>平衡模式</span>
-                  {powerInfo.battery_hardware_limit_enabled && (
-                    <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--status-ok)' }}>(80%)</span>
-                  )}
                 </div>
                 <div style={{ fontSize: '9.5px', color: 'var(--text-dim)', lineHeight: '1.35', marginTop: '1px' }}>
                   偶而会携带电脑工作，且不需要多余靠电池供电。
@@ -571,9 +559,6 @@ export const PowerTuningView: React.FC = () => {
               <div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                   <span style={{ fontSize: '11.5px', fontWeight: 700, color: 'var(--text-primary)' }}>工作站模式</span>
-                  {powerInfo.battery_hardware_limit_enabled && (
-                    <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--status-ok)' }}>(60%)</span>
-                  )}
                 </div>
                 <div style={{ fontSize: '9.5px', color: 'var(--text-dim)', lineHeight: '1.35', marginTop: '1px' }}>
                   如果很容易接续适配器工作，无携带电脑外出工作的需求，强烈建议使用此模式，延长电池的寿命。

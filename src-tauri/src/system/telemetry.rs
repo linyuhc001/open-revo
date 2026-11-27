@@ -23,7 +23,8 @@ pub fn register_consumer(consumer_id: &str, sensors: &[String]) {
     let mut map = get_subscribed_sensors().lock();
     let set: HashSet<String> = sensors.iter().cloned().collect();
     map.insert(consumer_id.to_string(), set);
-    let count = ACTIVE_SUBSCRIBERS.fetch_add(1, Ordering::SeqCst) + 1;
+    let count = map.len() as u32;
+    ACTIVE_SUBSCRIBERS.store(count, Ordering::SeqCst);
     crate::log_info!(
         "TELEMETRY",
         "Registered consumer '{}' with {} sensors. Total active consumers: {}",
@@ -37,7 +38,8 @@ pub fn register_consumer(consumer_id: &str, sensors: &[String]) {
 pub fn unregister_consumer(consumer_id: &str) {
     let mut map = get_subscribed_sensors().lock();
     if map.remove(consumer_id).is_some() {
-        let count = ACTIVE_SUBSCRIBERS.fetch_sub(1, Ordering::SeqCst).saturating_sub(1);
+        let count = map.len() as u32;
+        ACTIVE_SUBSCRIBERS.store(count, Ordering::SeqCst);
         crate::log_info!(
             "TELEMETRY",
             "Unregistered consumer '{}'. Remaining active consumers: {}",
@@ -89,6 +91,7 @@ pub fn is_telemetry_active() -> bool {
     MAIN_WINDOW_VISIBLE.load(Ordering::Relaxed)
         || ACTIVE_SUBSCRIBERS.load(Ordering::Relaxed) > 0
         || crate::system::watcher_hub::has_active_telemetry_watchers()
+        || !crate::system::config::load_config().use_classic_webview
 }
 
 /// Determine whether NVIDIA dGPU queries (NVAPI) should be executed
@@ -118,7 +121,7 @@ pub fn should_query_gpu() -> bool {
 
 /// Start the background dynamic telemetry heartbeat loop
 pub fn start_telemetry_loop(
-    app: AppHandle,
+    app: Option<AppHandle>,
     ec_bridge: SharedEcBridge,
     gpu_bridge: SharedGpuBridge,
 ) {
@@ -144,8 +147,15 @@ pub fn start_telemetry_loop(
                     let query_gpu = should_query_gpu();
                     let state = collect_hardware_state(&ec_bridge, &gpu_bridge, query_gpu);
                     if !SCREEN_SUSPENDED.load(Ordering::SeqCst) && !REBOOT_FREEZE.load(Ordering::SeqCst) {
-                        let _ = app.emit("hardware-state-updated", &state);
+                        if let Some(ref a) = app {
+                            let _ = a.emit("hardware-state-updated", &state);
+                        }
+                        if let Ok(v) = serde_json::to_value(&state) {
+                            crate::system::native_wry::broadcast_event("hardware-state-updated", &v);
+                        }
                         crate::system::watcher_hub::evaluate_telemetry_watchers(&state);
+                        crate::system::slint_window::sync_slint_telemetry(&state);
+                        crate::system::slint_window::actions::plugins::broadcast_telemetry_to_slint_widgets(&state);
                     }
                     std::thread::sleep(Duration::from_millis(1500));
                 } else {
@@ -178,4 +188,22 @@ pub fn get_telemetry_heartbeat_status() -> Result<serde_json::Value, String> {
         "screen_suspended": screen_suspended,
         "query_gpu": query_gpu,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn regression_consumer_registration_is_idempotent() {
+        let id = "telemetry-regression";
+        let initial = ACTIVE_SUBSCRIBERS.load(Ordering::SeqCst);
+        register_consumer(id, &["cpu_temp".into()]);
+        register_consumer(id, &["gpu_temp".into()]);
+        assert_eq!(ACTIVE_SUBSCRIBERS.load(Ordering::SeqCst), initial + 1);
+        assert!(get_subscribed_sensors().lock()[id].contains("gpu_temp"));
+        unregister_consumer(id);
+        unregister_consumer(id);
+        assert_eq!(ACTIVE_SUBSCRIBERS.load(Ordering::SeqCst), initial);
+    }
 }

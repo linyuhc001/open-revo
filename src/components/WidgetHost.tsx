@@ -5,16 +5,16 @@ import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { getCurrentWindow, currentMonitor } from '@tauri-apps/api/window';
 import { LogicalSize, LogicalPosition } from '@tauri-apps/api/dpi';
 import { HardwareState, PowerMode } from '../types/hardware';
-import { Flame, Fan, X, RotateCcw } from 'lucide-react';
+import { Flame, Fan, X } from 'lucide-react';
 
 interface WidgetHostProps {
   pluginId: string;
 }
 
 export const WidgetHost: React.FC<WidgetHostProps> = ({ pluginId }) => {
+  const [loading, setLoading] = useState(true);
   const [customHtml, setCustomHtml] = useState<string | null>(null);
   const [hasCustomPlugin, setHasCustomPlugin] = useState(false);
-  const [hoverControls, setHoverControls] = useState(false);
 
   // Fallback demo state
   const [hardware, setHardware] = useState<Partial<HardwareState>>({
@@ -50,13 +50,30 @@ export const WidgetHost: React.FC<WidgetHostProps> = ({ pluginId }) => {
         } catch (_) {}
       },
       pluginId,
+      storage: {
+        get: () => invoke('get_plugin_storage', { pluginId }),
+        set: (data: any) => invoke('set_plugin_storage', { pluginId, data }),
+        getItem: async (key: string) => {
+          const all: any = await invoke('get_plugin_storage', { pluginId });
+          return all ? all[key] : undefined;
+        },
+        setItem: async (key: string, val: any) => {
+          const all: any = (await invoke('get_plugin_storage', { pluginId })) || {};
+          all[key] = val;
+          return invoke('set_plugin_storage', { pluginId, data: all });
+        },
+        readFile: (path: string) => invoke('read_plugin_file', { pluginId, path }),
+        writeFile: (path: string, content: string) => invoke('write_plugin_file', { pluginId, path, content }),
+        deleteFile: (path: string) => invoke('delete_plugin_file', { pluginId, path }),
+        listFiles: (subDir?: string) => invoke('list_plugin_files', { pluginId, subDir }),
+      },
     };
   }, [pluginId]);
 
   // 2. Load custom plugin HTML
   const fetchCustomHtml = async () => {
     try {
-      const html = await invoke<string>('load_plugin_html', { pluginId });
+      const html = await invoke<string>('load_plugin_html', { pluginId, surface: 'widget' });
       if (html && html.trim().length > 0) {
         setCustomHtml(html);
         setHasCustomPlugin(true);
@@ -67,6 +84,7 @@ export const WidgetHost: React.FC<WidgetHostProps> = ({ pluginId }) => {
       // If plugin does not contain custom index.html/entry, fallback smoothly to built-in S2 core
       setHasCustomPlugin(false);
     } finally {
+      setLoading(false);
       try {
         await invoke('widget_ready', { pluginId });
       } catch (_) {}
@@ -77,7 +95,20 @@ export const WidgetHost: React.FC<WidgetHostProps> = ({ pluginId }) => {
     fetchCustomHtml();
   }, [pluginId]);
 
-  // 3. Fallback heartbeat & telemetry sync
+  // 3. Register telemetry consumer for current widget
+  useEffect(() => {
+    invoke('register_telemetry_consumer', {
+      consumerId: pluginId,
+      sensors: ['cpu_temp', 'gpu_temp', 'cpu_power', 'gpu_power', 'fps', 'cpu_fan_rpm', 'gpu_fan_rpm', 'battery_level'],
+    }).catch(() => {});
+    return () => {
+      invoke('unregister_telemetry_consumer', {
+        consumerId: pluginId,
+      }).catch(() => {});
+    };
+  }, [pluginId]);
+
+  // 4. Fallback heartbeat & telemetry sync
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let timer: any;
@@ -131,8 +162,8 @@ export const WidgetHost: React.FC<WidgetHostProps> = ({ pluginId }) => {
             getCurrentWebviewWindow().startDragging();
             break;
           case 'SET_POWER_MODE':
-            if (payload?.mode) {
-              await invoke('set_power_mode', { mode: payload.mode as PowerMode });
+            if (typeof payload?.mode === 'number' || payload?.mode) {
+              await invoke('set_power_mode', { mode: Number(payload.mode) as PowerMode });
             }
             break;
           case 'SET_FAN_BOOST':
@@ -142,6 +173,14 @@ export const WidgetHost: React.FC<WidgetHostProps> = ({ pluginId }) => {
             break;
           case 'CLOSE_WIDGET':
             await invoke('close_custom_widget', { pluginId });
+            break;
+          case 'EMIT':
+            if (payload?.event) {
+              await invoke('emit_plugin_broadcast', {
+                event: payload.event,
+                payload: payload.payload ?? null,
+              });
+            }
             break;
           default:
             break;
@@ -168,7 +207,17 @@ export const WidgetHost: React.FC<WidgetHostProps> = ({ pluginId }) => {
     emit: b.emit || function() { return Promise.resolve(); },
     startDragging: b.startDragging || function() {},
     close: b.close || function() {},
-    pluginId: "${pluginId}"
+    pluginId: "${pluginId}",
+    storage: b.storage || {
+      get: function() { return b.invoke('get_plugin_storage', { pluginId: "${pluginId}" }); },
+      set: function(data) { return b.invoke('set_plugin_storage', { pluginId: "${pluginId}", data: data }); },
+      getItem: async function(k) { var all = await b.invoke('get_plugin_storage', { pluginId: "${pluginId}" }); return all ? all[k] : undefined; },
+      setItem: async function(k, v) { var all = (await b.invoke('get_plugin_storage', { pluginId: "${pluginId}" })) || {}; all[k] = v; return b.invoke('set_plugin_storage', { pluginId: "${pluginId}", data: all }); },
+      readFile: function(p) { return b.invoke('read_plugin_file', { pluginId: "${pluginId}", path: p }); },
+      writeFile: function(p, c) { return b.invoke('write_plugin_file', { pluginId: "${pluginId}", path: p, content: c }); },
+      deleteFile: function(p) { return b.invoke('delete_plugin_file', { pluginId: "${pluginId}", path: p }); },
+      listFiles: function(d) { return b.invoke('list_plugin_files', { pluginId: "${pluginId}", subDir: d }); }
+    }
   };
   window.__TAURI__ = {
     core: { invoke: b.invoke },
@@ -183,7 +232,7 @@ export const WidgetHost: React.FC<WidgetHostProps> = ({ pluginId }) => {
     if (e.button !== 0) return;
     var target = e.target;
     if (target && target.closest('[data-tauri-drag-region]')) {
-      if (!target.closest('button, input, select, textarea, [data-no-drag]')) {
+      if (!target.closest('button, a, input, select, textarea, [data-no-drag], .clickable, [role="button"]')) {
         if (b.startDragging) b.startDragging();
       }
     }
@@ -208,6 +257,12 @@ export const WidgetHost: React.FC<WidgetHostProps> = ({ pluginId }) => {
   }
 }
 </script>
+<style id="openrevo-transparent-canvas">
+html, body {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+</style>
 `;
 
     // Inject into head, or prepend if no head
@@ -263,12 +318,14 @@ export const WidgetHost: React.FC<WidgetHostProps> = ({ pluginId }) => {
     } catch (_) {}
   };
 
+  if (loading) {
+    return <div style={{ width: '100vw', height: '100vh', background: 'transparent' }} />;
+  }
+
   // If user has custom HTML, render the custom iframe
   if (hasCustomPlugin && preparedHtml) {
     return (
       <div
-        onMouseEnter={() => setHoverControls(true)}
-        onMouseLeave={() => setHoverControls(false)}
         style={{
           width: '100vw',
           height: '100vh',
@@ -283,11 +340,14 @@ export const WidgetHost: React.FC<WidgetHostProps> = ({ pluginId }) => {
           srcDoc={preparedHtml}
           title={`widget-${pluginId}`}
           sandbox="allow-scripts allow-forms allow-same-origin allow-modals"
+          // @ts-ignore
+          allowTransparency="true"
           style={{
             width: '100%',
             height: '100%',
             border: 'none',
             background: 'transparent',
+            backgroundColor: 'transparent',
             display: 'block',
           }}
           onLoad={() => {
@@ -296,60 +356,6 @@ export const WidgetHost: React.FC<WidgetHostProps> = ({ pluginId }) => {
             } catch (_) {}
           }}
         />
-
-        {/* Discreet rescue & control HUD on hover */}
-        {hoverControls && (
-          <div
-            style={{
-              position: 'absolute',
-              top: '4px',
-              right: '4px',
-              display: 'flex',
-              gap: '4px',
-              zIndex: 99999,
-              background: 'rgba(15, 23, 42, 0.75)',
-              backdropFilter: 'blur(8px)',
-              borderRadius: '6px',
-              padding: '2px 4px',
-              border: '1px solid rgba(255, 255, 255, 0.1)',
-            }}
-          >
-            <button
-              onClick={fetchCustomHtml}
-              title="重新加载挂件代码"
-              style={{
-                background: 'transparent',
-                border: 'none',
-                color: 'rgba(255, 255, 255, 0.6)',
-                cursor: 'pointer',
-                padding: '2px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                borderRadius: '4px',
-              }}
-            >
-              <RotateCcw size={11} />
-            </button>
-            <button
-              onClick={handleClose}
-              title="关闭悬浮挂件"
-              style={{
-                background: 'transparent',
-                border: 'none',
-                color: 'rgba(255, 255, 255, 0.6)',
-                cursor: 'pointer',
-                padding: '2px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                borderRadius: '4px',
-              }}
-            >
-              <X size={11} />
-            </button>
-          </div>
-        )}
       </div>
     );
   }

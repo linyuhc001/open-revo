@@ -1,0 +1,1059 @@
+use tauri::Manager;
+use super::{send_slint_ipc_message, SELECTED_MONITOR_INDEX, SLINT_APP_HANDLE};
+
+pub fn sync_slint_telemetry(state: &crate::commands::system_cmd::HardwareState) {
+    let vram_used_gb = (state.gpu_vram_used_mb as f64) / 1024.0;
+    let vram_total_gb = (state.gpu_vram_mb as f64) / 1024.0;
+    let vram_text = if state.gpu_vram_mb > 0 {
+        format!("{:.1} / {:.1} GB", vram_used_gb, vram_total_gb)
+    } else {
+        "- / -".to_string()
+    };
+
+    let discrete_gpu = crate::hal::declarative::load_matched_manifest()
+        .map(|m| m.capabilities.discrete_gpu)
+        .unwrap_or_else(crate::commands::power_cmd::check_dgpu_present);
+
+    let cpu_watts_text = if state.cpu_power_w > 0.0 {
+        if state.cpu_power_w >= 100.0 {
+            format!("{:.0} W", state.cpu_power_w)
+        } else {
+            format!("{:.1} W", state.cpu_power_w)
+        }
+    } else {
+        "-- W".to_string()
+    };
+    let gpu_watts_text = if state.gpu_power_w > 0.0 {
+        if state.gpu_power_w >= 100.0 {
+            format!("{:.0} W", state.gpu_power_w)
+        } else {
+            format!("{:.1} W", state.gpu_power_w)
+        }
+    } else if !discrete_gpu {
+        "APU 共享".to_string()
+    } else {
+        "-- W".to_string()
+    };
+    let (telemetry_total_label, telemetry_total_watts) = if !discrete_gpu {
+        (
+            "APU 封装功耗:",
+            if state.cpu_power_w > 0.0 {
+                format!("{:.1} W", state.cpu_power_w)
+            } else {
+                "--".to_string()
+            },
+        )
+    } else {
+        let total_w = state.cpu_power_w.max(0.0) + state.gpu_power_w.max(0.0);
+        (
+            "双烤合计:",
+            if total_w > 0.0 {
+                format!("{:.0} W", total_w)
+            } else {
+                "--".to_string()
+            },
+        )
+    };
+
+    let sel_idx = SELECTED_MONITOR_INDEX.load(std::sync::atomic::Ordering::Relaxed);
+    let (monitor_name, curr_hz, supported_rates) = if !state.monitors.is_empty() {
+        let m = if sel_idx < state.monitors.len() { &state.monitors[sel_idx] } else { &state.monitors[0] };
+        (m.friendly_name.clone(), m.current_hz, m.supported_rates.clone())
+    } else {
+        ("京东方 (主屏)".to_string(), state.refresh_rate, vec![60, 144, 240])
+    };
+
+    let (rates_row1, rates_row2) = if supported_rates.len() > 5 {
+        let mid = (supported_rates.len() + 1) / 2;
+        (supported_rates[..mid].to_vec(), supported_rates[mid..].to_vec())
+    } else {
+        (supported_rates.clone(), Vec::new())
+    };
+
+    let mut sorted_rates = supported_rates.clone();
+    sorted_rates.sort();
+    sorted_rates.dedup();
+    let min_refresh_rate = sorted_rates.first().copied().unwrap_or(60) as i32;
+    let max_refresh_rate = sorted_rates.last().copied().unwrap_or(240) as i32;
+    let intermediate_rates: Vec<i32> = if sorted_rates.len() > 2 {
+        sorted_rates[1..sorted_rates.len() - 1].iter().map(|&r| r as i32).collect()
+    } else {
+        Vec::new()
+    };
+
+    let (live_battery, live_ac, _) = crate::commands::power_cmd::get_live_power_status();
+    let has_secondary_monitor = state.monitors.len() > 1;
+    let primary_monitor_name = if !state.monitors.is_empty() { state.monitors[0].friendly_name.clone() } else { "内置主屏".to_string() };
+    let secondary_monitor_name = if state.monitors.len() > 1 { state.monitors[1].friendly_name.clone() } else { "".to_string() };
+
+    let (pl1_target, tgp_target, power_target_text) = get_current_power_targets(state.power_mode);
+
+    send_slint_ipc_message(serde_json::json!({
+        "action": "telemetry",
+        "battery_percent": live_battery,
+        "is_ac_online": live_ac,
+        "cpu_temp": state.cpu_temp,
+        "cpu_mhz": state.cpu_freq,
+        "cpu_watts_text": cpu_watts_text,
+        "cpu_usage": state.cpu_usage,
+        "cpu_name": state.cpu_name,
+        "gpu_temp": state.gpu_temp,
+        "gpu_mhz": state.gpu_core_freq,
+        "gpu_watts_text": gpu_watts_text,
+        "gpu_usage": state.gpu_usage,
+        "gpu_name": state.gpu_name,
+        "cpu_rpm": state.cpu_fan_rpm,
+        "gpu_rpm": state.gpu_fan_rpm,
+        "telemetry_total_label": telemetry_total_label,
+        "telemetry_total_watts": telemetry_total_watts,
+        "vram_text": vram_text,
+        "vram_mhz": state.gpu_mem_freq,
+        "vram_usage": if state.gpu_vram_mb > 0 { ((state.gpu_vram_used_mb as f64 / state.gpu_vram_mb as f64) * 100.0) as u32 } else { 0 },
+        "refresh_rate": curr_hz,
+        "monitor_name": monitor_name,
+        "rates_row1": rates_row1,
+        "rates_row2": rates_row2,
+        "min_refresh_rate": min_refresh_rate,
+        "max_refresh_rate": max_refresh_rate,
+        "intermediate_rates": intermediate_rates,
+        "has_secondary_monitor": has_secondary_monitor,
+        "primary_monitor_name": primary_monitor_name,
+        "secondary_monitor_name": secondary_monitor_name,
+        "power_mode": state.power_mode,
+        "pl1_target": pl1_target,
+        "tgp_target": tgp_target,
+        "power_target_text": power_target_text,
+        "fan_boost": state.fan_boost,
+        "model_name": &state.model_name,
+        "custom_status_text": &state.model_name,
+        "oem_installed": state.oem_installed,
+        "oem_running": state.oem_running,
+    }));
+
+    sync_slint_water_state(Some(state.cpu_temp as i32), Some(state.gpu_temp as i32));
+}
+
+pub fn sync_slint_tuning_state() {
+    let cfg = crate::system::config::load_config();
+    let manifest = crate::hal::declarative::load_matched_manifest();
+    let is_bld = manifest.as_ref().map(|m| m.id.contains("bld")).unwrap_or(false);
+    let (_cpu_name, is_amd) = crate::driver::uefi_nvram::get_cpu_info();
+    let cpu_vendor = if is_amd { "amd" } else { "intel" };
+    let cpu_tuning_type = if manifest.as_ref().and_then(|m| m.capabilities.cpu_tuning_type.as_deref()) == Some("none") {
+        "none"
+    } else if is_amd {
+        "amd_smu"
+    } else {
+        "intel_pl"
+    };
+    let cpu_supports_fppt = manifest.as_ref().and_then(|m| m.capabilities.cpu_supports_fppt).unwrap_or(!is_bld);
+
+    let bounds = ensure_and_compute_tuning_bounds(&cfg);
+    let active_id = active_profile_id_or_default(&cfg);
+    let presets = crate::commands::tuning_cmd::get_profiles_list().unwrap_or_default();
+    let current_preset = presets.iter().find(|p| p.id == active_id).cloned().or_else(|| presets.first().cloned());
+    let profile = current_preset.as_ref().map(|p| &p.profile).unwrap_or(&cfg.custom_profile);
+    let preset_name = current_preset.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| "静音狂暴".to_string());
+    let is_builtin = current_preset.as_ref().map(|p| p.is_builtin).unwrap_or_else(|| active_id.starts_with("preset_"));
+
+    let single_fan_channel = manifest.as_ref()
+        .map(|m| !m.capabilities.fan_independent_channels)
+        .unwrap_or(false);
+    let fan_boost_mode_cap = manifest.as_ref().and_then(|m| m.capabilities.fan_boost_mode.clone()).unwrap_or_else(|| "none".to_string());
+    let min_duty_floor: u8 = if fan_boost_mode_cap == "direct_rpm_clamp" { 22 } else { 0 };
+    let cpu_curve = normalize_fan_curve_8(&profile.cpu_fan_curve, min_duty_floor);
+    let gpu_curve = if single_fan_channel {
+        cpu_curve.clone()
+    } else {
+        normalize_fan_curve_8(&profile.gpu_fan_curve, min_duty_floor)
+    };
+    let effective_temp_wall_max = bounds
+        .temp_wall_max
+        .max((profile.cpu_temp_target as i32).min(bounds.max_temp_wall));
+    let clamped_temp_wall = (profile.cpu_temp_target as i32).clamp(bounds.temp_wall_min, effective_temp_wall_max);
+    let clamped_pl1 = (profile.cpu_pl1_watts as i32).clamp(bounds.min_pl, bounds.pl1_max);
+    let clamped_pl2 = (profile.cpu_pl2_watts as i32).clamp(bounds.min_pl, bounds.pl2_max);
+    let clamped_pl4 = (profile.cpu_pl4_watts as i32).clamp(bounds.min_pl + bounds.pl4_margin, bounds.pl4_max);
+
+    let is_pure_igpu = crate::commands::power_cmd::is_thin_and_light_or_pure_igpu()
+        || !crate::driver::gpu_bridge::is_nvidia_dgpu_available();
+    let fp = crate::system::power_mode::get_factory_power_presets(!is_pure_igpu);
+    let is_clamped = crate::driver::bld_driver_mgr::is_bld_fan_clamped();
+
+    let gpu_caps = crate::driver::gpu_bridge::probe_gpu_tuning_capabilities();
+    let base_tgp = if fp.base_tgp > 0 {
+        fp.base_tgp as u32
+    } else if gpu_caps.base_tgp_max_watts > 0 {
+        gpu_caps.base_tgp_max_watts
+    } else {
+        115
+    };
+    let factory_base_tgp = if fp.base_tgp > 0 {
+        fp.base_tgp as u32
+    } else {
+        base_tgp
+    };
+    let factory_max_db = if fp.max_db > 0 {
+        fp.max_db as u32
+    } else if gpu_caps.max_db_watts > 0 {
+        gpu_caps.max_db_watts
+    } else {
+        25
+    };
+
+    let gpu_power_tuning_mode = manifest.as_ref()
+        .and_then(|m| m.capabilities.gpu_power_tuning_mode.clone())
+        .unwrap_or_else(|| if is_bld { "mode_locked".to_string() } else { "none".to_string() });
+    let is_mode_locked = gpu_power_tuning_mode == "mode_locked";
+    let supports_ctgp = !is_mode_locked && gpu_caps.supports_ctgp;
+    let ctgp_floor_watts = if gpu_caps.ctgp_floor_watts > 0 { gpu_caps.ctgp_floor_watts } else { base_tgp as u32 };
+    let base_tgp_max_watts = if gpu_caps.base_tgp_max_watts > 0 { gpu_caps.base_tgp_max_watts } else { base_tgp as u32 };
+    let ctgp_watts = if profile.gpu_ctgp_enabled && profile.gpu_ctgp_watts > 0 {
+        profile.gpu_ctgp_watts.clamp(ctgp_floor_watts as u8, base_tgp_max_watts as u8) as u32
+    } else {
+        base_tgp_max_watts
+    };
+    let max_db_watts = if gpu_caps.max_db_watts > 0 { gpu_caps.max_db_watts } else { 25 };
+
+    let fan_custom_curve = manifest.as_ref().map(|m| m.capabilities.fan_custom_curve).unwrap_or(true);
+    let fan_boost_mode = manifest.as_ref().and_then(|m| m.capabilities.fan_boost_mode.clone()).unwrap_or_else(|| "none".to_string());
+    let is_direct_clamp = fan_boost_mode == "direct_rpm_clamp";
+    let min_duty: i32 = if is_direct_clamp { 22 } else { 0 };
+
+    let preset_ids: Vec<String> = presets.iter().map(|p| p.id.clone()).collect();
+    let preset_names: Vec<String> = presets.iter().map(|p| p.name.clone()).collect();
+
+    let bios_status = crate::driver::uefi_nvram::read_bios_advanced_menu_status();
+    let is_partial = (bios_status.cpu_oc_enabled || bios_status.mem_oc_enabled) && !bios_status.enabled;
+    let is_unsupported = bios_status.hardware_read && !bios_status.supported;
+    let bios_oc_disabled = is_amd || is_unsupported;
+
+    let bios_oc_desc = if is_amd {
+        "AMD 平台采用 SMU 动态功耗架构，无 Intel 格式 BIOS 超频菜单".to_string()
+    } else if is_unsupported {
+        "当前机型主板或移动标压CPU未开放BIOS超频菜单".to_string()
+    } else {
+        "同步解锁 CPU 与内存超频菜单".to_string()
+    };
+
+    let (bios_oc_btn_text, bios_oc_status) = if is_amd || is_unsupported {
+        ("不支持".to_string(), 3)
+    } else if bios_status.enabled {
+        ("已开启".to_string(), 1)
+    } else if is_partial {
+        ("部分开启".to_string(), 2)
+    } else {
+        ("关闭".to_string(), 0)
+    };
+
+    let payload = serde_json::json!({
+        "action": "sync_tuning_state",
+        "cpu_vendor": cpu_vendor,
+        "cpu_tuning_type": cpu_tuning_type,
+        "cpu_supports_fppt": cpu_supports_fppt,
+        "is_bld": is_bld,
+        "active_preset_name": preset_name,
+        "active_preset_is_builtin": is_builtin,
+        "preset_ids": preset_ids,
+        "preset_names": preset_names,
+        "temp_wall": clamped_temp_wall,
+        "temp_wall_enabled": profile.cpu_temp_target_enabled,
+        "temp_wall_min": bounds.temp_wall_min,
+        "temp_wall_max": effective_temp_wall_max,
+        "max_temp_wall": bounds.max_temp_wall,
+        "min_pl": bounds.min_pl,
+        "pl4_margin": bounds.pl4_margin,
+        "pl1": clamped_pl1,
+        "pl1_max": bounds.pl1_max,
+        "min_max_pl1": bounds.min_max_pl1,
+        "max_max_pl1": bounds.max_max_pl1,
+        "pl2": clamped_pl2,
+        "pl2_max": bounds.pl2_max,
+        "min_max_pl2": bounds.min_max_pl2,
+        "max_max_pl2": bounds.max_max_pl2,
+        "pl4": clamped_pl4,
+        "pl4_max": bounds.pl4_max,
+        "min_max_pl4": bounds.min_max_pl4,
+        "max_max_pl4": bounds.max_max_pl4,
+        "bios_oc_enabled": bios_status.enabled,
+        "bios_oc_desc": bios_oc_desc,
+        "bios_oc_btn_text": bios_oc_btn_text,
+        "bios_oc_status": bios_oc_status,
+        "bios_oc_disabled": bios_oc_disabled,
+        "super_perf": profile.gpu_super_perf,
+        "core_offset": profile.gpu_core_offset_mhz.clamp(0, bounds.gpu_core_offset_max),
+        "mem_offset": profile.gpu_mem_offset_mhz.clamp(-bounds.gpu_mem_offset_max, bounds.gpu_mem_offset_max),
+        "gpu_offset_step": bounds.gpu_offset_step,
+        "gpu_core_offset_max": bounds.gpu_core_offset_max,
+        "gpu_mem_offset_max": bounds.gpu_mem_offset_max,
+        "db_enabled": profile.gpu_db_enabled,
+        "db_watts": profile.gpu_db_watts,
+        "base_tgp": base_tgp,
+        "supports_ctgp": supports_ctgp,
+        "ctgp_floor_watts": ctgp_floor_watts,
+        "base_tgp_max_watts": base_tgp_max_watts,
+        "ctgp_watts": ctgp_watts,
+        "ctgp_enabled": profile.gpu_ctgp_enabled,
+        "max_db_watts": max_db_watts,
+        "is_mode_locked": is_mode_locked,
+        "factory_office_pl1": fp.office_pl1,
+        "factory_balance_pl1": fp.balance_pl1,
+        "factory_turbo_pl1": fp.turbo_pl1,
+        "factory_base_tgp": factory_base_tgp,
+        "factory_max_db": factory_max_db,
+        "factory_hardware_read": fp.hardware_read,
+        "is_declarative": is_mode_locked,
+        "fan_custom_curve": fan_custom_curve,
+        "fan_boost_mode": fan_boost_mode,
+        "is_direct_clamp": is_direct_clamp,
+        "single_fan_channel": single_fan_channel,
+        "min_duty": min_duty,
+        "smooth_transition": profile.fan_ramp_rate,
+        "smooth_time": format!("{}ms", profile.fan_ramp_speed_ms),
+        "fan_isolated_output": if single_fan_channel { false } else { profile.fan_isolated_output },
+        "fan_linked": if single_fan_channel { true } else { profile.fan_curve_linked },
+        "cpu_curve": cpu_curve,
+        "gpu_curve": gpu_curve,
+        "bld_rpm_cap": 5800,
+        "bld_boost": is_clamped,
+    });
+
+    send_slint_ipc_message(payload);
+    sync_slint_power_targets(cfg.power_mode);
+}
+
+pub fn sync_slint_display_state() {
+    let tuning_state = crate::commands::display_cmd::get_display_tuning_state();
+    let calib_state = crate::system::color_calibration::get_color_calibration_state(None);
+
+    let monitors = crate::system::display::get_all_monitors();
+    let sel_idx = SELECTED_MONITOR_INDEX.load(std::sync::atomic::Ordering::Relaxed);
+    let (monitor_name, curr_hz, supported_rates) = if !monitors.is_empty() {
+        let m = if sel_idx < monitors.len() { &monitors[sel_idx] } else { &monitors[0] };
+        (m.friendly_name.clone(), m.current_hz, m.supported_rates.clone())
+    } else {
+        ("京东方 (主屏)".to_string(), 240, vec![60, 144, 240])
+    };
+
+    let (rates_row1, rates_row2) = if supported_rates.len() > 4 {
+        let mid = (supported_rates.len() + 1) / 2;
+        (supported_rates[..mid].to_vec(), supported_rates[mid..].to_vec())
+    } else {
+        (supported_rates.clone(), Vec::new())
+    };
+
+    let mut sorted_rates = supported_rates.clone();
+    sorted_rates.sort();
+    sorted_rates.dedup();
+    let min_refresh_rate = sorted_rates.first().copied().unwrap_or(60) as i32;
+    let max_refresh_rate = sorted_rates.last().copied().unwrap_or(240) as i32;
+    let intermediate_rates: Vec<i32> = if sorted_rates.len() > 2 {
+        sorted_rates[1..sorted_rates.len() - 1].iter().map(|&r| r as i32).collect()
+    } else {
+        Vec::new()
+    };
+    let has_secondary_monitor = monitors.len() > 1;
+    let primary_monitor_name = if !monitors.is_empty() { monitors[0].friendly_name.clone() } else { "内置主屏".to_string() };
+    let secondary_monitor_name = if monitors.len() > 1 { monitors[1].friendly_name.clone() } else { "".to_string() };
+
+    let mut profiles_list: Vec<String> = Vec::new();
+    let mut profiles_ids: Vec<String> = Vec::new();
+    for p in &calib_state.profiles {
+        profiles_list.push(p.name.clone());
+        profiles_ids.push(p.id.clone());
+    }
+
+    let caps = crate::driver::uefi_nvram::probe_gpu_capabilities();
+    let is_tri_mode = if caps.is_safety_locked {
+        caps.user_unlocked
+    } else {
+        caps.supports_igpu_only
+    };
+    let is_intel = caps.platform != "amd";
+    let is_thin_and_light = crate::commands::power_cmd::is_thin_and_light_or_pure_igpu();
+    let cfg = crate::system::config::load_config();
+    let effective_gpu_mode = if is_thin_and_light {
+        "igpu"
+    } else {
+        &cfg.gpu_mode
+    };
+
+    send_slint_ipc_message(serde_json::json!({
+        "action": "sync_display_state",
+        "gpu_mode": effective_gpu_mode,
+        "is_thin_and_light": is_thin_and_light,
+        "is_tri_mode": is_tri_mode,
+        "is_safety_locked": caps.is_safety_locked,
+        "is_intel": is_intel,
+        "igpu_lock_reason": caps.reason_igpu_unsupported.unwrap_or_default(),
+        "tuning_enabled": tuning_state.enabled,
+        "active_preset_id": tuning_state.active_preset.id,
+        "active_preset_name": tuning_state.active_preset.name,
+        "tuning_temp_k": tuning_state.active_preset.color_temp_k,
+        "tuning_saturation": (tuning_state.active_preset.saturation * 100.0).round() as i64,
+        "tuning_contrast": (tuning_state.active_preset.contrast * 100.0).round() as i64,
+        "tuning_gamma": (tuning_state.active_preset.gamma * 100.0).round() as i64,
+        "tuning_gain_r": (tuning_state.active_preset.gain_r * 100.0).round() as i64,
+        "tuning_gain_g": (tuning_state.active_preset.gain_g * 100.0).round() as i64,
+        "tuning_gain_b": (tuning_state.active_preset.gain_b * 100.0).round() as i64,
+        "tuning_is_modified": false,
+        "active_color_profile": calib_state.active_profile_name,
+        "active_color_profile_id": calib_state.active_profile_id,
+        "color_profiles_list": profiles_list,
+        "color_profiles_ids": profiles_ids,
+        "monitor_name": monitor_name,
+        "brightness": crate::system::display::get_brightness().unwrap_or(76),
+        "refresh_rate": curr_hz,
+        "rates_row1": rates_row1,
+        "rates_row2": rates_row2,
+        "min_refresh_rate": min_refresh_rate,
+        "max_refresh_rate": max_refresh_rate,
+        "intermediate_rates": intermediate_rates,
+        "has_secondary_monitor": has_secondary_monitor,
+        "primary_monitor_name": primary_monitor_name,
+        "secondary_monitor_name": secondary_monitor_name,
+        "miniled_supported": crate::driver::wmi_ec::raw_driver_read_ec(crate::hal::vault::ec::ADDR_LOCAL_DIMMING_SUPPORT)
+            .map(|val| val != 0xFF && (val & crate::hal::vault::mask::MASK_LOCAL_DIMMING_SUPPORT) != 0)
+            .unwrap_or(false),
+        "miniled_enabled": crate::commands::display_cmd::get_miniled_status().unwrap_or(false),
+    }));
+}
+
+pub fn sync_slint_power_state() {
+    let cfg = crate::system::config::load_config();
+    sync_slint_power_targets(cfg.power_mode);
+
+    // GPU OC 实时状态：狂暴档时直接根据 cfg.turbo_oc_enabled 判定（避免 Optimus 显卡休眠回读失败导致跳回），
+    // 其它模式下跟随实际 NVAPI 驱动回读。
+    let gpu_oc_on = if cfg.power_mode == 3 {
+        cfg.turbo_oc_enabled
+    } else {
+        crate::driver::nvapi::get_gpu_clock_offsets()
+            .map(|(core, mem)| core != 0 || mem != 0)
+            .unwrap_or(false)
+    };
+
+    let app_opt = SLINT_APP_HANDLE.lock().ok().and_then(|g| g.clone());
+    if let Some(app) = app_opt {
+        let ec_state: tauri::State<crate::driver::ec_bridge::SharedEcBridge> = app.state();
+        let info = crate::commands::power_cmd::read_power_settings(ec_state.inner());
+        send_slint_ipc_message(serde_json::json!({
+            "action": "sync_power_settings",
+            "power_mode": cfg.power_mode,
+            "battery_percent": info.battery_percent,
+            "is_ac_online": info.is_ac_online,
+            "is_dc_online": crate::commands::power_cmd::is_dc_round_plugged_in(),
+            "is_thin_and_light": crate::commands::power_cmd::is_thin_and_light_or_pure_igpu(),
+            "unlock_battery_limit": cfg.unlock_battery_power_limit,
+            "battery_mode": info.battery_mode,
+            "battery_limit": info.battery_limit,
+            "usb_charge_enabled": info.usb_charge_enabled,
+            "ac_recovery_enabled": info.ac_recovery_enabled,
+            "high_perf_scheme": info.high_perf_scheme,
+            "sleep_guard_enabled": info.sleep_guard_enabled,
+            "sleep_disconnect_net": info.sleep_disconnect_net,
+            "sleep_block_away": info.sleep_block_away,
+            "sleep_ignore_sysreq": info.sleep_ignore_sysreq,
+            "sleep_disable_wake_timers": info.sleep_disable_wake_timers,
+            "sleep_deep_sleep": info.sleep_deep_sleep,
+            "sleep_hibernate_30m": info.sleep_hibernate_30m,
+            "sleep_auto_office": info.sleep_auto_office,
+            "turbo_submode_supported": crate::system::power::turbo_submode::is_supported(),
+            "turbo_silent": cfg.turbo_silent,
+            "gpu_oc_on": gpu_oc_on,
+        }));
+    } else {
+        let cfg = crate::system::config::load_config();
+        let (percent, is_ac, _) = crate::commands::power_cmd::get_live_power_status();
+        let mode = if cfg.battery_limit >= 95 {
+            "long_life"
+        } else if cfg.battery_limit <= 65 {
+            "station"
+        } else {
+            "balance"
+        };
+        send_slint_ipc_message(serde_json::json!({
+            "action": "sync_power_settings",
+            "power_mode": cfg.power_mode,
+            "battery_percent": percent,
+            "is_ac_online": is_ac,
+            "is_dc_online": crate::commands::power_cmd::is_dc_round_plugged_in(),
+            "is_thin_and_light": crate::commands::power_cmd::is_thin_and_light_or_pure_igpu(),
+            "unlock_battery_limit": cfg.unlock_battery_power_limit,
+            "battery_mode": mode,
+            "battery_limit": cfg.battery_limit,
+            "usb_charge_enabled": cfg.usb_charge_enabled,
+            "ac_recovery_enabled": cfg.ac_recovery_enabled,
+            "high_perf_scheme": cfg.high_perf_scheme,
+            "sleep_guard_enabled": cfg.sleep_guard_enabled,
+            "sleep_disconnect_net": cfg.sleep_disconnect_net,
+            "sleep_block_away": cfg.sleep_block_away,
+            "sleep_ignore_sysreq": cfg.sleep_ignore_sysreq,
+            "sleep_disable_wake_timers": cfg.sleep_disable_wake_timers,
+            "sleep_deep_sleep": cfg.sleep_deep_sleep,
+            "sleep_hibernate_30m": cfg.sleep_hibernate_30m,
+            "sleep_auto_office": cfg.sleep_auto_office,
+            "turbo_submode_supported": crate::system::power::turbo_submode::is_supported(),
+            "turbo_silent": cfg.turbo_silent,
+            "gpu_oc_on": gpu_oc_on,
+        }));
+    }
+}
+
+pub fn sync_slint_switches_state() {
+    let switches = crate::system::device_switches::get_switches_state();
+    let cfg = crate::system::config::load_config();
+    let model_alias = crate::system::model_engine::get_active_alias();
+    let manifest = crate::hal::declarative::load_matched_manifest();
+    let is_bld_fan_lock = manifest
+        .as_ref()
+        .and_then(|m| m.capabilities.fan_boost_mode.as_deref())
+        == Some("direct_rpm_clamp");
+    let clamped_rpm = crate::driver::bld_driver_mgr::get_bld_fan_clamp_rpm();
+    let bld_fan_rpm = if clamped_rpm >= 2200 {
+        clamped_rpm
+    } else {
+        super::actions::switches::get_slint_bld_target_rpm()
+    };
+    let flags = crate::driver::wmi_ec::get_hardware_support_flags();
+    send_slint_ipc_message(serde_json::json!({
+        "action": "sync_state",
+        "camera_enabled": switches.camera,
+        "mic_enabled": switches.mic,
+        "win_locked": cfg.win_key_locked,
+        "keep_awake": switches.keep_awake,
+        "autostart": cfg.autostart,
+        "touchpad_locked": !switches.touchpad,
+        "osd_enabled": switches.osd,
+        "fn_locked": switches.fn_lock,
+        "wifi_enabled": switches.wifi,
+        "bt_enabled": switches.bluetooth,
+        "fan_boost": cfg.fan_boost,
+        "is_bld_fan_lock": is_bld_fan_lock,
+        "bld_fan_rpm": bld_fan_rpm,
+        "power_mode": cfg.power_mode,
+        "is_dc_online": crate::commands::power_cmd::is_dc_round_plugged_in(),
+        "is_thin_and_light": crate::commands::power_cmd::is_thin_and_light_or_pure_igpu(),
+        "unlock_battery_limit": cfg.unlock_battery_power_limit,
+        "theme_mode": cfg.theme_mode,
+        "theme_tokens": serde_json::to_value(crate::system::slint_theme::resolve_slint_theme(&cfg)).unwrap_or_default(),
+        "model_name": &model_alias,
+        "custom_status_text": &model_alias,
+        "oem_installed": crate::system::process::is_oem_installed(),
+        "oem_running": crate::system::takeover::is_oem_running(),
+        "has_fan_boost": flags.has_fan_boost,
+        "has_water_cooler": flags.has_water_cooler,
+        "has_win_lock": flags.has_win_lock,
+        "has_fn_lock": flags.has_fn_lock,
+        "has_lightbar": flags.has_lightbar,
+    }));
+}
+
+pub fn sync_slint_lighting_state() {
+    let lm = crate::driver::ite_lighting::get_global_lighting();
+    let st = lm.state.lock().clone();
+    if st.kb_engine == "custom" {
+        let _ = super::actions::lighting::ensure_active_custom_script_loaded(&st.custom_script_id);
+    }
+    let scripts = super::actions::lighting::load_parsed_brfx_scripts();
+    let fx = crate::driver::custom_fx_engine::get_custom_fx_engine();
+    let active_script = scripts
+        .iter()
+        .find(|s| s.id == st.custom_script_id)
+        .or_else(|| scripts.first());
+    let custom_speed = fx
+        .get_tuning_speed()
+        .unwrap_or_else(|| active_script.map(|s| s.default_speed).unwrap_or(1.2));
+    let custom_scale = fx.get_tuning_scale();
+    let custom_reactive = fx.get_tuning_reactive();
+    let custom_marquee_text = fx.get_active_text();
+
+    send_slint_ipc_message(serde_json::json!({
+        "action": "sync_lighting_state",
+        "sleep_minutes": st.sleep_minutes,
+        "ceremony_enabled": st.ceremony_enabled,
+        "kb_enabled": st.kb_enabled,
+        "kb_effect": if st.kb_engine == "streamer" || st.kb_engine == "custom" { st.streamer_effect } else { st.kb_effect },
+        "kb_brightness": st.kb_brightness,
+        "kb_speed": st.kb_speed,
+        "kb_direction": st.kb_direction,
+        "kb_color": st.kb_color,
+        "kb_engine": st.kb_engine,
+        "kb_fps": st.kb_fps,
+        "custom_script_id": active_script.map(|s| s.id.as_str()).unwrap_or(&st.custom_script_id),
+        "custom_speed": custom_speed,
+        "custom_scale": custom_scale,
+        "custom_reactive": custom_reactive,
+        "custom_marquee_text": custom_marquee_text,
+        "custom_scripts": scripts,
+        "lb_enabled": st.lb_enabled,
+        "lb_effect": st.lb_effect,
+        "lb_brightness": st.lb_brightness,
+        "lb_speed": st.lb_speed,
+        "lb_color": st.lb_color,
+        "hinge_enabled": st.hinge_enabled,
+        "hinge_effect": st.hinge_effect,
+        "hinge_brightness": st.hinge_brightness,
+        "hinge_speed": st.hinge_speed,
+        "hinge_color": st.hinge_color,
+        "logo_enabled": st.logo_enabled,
+        "logo_effect": st.logo_effect,
+        "logo_brightness": st.logo_brightness,
+        "logo_color": st.logo_color,
+    }));
+
+    let hw = crate::commands::lighting_cmd::get_keyboard_hardware_info_internal(&lm);
+    let is_four_zone = hw.is_four_zone || hw.hardware_type == "FourZoneRgb";
+    let is_single_zone = hw.hardware_type == "SingleZoneRgb";
+    let is_single_color = hw.hardware_type == "SingleColor";
+    send_slint_ipc_message(serde_json::json!({
+        "action": "sync_lighting_hardware_info",
+        "has_front_lightbar": hw.has_front_lightbar || hw.has_ite7001,
+        "has_hinge": hw.has_hinge,
+        "has_logo": hw.has_logo,
+        "is_ec_logo": hw.is_ec_logo,
+        "description": hw.description,
+        "hardware_type": hw.hardware_type,
+        "is_four_zone": is_four_zone,
+        "is_single_zone": is_single_zone,
+        "is_single_color": is_single_color,
+    }));
+
+    let status = lm.get_runtime_status();
+    send_slint_ipc_message(serde_json::json!({
+        "action": "sync_lighting_topology_status",
+        "override_enabled": status.hardware_override.enabled,
+        "ov_keyboard": status.hardware_override.keyboard,
+        "ov_front_bar": status.hardware_override.front_bar,
+        "ov_ambient": status.hardware_override.ambient,
+        "ov_logo": status.hardware_override.logo,
+        "base_keyboard": status.detected_baseline.keyboard,
+        "base_front_bar": status.detected_baseline.front_bar,
+        "base_ambient": status.detected_baseline.ambient,
+        "base_logo": status.detected_baseline.logo,
+    }));
+}
+
+pub fn sync_slint_water_state(opt_cpu: Option<i32>, opt_gpu: Option<i32>) {
+    let cooler = crate::driver::ble_cooler::get_global_cooler();
+    let tel = cooler.get_telemetry();
+
+    let (curve_temps, curve_duties) = if !tel.curve_points.is_empty() {
+        let mut pts = tel.curve_points.clone();
+        pts.sort_by_key(|p| p.temp);
+        while pts.len() < 6 {
+            let last = pts.last().cloned().unwrap();
+            pts.push(crate::system::config::CoolerCurvePoint {
+                temp: (last.temp + 4).min(100),
+                fan_duty: last.fan_duty,
+                pump_voltage: last.pump_voltage,
+            });
+        }
+        if pts.len() > 6 {
+            pts.truncate(6);
+        }
+        let t: Vec<i32> = pts.iter().map(|p| p.temp as i32).collect();
+        let d: Vec<i32> = pts.iter().map(|p| p.fan_duty as i32).collect();
+        (t, d)
+    } else {
+        (vec![45, 55, 65, 80, 90, 95], vec![0, 35, 50, 60, 75, 100])
+    };
+
+    let cpu = opt_cpu.unwrap_or(55);
+    let gpu = opt_gpu.unwrap_or(45);
+    let max_temp = cpu.max(gpu);
+
+    let live_fan = if tel.strategy == "quiet" {
+        40
+    } else if tel.strategy == "balance" {
+        65
+    } else if tel.strategy == "performance" {
+        100
+    } else if tel.strategy == "custom" {
+        tel.fan_duty as i32
+    } else {
+        // "smart" interpolation
+        if max_temp < tel.pump_start_temp as i32 {
+            0
+        } else if tel.curve_points.is_empty() {
+            40
+        } else if max_temp <= tel.curve_points[0].temp as i32 {
+            tel.curve_points[0].fan_duty as i32
+        } else if max_temp >= tel.curve_points.last().unwrap().temp as i32 {
+            tel.curve_points.last().unwrap().fan_duty as i32
+        } else {
+            let mut interp = tel.curve_points[0].fan_duty as i32;
+            for i in 0..tel.curve_points.len() - 1 {
+                let t1 = tel.curve_points[i].temp as i32;
+                let t2 = tel.curve_points[i + 1].temp as i32;
+                if max_temp >= t1 && max_temp <= t2 {
+                    let d1 = tel.curve_points[i].fan_duty as i32;
+                    let d2 = tel.curve_points[i + 1].fan_duty as i32;
+                    if t2 > t1 {
+                        interp = d1 + (max_temp - t1) * (d2 - d1) / (t2 - t1);
+                    } else {
+                        interp = d1;
+                    }
+                    break;
+                }
+            }
+            interp
+        }
+    };
+
+    send_slint_ipc_message(serde_json::json!({
+        "action": "sync_water_cooler_state",
+        "connected": tel.connected,
+        "is_flow_ok": tel.is_flow_ok,
+        "meter_state": tel.meter_state,
+        "pump_voltage": tel.pump_voltage,
+        "pump_tier": tel.pump_tier,
+        "fan_duty": tel.fan_duty,
+        "pump_rpm": tel.pump_rpm,
+        "fan_rpm": if tel.connected { (live_fan as f64 * 32.0) as i32 } else { 0 },
+        "is_priming": tel.is_priming,
+        "led_on": tel.led_on,
+        "led_r": tel.led_r,
+        "led_g": tel.led_g,
+        "led_b": tel.led_b,
+        "led_mode": tel.led_mode,
+        "mac_address": tel.mac_address,
+        "strategy": tel.strategy,
+        "pump_start_temp": tel.pump_start_temp,
+        "pump_turbo_temp": tel.pump_turbo_temp,
+        "curve_temps": curve_temps,
+        "curve_duties": curve_duties,
+        "live_fan_duty": live_fan,
+    }));
+}
+
+pub fn sync_slint_plugins_state() {
+    let toggles = crate::system::config::get_module_toggles();
+    let has_wc = crate::driver::wmi_ec::get_hardware_support_flags().has_water_cooler;
+
+    // 1. Sync Builtin Module Toggles
+    send_slint_ipc_message(serde_json::json!({
+        "action": "sync_state",
+        "module_toggles": {
+            "overview": toggles.get("overview").copied().unwrap_or(true),
+            "gpu": toggles.get("gpu").copied().unwrap_or(true),
+            "tuning": toggles.get("tuning").copied().unwrap_or(true),
+            "lighting": toggles.get("lighting").copied().unwrap_or(true),
+            "water": toggles.get("water").copied().unwrap_or(has_wc) && has_wc,
+        }
+    }));
+
+    // 2. Scan Disk and Sync Custom Plugins
+    if let Ok(plugins) = crate::commands::system_cmd::get_custom_plugins() {
+        let list: Vec<serde_json::Value> = plugins.into_iter().map(|p| {
+            let tag = match p.plugin_type.as_str() {
+                "service" => "后台守护".to_string(),
+                "app" => "面板/挂件".to_string(),
+                "tab" => "独立面板".to_string(),
+                "widget" => "桌面组件".to_string(),
+                "skin" => "主题皮肤".to_string(),
+                "background" => "壁纸扩展".to_string(),
+                other => other.to_string(),
+            };
+            let min_ver = p.min_host_version.map(|v| format!("v{}+", v)).unwrap_or_default();
+            serde_json::json!({
+                "id": p.id,
+                "name": p.name,
+                "version": if p.version.starts_with('v') { p.version } else { format!("v{}", p.version) },
+                "author": p.author,
+                "description": p.description,
+                "plugin_type": p.plugin_type,
+                "enabled": p.enabled,
+                "has_tab": p.has_tab,
+                "has_widget": p.has_widget,
+                "tag": tag,
+                "min_version": min_ver,
+                "dir_name": p.dir_name,
+            })
+        }).collect();
+
+        send_slint_ipc_message(serde_json::json!({
+            "action": "sync_custom_plugins",
+            "plugins": list,
+        }));
+    }
+}
+
+pub fn sync_slint_theme_tokens() {
+    let cfg = crate::system::config::load_config();
+    let tokens = crate::system::slint_theme::resolve_slint_theme(&cfg);
+    send_slint_ipc_message(serde_json::json!({
+        "action": "sync_theme",
+        "theme_mode": cfg.theme_mode,
+        "tokens": tokens,
+    }));
+    crate::system::osd_window::send_osd_theme_tokens(&tokens);
+}
+
+pub fn sync_slint_power_schemes(restore_msg: Option<&str>) {
+    if let Ok(schemes) = crate::commands::power_cmd::get_windows_power_schemes() {
+        let list: Vec<serde_json::Value> = schemes.into_iter().map(|s| {
+            serde_json::json!({
+                "guid": s.guid,
+                "name": s.name,
+                "is_active": s.is_active,
+            })
+        }).collect();
+        send_slint_ipc_message(serde_json::json!({
+            "action": "sync_power_schemes",
+            "schemes": list,
+            "restore_plan_msg": restore_msg.unwrap_or(""),
+        }));
+    }
+}
+
+pub fn compute_power_targets(
+    power_mode: u8,
+    presets: &crate::system::power_mode::FactoryPowerPresets,
+    balanced_gpu_dynamic_boost: bool,
+    custom_profile: Option<&crate::system::config::CustomProfileConfig>,
+    is_pure_igpu: bool,
+) -> (i32, i32, String) {
+    let is_custom = power_mode == 4;
+
+    if is_custom {
+        let pl1 = custom_profile
+            .map(|p| p.cpu_pl1_watts as i32)
+            .filter(|&v| v > 0)
+            .unwrap_or_else(|| if presets.balance_pl1 > 0 { presets.balance_pl1 as i32 } else { 75 });
+
+        let tgp = if is_pure_igpu {
+            0
+        } else if let Some(cp) = custom_profile {
+            if cp.gpu_ctgp_enabled && cp.gpu_ctgp_watts > 0 {
+                cp.gpu_ctgp_watts as i32
+            } else {
+                let base = if presets.base_tgp > 0 { presets.base_tgp as i32 } else { 150 };
+                let db = if cp.gpu_db_enabled { cp.gpu_db_watts as i32 } else { 0 };
+                base + db
+            }
+        } else if presets.base_tgp > 0 {
+            presets.base_tgp as i32 + presets.max_db as i32
+        } else {
+            175
+        };
+
+        let label = "当前设定";
+        let text = if tgp > 0 {
+            format!("{} PL1: {}W | TGP: {}W", label, pl1, tgp)
+        } else if !is_pure_igpu {
+            format!("{} PL1: {}W | TGP: --", label, pl1)
+        } else {
+            format!("{} PL1: {}W", label, pl1)
+        };
+
+        return (pl1, tgp, text);
+    }
+
+    let is_hw = presets.hardware_read;
+    let label = if is_hw { "原厂目标" } else { "参考值" };
+
+    let (pl1, tgp) = match power_mode {
+        1 => {
+            let p1 = if presets.office_pl1 > 0 { presets.office_pl1 as i32 } else if is_pure_igpu { 35 } else { 45 };
+            let tg = if is_pure_igpu { 0 } else if presets.base_tgp > 0 { presets.base_tgp as i32 } else { 150 };
+            (p1, tg)
+        }
+        2 => {
+            let p1 = if presets.balance_pl1 > 0 { presets.balance_pl1 as i32 } else if is_pure_igpu { 45 } else { 75 };
+            let tg = if is_pure_igpu {
+                0
+            } else {
+                let base = if presets.base_tgp > 0 { presets.base_tgp as i32 } else { 150 };
+                let db = if balanced_gpu_dynamic_boost {
+                    if presets.max_db > 0 { presets.max_db as i32 } else { 25 }
+                } else {
+                    0
+                };
+                base + db
+            };
+            (p1, tg)
+        }
+        3 => {
+            let p1 = if presets.turbo_pl1 > 0 { presets.turbo_pl1 as i32 } else if is_pure_igpu { 54 } else { 205 };
+            let tg = if is_pure_igpu {
+                0
+            } else {
+                let base = if presets.base_tgp > 0 { presets.base_tgp as i32 } else { 150 };
+                let db = if presets.max_db > 0 { presets.max_db as i32 } else { 25 };
+                base + db
+            };
+            (p1, tg)
+        }
+        _ => (75, 175),
+    };
+
+    let text = if tgp > 0 {
+        format!("{} PL1: {}W | TGP: {}W", label, pl1, tgp)
+    } else if !is_pure_igpu {
+        format!("{} PL1: {}W | TGP: --", label, pl1)
+    } else {
+        format!("{} PL1: {}W", label, pl1)
+    };
+
+    (pl1, tgp, text)
+}
+
+pub(crate) struct TuningBounds {
+    pub min_pl: i32,
+    pub pl4_margin: i32,
+    pub temp_wall_min: i32,
+    pub max_temp_wall: i32,
+    pub temp_wall_max: i32,
+    pub default_max_pl1: i32,
+    pub min_max_pl1: i32,
+    pub max_max_pl1: i32,
+    pub pl1_max: i32,
+    pub default_max_pl2: i32,
+    pub min_max_pl2: i32,
+    pub max_max_pl2: i32,
+    pub pl2_max: i32,
+    pub default_max_pl4: i32,
+    pub min_max_pl4: i32,
+    pub max_max_pl4: i32,
+    pub pl4_max: i32,
+    pub gpu_offset_step: i32,
+    pub gpu_core_offset_max: i32,
+    pub gpu_mem_offset_max: i32,
+}
+
+pub(crate) fn active_profile_id_or_default(cfg: &crate::system::config::AppConfig) -> String {
+    if !cfg.active_profile_id.trim().is_empty() {
+        cfg.active_profile_id.clone()
+    } else {
+        "preset_silent_beast".to_string()
+    }
+}
+
+pub(crate) fn compute_tuning_bounds(cfg: &crate::system::config::AppConfig) -> TuningBounds {
+    let tj = crate::system::cpu_monitor::get_cpu_native_tjmax() as i32;
+    let native_tjmax = if tj > 0 { tj } else { 100 };
+    let temp_wall_min = (cfg.cpu_temp_target_min as i32).clamp(60, 100);
+    let max_temp_wall = native_tjmax.max(native_tjmax + cfg.cpu_temp_offset as i32);
+    let raw_tw = if cfg.cpu_temp_target_max > 0 {
+        cfg.cpu_temp_target_max as i32
+    } else {
+        95i32.min(native_tjmax) + cfg.cpu_temp_offset as i32
+    };
+    let temp_wall_max = raw_tw.clamp(temp_wall_min, max_temp_wall);
+
+    let fp_opt = crate::system::power_mode::get_cached_factory_power_presets();
+    let pl4_margin = (cfg.cpu_pl4_margin as i32).max(1);
+    let min_pl = (fp_opt.as_ref().map(|f| f.office_pl1).filter(|&v| v > 0).unwrap_or(35) as i32).min(15);
+    let turbo_pl1 = fp_opt.as_ref().map(|f| f.turbo_pl1).filter(|&v| v > 0).unwrap_or(90) as i32;
+    let turbo_pl2 = fp_opt.as_ref().map(|f| f.turbo_pl2).filter(|&v| v > 0).unwrap_or(turbo_pl1 as u16) as i32;
+    let turbo_pl4 = fp_opt.as_ref().map(|f| f.turbo_pl4).filter(|&v| v > 0).unwrap_or((turbo_pl1 + 65) as u16) as i32;
+
+    let default_max_pl1 = turbo_pl1 + 25 + cfg.cpu_pl1_offset as i32;
+    let min_max_pl1 = turbo_pl1 + cfg.cpu_pl1_offset as i32;
+    let max_max_pl1 = turbo_pl1 + 50 + cfg.cpu_pl1_offset as i32;
+
+    let default_max_pl2 = turbo_pl2 + 25 + cfg.cpu_pl2_offset as i32;
+    let min_max_pl2 = turbo_pl2 + cfg.cpu_pl2_offset as i32;
+    let max_max_pl2 = turbo_pl2 + 50 + cfg.cpu_pl2_offset as i32;
+
+    let default_max_pl4 = turbo_pl4 + 50 + cfg.cpu_pl4_offset as i32;
+    let min_max_pl4 = (default_max_pl4 - 30).max(turbo_pl2 + cfg.cpu_pl2_offset as i32 + pl4_margin);
+    let max_max_pl4 = default_max_pl4 + 30;
+
+    let pl1_max = cfg.cpu_pl1_max.map(|v| (v as i32).clamp(min_max_pl1, max_max_pl1)).unwrap_or(default_max_pl1);
+    let pl2_max = cfg.cpu_pl2_max.map(|v| (v as i32).clamp(min_max_pl2, max_max_pl2)).unwrap_or(default_max_pl2);
+    let pl4_max = cfg.cpu_pl4_max.map(|v| (v as i32).clamp(min_max_pl4, max_max_pl4)).unwrap_or(default_max_pl4);
+
+    let gpu_offset_step = (cfg.gpu_offset_step as i32).max(1);
+    let gpu_core_offset_max = if cfg.gpu_core_offset_max > 0 { cfg.gpu_core_offset_max } else { 250 };
+    let gpu_mem_offset_max = if cfg.gpu_mem_offset_max > 0 { cfg.gpu_mem_offset_max } else { 1000 };
+
+    TuningBounds {
+        min_pl,
+        pl4_margin,
+        temp_wall_min,
+        max_temp_wall,
+        temp_wall_max,
+        default_max_pl1,
+        min_max_pl1,
+        max_max_pl1,
+        pl1_max,
+        default_max_pl2,
+        min_max_pl2,
+        max_max_pl2,
+        pl2_max,
+        default_max_pl4,
+        min_max_pl4,
+        max_max_pl4,
+        pl4_max,
+        gpu_offset_step,
+        gpu_core_offset_max,
+        gpu_mem_offset_max,
+    }
+}
+
+pub(crate) fn ensure_and_compute_tuning_bounds(cfg: &crate::system::config::AppConfig) -> TuningBounds {
+    let bounds = compute_tuning_bounds(cfg);
+    if cfg.cpu_pl1_max.is_none() || cfg.cpu_pl2_max.is_none() || cfg.cpu_pl4_max.is_none() || cfg.cpu_temp_target_max == 0 {
+        let mut next_cfg = cfg.clone();
+        if next_cfg.cpu_pl1_max.is_none() {
+            next_cfg.cpu_pl1_max = Some(bounds.default_max_pl1.clamp(15, 255) as u16);
+        }
+        if next_cfg.cpu_pl2_max.is_none() {
+            next_cfg.cpu_pl2_max = Some(bounds.default_max_pl2.clamp(15, 255) as u16);
+        }
+        if next_cfg.cpu_pl4_max.is_none() {
+            next_cfg.cpu_pl4_max = Some(bounds.default_max_pl4.clamp(15, 255) as u16);
+        }
+        if next_cfg.cpu_temp_target_max == 0 {
+            next_cfg.cpu_temp_target_max = bounds.temp_wall_max.clamp(60, 120) as u8;
+        }
+        let _ = crate::system::config::save_config(&next_cfg);
+    }
+    bounds
+}
+
+pub(crate) fn normalize_fan_curve_8(points: &[crate::system::config::FanCurvePoint], min_duty: u8) -> Vec<i32> {
+    let mut duties: Vec<i32> = points.iter().take(8).map(|p| p.duty.clamp(min_duty, 100) as i32).collect();
+    if duties.len() < 8 {
+        let defaults = crate::system::config::default_fan_curve();
+        for pt in defaults.iter().skip(duties.len()).take(8 - duties.len()) {
+            duties.push(pt.duty.clamp(min_duty, 100) as i32);
+        }
+        while duties.len() < 8 {
+            duties.push(100);
+        }
+    }
+    duties
+}
+
+pub fn get_current_power_targets(power_mode: u8) -> (i32, i32, String) {
+    let cfg = crate::system::config::load_config();
+    let is_pure_igpu = crate::commands::power_cmd::is_thin_and_light_or_pure_igpu()
+        || !crate::driver::gpu_bridge::is_nvidia_dgpu_available();
+    let presets = crate::system::power_mode::get_factory_power_presets(!is_pure_igpu);
+    let active_id = active_profile_id_or_default(&cfg);
+    let profiles = crate::commands::tuning_cmd::get_profiles_list().unwrap_or_default();
+    let matched = profiles.iter().find(|p| p.id == active_id).or_else(|| profiles.first());
+    let custom_profile = matched.map(|p| &p.profile).unwrap_or(&cfg.custom_profile);
+
+    compute_power_targets(
+        power_mode,
+        &presets,
+        cfg.balanced_gpu_dynamic_boost,
+        Some(custom_profile),
+        is_pure_igpu,
+    )
+}
+
+pub fn sync_slint_power_targets(power_mode: u8) {
+    let (pl1, tgp, text) = get_current_power_targets(power_mode);
+    send_slint_ipc_message(serde_json::json!({
+        "action": "power_targets",
+        "power_mode": power_mode,
+        "pl1_target": pl1,
+        "tgp_target": tgp,
+        "power_target_text": text,
+    }));
+}

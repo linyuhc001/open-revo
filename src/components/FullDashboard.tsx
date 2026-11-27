@@ -11,6 +11,7 @@ import { WaterCoolerView, CoolerTelemetry } from './WaterCoolerView';
 import { SystemSettingsView, OsdConfig } from './SystemSettingsView';
 import { PluginsView, CustomPluginItem } from './PluginsView';
 import { PluginTabHost } from './PluginTabHost';
+import { BatteryHealthView } from './BatteryHealthView';
 import { ModuleErrorBoundary } from './ModuleErrorBoundary';
 import { BUILTIN_MODULE_SLOTS, BuiltinTabId, isSlotActive, ModelCapabilities } from '../plugins/plugin_manifest';
 import logoImg from '../assets/logo.png';
@@ -254,7 +255,7 @@ export const FullDashboard: React.FC<FullDashboardProps> = ({
     try {
       const plugins = await invoke<CustomPluginItem[]>('get_custom_plugins');
       if (plugins) {
-        setTabPlugins(plugins.filter((p) => p.plugin_type === 'tab' && p.enabled && p.is_compatible !== false));
+        setTabPlugins(plugins.filter((p) => (p.has_tab || p.plugin_type === 'tab') && p.enabled && p.is_compatible !== false));
       }
       const toggles = await invoke<Record<string, boolean>>('get_module_toggles');
       if (toggles) {
@@ -634,7 +635,7 @@ export const FullDashboard: React.FC<FullDashboardProps> = ({
                 title={plugin.description}
               >
                 <Layers size={14} className="w-3.5 h-3.5" />
-                <span>{plugin.name}</span>
+                <span>{plugin.tab?.title || plugin.name}</span>
               </button>
             );
           })}
@@ -659,6 +660,12 @@ export const FullDashboard: React.FC<FullDashboardProps> = ({
               checkOemGuard={checkOemGuard}
               profileVersion={profileVersion}
             />
+          </ModuleErrorBoundary>
+        )}
+
+        {activeTab === 'batteryHealth' && (
+          <ModuleErrorBoundary moduleName="电池健康" onNavigateToOverview={() => setActiveTab('overview')}>
+            <BatteryHealthView />
           </ModuleErrorBoundary>
         )}
 
@@ -723,6 +730,7 @@ export const FullDashboard: React.FC<FullDashboardProps> = ({
               activeBackground={activeBackground}
               onApplyBackground={onApplyBackground}
               onCustomPluginsUpdated={loadTabPlugins}
+              onSelectPluginTab={(id) => setActiveTab(id)}
             />
           </ModuleErrorBoundary>
         )}

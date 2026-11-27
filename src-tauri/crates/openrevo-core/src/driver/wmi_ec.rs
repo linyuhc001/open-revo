@@ -392,13 +392,14 @@ pub fn trigger_ec_action(mask: u8) -> bool {
 
 pub fn is_fan_boost_active() -> bool {
     let is_tongfang_hardware = is_acpi_driver_available()
+        || crate::hal::platform_probe::is_tongfang_family()
         || crate::hal::declarative::load_matched_manifest()
             .map(|m| m.channels.values().any(|c| matches!(c, crate::hal::declarative::model_manifest::ChannelDef::AcpiIoctl { .. })))
             .unwrap_or(false);
 
     if is_tongfang_hardware {
-        let s1873 = wmi_read_ec(ADDR_FAN_BOOST_CLAMP).unwrap_or(0);
-        return (s1873 & FAN_BOOST_CLAMP_BIT) != 0;
+        let fan_boost_clamp = wmi_read_ec(ADDR_FAN_BOOST_CLAMP).unwrap_or(0);
+        return (fan_boost_clamp & FAN_BOOST_CLAMP_BIT) != 0;
     }
 
     let is_bld = crate::hal::declarative::load_matched_manifest()
@@ -412,80 +413,36 @@ pub fn is_fan_boost_active() -> bool {
 }
 
 /// Hardware Truth: Probes whether this platform uses the Legacy Dual-Mode EC architecture
-/// (e.g. GK / GM5T series chassis, NVRAM variable size < 80 bytes, full-byte FanBoost clamp 0x50/0x10).
+/// (e.g. GK / GM5T series chassis, RTX 30-series / 20-series / 10-series, full-byte FanBoost clamp 0x50/0x10).
+/// Centrally signed by Chassis Architecture Tier.
+/// NOTE: This helper is specifically for FanBoost clamp (0x50/0x10) and legacy fallbacks.
+/// DO NOT use this to gate RamFan1p5 table injection! 30-series (DualModeAmpere) fully supports
+/// RamFan1p5. Only 10/20-series (is_legacy_pascal_turing_tongfang) lacks RamFan1p5.
 pub fn is_legacy_dual_mode_ec() -> bool {
-    static CACHE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CACHE.get_or_init(|| {
-        let (res, reason) = (|| {
-            // Signal 0: NVRAM Ground Truth - Modern platforms respond with UniWillVariable or OemMagicVariable (size >= 80)!
-            if let Ok(nv) = crate::driver::uefi_nvram::read_active_nvram() {
-                if nv.bytes_read >= 80 {
-                    return (false, "Signal 0: Modern UniWill/OemMagic NVRAM verified (Not Legacy Dual-Mode)");
-                } else if nv.bytes_read > 0 {
-                    return (true, "Signal 0: Legacy UniWill NVRAM verified (payload size < 80 bytes)");
-                }
-            } else if crate::hal::platform_probe::is_tongfang_family() {
-                return (true, "Signal 0: No active UEFI NVRAM variable found on Tongfang platform -> Legacy Dual-Mode");
-            }
-
-            // Signal 1: Declarative Driver Manifest Contract
-            if let Some(manifest) = crate::hal::declarative::load_matched_manifest() {
-                if manifest.id.contains("legacy") || manifest.id.contains("dual_mode") {
-                    return (true, "Signal 1: Declared as Legacy Dual-Mode via Manifest Contract");
-                }
-            }
-
-            (false, "Default: Modern architecture")
-        })();
-
-        crate::log_info!(
-            "PLATFORM_DETECT",
-            "Hardware architecture identified: {} [{}]",
-            if res { "Legacy Dual-Mode EC architecture" } else { "Modern EC architecture" },
-            reason
-        );
-        res
-    })
+    matches!(
+        crate::hal::platform_probe::get_chassis_architecture_tier(),
+        crate::hal::platform_probe::ChassisArchitectureTier::LegacyPascalTuring
+            | crate::hal::platform_probe::ChassisArchitectureTier::DualModeAmpere
+    )
 }
 
 /// Hardware Truth: Distinguishes Next-Gen OemMagicVariable NVRAM architecture
 /// (APVersion >= 25, pure RAM fan latch commit) from UniWillVariable architecture.
+/// Centrally signed by Chassis Architecture Tier.
 pub fn is_nextgen_oem_magic_ec() -> bool {
-    static CACHE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CACHE.get_or_init(|| {
-        let (res, reason) = (|| -> (bool, &'static str) {
-            // Signal 1: Hardware NVRAM (Ground Truth in SPI Flash: OemMagicVariable vs UniWillVariable)
-            if let Ok(nv) = crate::driver::uefi_nvram::read_active_nvram() {
-                if nv.is_50_series || nv.ap_version >= 25 {
-                    return (true, "Signal 1: Hardware NVRAM OemMagicVariable / APVersion >= 25");
-                } else {
-                    return (false, "Signal 1: Hardware NVRAM UniWillVariable");
-                }
-            }
-
-            (false, "Default: Standard UniWill architecture")
-        })();
-
-        crate::log_info!(
-            "PLATFORM_DETECT",
-            "Hardware platform architecture identified: {} [{}]",
-            if res { "Next-Gen OemMagicVariable architecture" } else { "Standard UniWillVariable architecture" },
-            reason
-        );
-        res
-    })
+    matches!(
+        crate::hal::platform_probe::get_chassis_architecture_tier(),
+        crate::hal::platform_probe::ChassisArchitectureTier::NextGenBlackwell
+    )
 }
 
-/// Hardware Fan Boost using direct zero-latency hardware clamp (30/40/50-Series):
-/// - 30-Series:
-///   - Enable : ADDR_FAN_BOOST_CLAMP = 0x50
-///   - Disable: ADDR_FAN_BOOST_CLAMP = 0x10
-/// - 40/50-Series:
-///   - Enable : ADDR_FAN_BOOST_CLAMP |= FAN_BOOST_CLAMP_BIT
-///   - Disable: ADDR_FAN_BOOST_CLAMP &= !FAN_BOOST_CLAMP_BIT
-/// Instant speed-up and instant release with zero delay.
+/// Hardware Fan Boost using direct zero-latency hardware clamp:
+/// Uses bitwise toggle on FAN_BOOST_CLAMP_BIT (Bit 6, 0x40) on ADDR_FAN_BOOST_CLAMP.
+/// This preserves mode base clamp / Q-Key brightness (0xA0 Office, 0x00 Balanced, 0x10 Turbo)
+/// while instantly asserting or clearing the fan boost speed floor.
 pub fn set_fan_boost_hardware(enable: bool) -> bool {
     let is_tongfang_hardware = is_acpi_driver_available()
+        || crate::hal::platform_probe::is_tongfang_family()
         || crate::hal::declarative::load_matched_manifest()
             .map(|m| m.channels.values().any(|c| matches!(c, crate::hal::declarative::model_manifest::ChannelDef::AcpiIoctl { .. })))
             .unwrap_or(false);
@@ -497,32 +454,25 @@ pub fn set_fan_boost_hardware(enable: bool) -> bool {
         return res.is_ok();
     }
 
-    if is_legacy_dual_mode_ec() {
+    if let Some(mut val) = wmi_read_ec(ADDR_FAN_BOOST_CLAMP) {
         if enable {
-            wmi_write_ec(ADDR_FAN_BOOST_CLAMP, 0x50);
+            val |= FAN_BOOST_CLAMP_BIT;
         } else {
-            wmi_write_ec(ADDR_FAN_BOOST_CLAMP, 0x10);
+            val &= !FAN_BOOST_CLAMP_BIT;
         }
+        wmi_write_ec(ADDR_FAN_BOOST_CLAMP, val);
         crate::log_info!(
             "EC_FAN",
-            "Hardware FanBoost set to {} (Legacy Dual-Mode): fan_boost_clamp={}",
+            "Hardware FanBoost set to {}: fan_boost_clamp=0x{:02X} (Bit 6 0x40 toggled)",
             enable,
-            if enable { "0x50" } else { "0x10" }
+            val
         );
-    } else {
-        if let Some(mut val) = wmi_read_ec(ADDR_FAN_BOOST_CLAMP) {
-            if enable {
-                val |= FAN_BOOST_CLAMP_BIT;
-            } else {
-                val &= !FAN_BOOST_CLAMP_BIT;
-            }
-            wmi_write_ec(ADDR_FAN_BOOST_CLAMP, val);
+
+        // Legacy Pascal/Turing (10&20 Series) requires pulsing ADDR_TRIGGER_BYTE to latch fan clamp
+        if crate::hal::platform_probe::is_legacy_pascal_turing_tongfang() {
+            let cur_trig = wmi_read_ec(ADDR_TRIGGER_BYTE).unwrap_or(0);
+            let _ = wmi_write_ec(ADDR_TRIGGER_BYTE, (cur_trig & 0x10) | 0x20);
         }
-        crate::log_info!(
-            "EC_FAN",
-            "Hardware FanBoost set to {} (40/50-series mode): fan_boost_clamp Bit 6 (0x40)",
-            enable
-        );
     }
     true
 }
@@ -576,7 +526,10 @@ pub fn get_hardware_support_flags() -> HardwareSupportFlags {
     static CACHED_FLAGS: std::sync::OnceLock<HardwareSupportFlags> = std::sync::OnceLock::new();
     *CACHED_FLAGS.get_or_init(|| {
         if let Some(manifest) = crate::hal::declarative::load_matched_manifest() {
-            let is_rgb = manifest
+            let hw_byte2 = wmi_read_ec(ADDR_SUPPORT_BYTE2).unwrap_or(0);
+            let is_hw_rgb = (hw_byte2 & 0x04) != 0
+                || crate::driver::ite_lighting::IteLightingManager::probe_keyboard_device_exists();
+            let is_rgb = is_hw_rgb || manifest
                 .capabilities
                 .rgb_keyboard
                 .as_ref()
@@ -1030,13 +983,15 @@ pub fn heal_gpu_power_contract(super_perf_enable: bool, target_db_watts: Option<
         return true;
     }
 
-    // 1. Align ADDR_FAN_BOOST_CLAMP Bit 4 (Super Performance / HWOC Gate)
-    if let Some(cur_clamp) = wmi_read_ec(ADDR_FAN_BOOST_CLAMP) {
-        let super_bit = if super_perf_enable { SUPER_PERF_BIT } else { 0 };
-        let new_clamp = (cur_clamp & !SUPER_PERF_BIT) | super_bit;
-        if new_clamp != cur_clamp {
-            let ok = wmi_write_ec(ADDR_FAN_BOOST_CLAMP, new_clamp);
-            crate::log_info!("EC_TUNING", "heal_gpu_power_contract: aligned ADDR_FAN_BOOST_CLAMP -> 0x{:02X} (ok={})", new_clamp, ok);
+    // 1. Align ADDR_FAN_BOOST_CLAMP Bit 4 (Super Performance / HWOC Gate) on modern EC platforms
+    if !is_legacy_dual_mode_ec() {
+        if let Some(cur_clamp) = wmi_read_ec(ADDR_FAN_BOOST_CLAMP) {
+            let super_bit = if super_perf_enable { SUPER_PERF_BIT } else { 0 };
+            let new_clamp = (cur_clamp & !SUPER_PERF_BIT) | super_bit;
+            if new_clamp != cur_clamp {
+                let ok = wmi_write_ec(ADDR_FAN_BOOST_CLAMP, new_clamp);
+                crate::log_info!("EC_TUNING", "heal_gpu_power_contract: aligned ADDR_FAN_BOOST_CLAMP -> 0x{:02X} (ok={})", new_clamp, ok);
+            }
         }
     }
 
@@ -1157,7 +1112,7 @@ pub fn heal_cpu_power_contract(
     let ok_tcc = set_cpu_temp_target(temp_target_enabled, safe_temp_c);
 
     // 3. Clear Silent Mode & Overheat Throttle Flags
-    let _ = wmi_write_ec(ADDR_TURBO_TRIGGER_1115, 0);
+    let _ = wmi_write_ec(ADDR_TURBO_TRIGGER, 0);
 
     // 4. Kick EC Trigger Byte to force EC power/thermal evaluation refresh (breaks Limp Mode)
     let cur_trig = wmi_read_ec(ADDR_TRIGGER_BYTE).unwrap_or(0);

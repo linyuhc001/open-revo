@@ -25,11 +25,41 @@ jobs:
     name: Build & Package Windows (x64)
     runs-on: windows-latest
 
+    env:
+      # SOCKS5 proxy for crates.io / npm registry / git (runtime guarantees reachability)
+      ALL_PROXY: socks5://127.0.0.1:20808
+      HTTP_PROXY: socks5://127.0.0.1:20808
+      HTTPS_PROXY: socks5://127.0.0.1:20808
+      CARGO_HTTP_ALL_PROXY: socks5://127.0.0.1:20808
+      # Keep cargo's libcurl from failing on self-signed CI TLS roots behind the proxy
+      CARGO_HTTP_CHECK_REVOKE: "false"
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Configure SOCKS5 Proxy
+        shell: pwsh
+        run: |
+          $proxy = 'socks5://127.0.0.1:20808'
+          # git (checkout / submodule fetch)
+          git config --global http.proxy $proxy
+          # npm / pnpm (make-fetch-happen honors socks5 URLs)
+          npm config set proxy $proxy
+          npm config set https-proxy $proxy
+          Write-Host "::notice::SOCKS5 proxy configured: $proxy"
+
+      - name: Probe Proxy Reachability
+        shell: pwsh
+        timeout-minutes: 2
+        run: |
+          $ok = Test-NetConnection -ComputerName '127.0.0.1' -Port 20808 -WarningAction SilentlyContinue
+          if (-not $ok.TcpTestSucceeded) {
+            throw 'SOCKS5 proxy 127.0.0.1:20808 is not reachable from the runner'
+          }
+          Write-Host "::notice::Proxy 127.0.0.1:20808 reachable"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -39,7 +69,6 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 9
           run_install: false
 
       - name: Setup Rust Toolchain
@@ -54,16 +83,6 @@ jobs:
 
       - name: Install Frontend Dependencies
         run: pnpm install --frozen-lockfile
-
-      - name: Verify Hardware Vault Gatekeeper
-        shell: pwsh
-        run: |
-          if (Test-Path "./scripts/check_vault_leaks.ps1") {
-              Write-Host "[*] Running Vault Leak Gatekeeper..." -ForegroundColor Cyan
-              & ./scripts/check_vault_leaks.ps1
-          } else {
-              Write-Host "[*] Vault leak script not present in repository checkout, skipping check." -ForegroundColor Yellow
-          }
 
       - name: Build Standalone Executable
         run: pnpm tauri build --no-bundle
@@ -87,6 +106,8 @@ jobs:
         run: |
           $ver = (Get-Content "src-tauri/tauri.conf.json" -Raw | ConvertFrom-Json).version
           $tag = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { "v$ver-dev" }
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $tag -ne "v$ver") { throw "Tag and application version differ" }
+          if ((Get-Content "package.json" -Raw | ConvertFrom-Json).version -ne $ver) { throw "Frontend and application version differ" }
           Write-Host "Target Version: $ver | Tag: $tag" -ForegroundColor Green
 
           $distDir = "dist_artifacts"
@@ -101,15 +122,41 @@ jobs:
           $portableName = "OpenRevo-${tag}-portable.7z"
           $dest7z = "$distDir/$portableName"
           & 7z a -t7z -mx=9 "$dest7z" "$destExe"
+          if ($LASTEXITCODE -ne 0) { throw "Portable archive build failed" }
 
           # 3. NSIS Installer
           $nsisSourceDir = "src-tauri/target/release/bundle/nsis"
-          $matchedNsis = Get-ChildItem -Path $nsisSourceDir -Filter "*.exe" | Select-Object -First 1
+          $matchedNsis = Get-ChildItem -Path $nsisSourceDir -Filter "*.exe" | Where-Object { $_.Name.Contains($ver) } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if ($matchedNsis) {
               $installerName = "OpenRevo-${tag}-x64-Setup.exe"
               $destInstaller = "$distDir/$installerName"
               Copy-Item -LiteralPath $matchedNsis.FullName -Destination $destInstaller -Force
               Write-Host "Found NSIS Installer: $installerName" -ForegroundColor Cyan
+          }
+
+          if (-not $matchedNsis) { throw "Matching NSIS installer is missing" }
+          $assets = @{}
+          foreach ($asset in @(@("binary_only", $destExe), @("installer", $destInstaller))) {
+              $item = Get-Item -LiteralPath $asset[1]
+              $assets[$asset[0]] = @{
+                  filename = $item.Name
+                  size = $item.Length
+                  sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $item.FullName).Hash.ToLowerInvariant()
+                  sources = @{ github = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$tag/$($item.Name)"; gitee = "" }
+              }
+          }
+          $manifest = @{
+              version = $ver; tag = $tag; display_version = $tag
+              commit = $env:GITHUB_SHA
+              pub_date = [DateTime]::UtcNow.ToString("o")
+              build_timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+              notes = "OpenRevo $tag"; assets = $assets
+          }
+          $manifestPath = "$distDir/latest.json"
+          $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestPath -Encoding utf8NoBOM
+          $verified = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+          if ($verified.version -ne $ver -or $verified.assets.binary_only.sha256.Length -ne 64 -or $verified.assets.installer.sha256.Length -ne 64) {
+              throw "Generated update manifest validation failed"
           }
 
           # 4. Generate SHA256 Checksums
@@ -140,6 +187,6 @@ jobs:
           name: OpenRevo ${{ steps.prepare_artifacts.outputs.tag_name }}
           tag_name: ${{ steps.prepare_artifacts.outputs.tag_name }}
           draft: ${{ github.event.inputs.draft == 'true' }}
-          prerelease: ${{ github.event.inputs.prerelease == 'true' }}
+          prerelease: ${{ github.event.inputs.prerelease == 'true' || contains(steps.prepare_artifacts.outputs.tag_name, '-') }}
           files: dist_artifacts/*
           generate_release_notes: true

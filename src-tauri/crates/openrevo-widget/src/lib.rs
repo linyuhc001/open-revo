@@ -1,0 +1,738 @@
+pub use slint_interpreter;
+use std::io::BufRead;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
+use slint::ComponentHandle;
+use slint_interpreter::Compiler;
+
+#[cfg(target_os = "windows")]
+use windows::Win32::Foundation::{HWND, LPARAM};
+#[cfg(target_os = "windows")]
+use windows::Win32::Graphics::Dwm::DWMWA_USE_IMMERSIVE_DARK_MODE;
+#[cfg(target_os = "windows")]
+use windows::Win32::System::Threading::GetCurrentThreadId;
+#[cfg(target_os = "windows")]
+use windows::Win32::UI::WindowsAndMessaging::{
+    EnumChildWindows, EnumThreadWindows, GetWindowLongW, IsWindow, SetParent, SetWindowLongW, SetWindowPos, ShowWindow,
+    GWL_EXSTYLE, GWL_STYLE, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_SHOW,
+    WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_APPWINDOW, WS_EX_CONTROLPARENT,
+    WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_THICKFRAME, WS_VISIBLE,
+};
+
+static LATEST_TELEMETRY: OnceLock<Mutex<Option<serde_json::Value>>> = OnceLock::new();
+static IS_CLICK_THROUGH_LOCKED: AtomicBool = AtomicBool::new(false);
+static CTRL_PREVIEW_TEMP_UNLOCKED: AtomicBool = AtomicBool::new(false);
+static RECORDED_HWND: Mutex<Option<isize>> = Mutex::new(None);
+
+pub fn get_latest_telemetry() -> &'static Mutex<Option<serde_json::Value>> {
+    LATEST_TELEMETRY.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn enum_child_set_transparent(child: HWND, lparam: windows::Win32::Foundation::LPARAM) -> windows::Win32::Foundation::BOOL {
+    let enable = lparam.0 != 0;
+    let ex = GetWindowLongW(child, GWL_EXSTYLE) as u32;
+    let new_ex = if enable {
+        ex | WS_EX_TRANSPARENT.0
+    } else {
+        ex & !WS_EX_TRANSPARENT.0
+    };
+    if new_ex != ex {
+        let _ = SetWindowLongW(child, GWL_EXSTYLE, new_ex as i32);
+    }
+    windows::Win32::Foundation::BOOL(1)
+}
+
+#[cfg(target_os = "windows")]
+pub unsafe fn apply_click_through_recursive(top_hwnd: HWND, enable: bool) {
+    if !IsWindow(top_hwnd).as_bool() {
+        return;
+    }
+    let ex = GetWindowLongW(top_hwnd, GWL_EXSTYLE) as u32;
+    let new_ex = if enable {
+        ex | WS_EX_TRANSPARENT.0
+    } else {
+        ex & !WS_EX_TRANSPARENT.0
+    };
+    if new_ex != ex {
+        let _ = SetWindowLongW(top_hwnd, GWL_EXSTYLE, new_ex as i32);
+    }
+    let _ = EnumChildWindows(
+        top_hwnd,
+        Some(enum_child_set_transparent),
+        windows::Win32::Foundation::LPARAM(if enable { 1 } else { 0 }),
+    );
+}
+
+#[cfg(target_os = "windows")]
+pub fn set_click_through_internal(enable: bool) {
+    IS_CLICK_THROUGH_LOCKED.store(enable, Ordering::SeqCst);
+    let hwnd_raw = RECORDED_HWND.lock().unwrap().or_else(|| find_thread_hwnd().map(|h| h.0 as isize));
+    if let Some(raw) = hwnd_raw {
+        unsafe {
+            let hwnd = HWND(raw as *mut _);
+            apply_click_through_recursive(hwnd, enable);
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn set_click_through_internal(_enable: bool) {}
+
+fn inject_telemetry_properties(instance: &slint_interpreter::ComponentInstance, data: &serde_json::Value) {
+    if let Some(obj) = data.as_object() {
+        for (k, v) in obj {
+            let val = match v {
+                serde_json::Value::Number(n) => {
+                    if let Some(f) = n.as_f64() {
+                        slint_interpreter::Value::Number(f)
+                    } else {
+                        continue;
+                    }
+                }
+                serde_json::Value::Bool(b) => slint_interpreter::Value::Bool(*b),
+                serde_json::Value::String(s) => slint_interpreter::Value::String(s.as_str().into()),
+                _ => continue,
+            };
+            let dash_key = k.replace('_', "-");
+            let _ = instance.set_property(k.as_str(), val.clone());
+            if dash_key != *k {
+                let _ = instance.set_property(&dash_key, val);
+            }
+        }
+    }
+    let json_str = data.to_string();
+    let _ = instance.set_property("telemetry_json", slint_interpreter::Value::String(json_str.as_str().into()));
+    let _ = instance.set_property("telemetry-json", slint_interpreter::Value::String(json_str.as_str().into()));
+    let _ = instance.invoke("telemetry_updated", &[]);
+}
+
+fn handle_widget_ipc_message(line: &str, weak_instance: &slint::Weak<slint_interpreter::ComponentInstance>) {
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+        let action = val.get("action").and_then(|v| v.as_str()).unwrap_or_default();
+        match action {
+            "telemetry" => {
+                if let Some(data) = val.get("data") {
+                    *get_latest_telemetry().lock().unwrap() = Some(data.clone());
+                    let data_clone = data.clone();
+                    let weak = weak_instance.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(instance) = weak.upgrade() {
+                            inject_telemetry_properties(&instance, &data_clone);
+                        }
+                    });
+                }
+            }
+            "ctrl_modifier" => {
+                let down = val.get("down").and_then(|v| v.as_bool()).unwrap_or(false);
+                let is_locked = IS_CLICK_THROUGH_LOCKED.load(Ordering::SeqCst);
+                if is_locked {
+                    CTRL_PREVIEW_TEMP_UNLOCKED.store(down, Ordering::SeqCst);
+                    let hwnd_raw = RECORDED_HWND.lock().unwrap().or_else(|| find_thread_hwnd().map(|h| h.0 as isize));
+                    if let Some(raw) = hwnd_raw {
+                        #[cfg(target_os = "windows")]
+                        unsafe {
+                            let hwnd = HWND(raw as *mut _);
+                            apply_click_through_recursive(hwnd, !down);
+                        }
+                    }
+                    let weak = weak_instance.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(instance) = weak.upgrade() {
+                            let _ = instance.set_property("ctrl_preview_unlocked", slint_interpreter::Value::Bool(down));
+                            let _ = instance.set_property("ctrl-preview-unlocked", slint_interpreter::Value::Bool(down));
+                        }
+                    });
+                }
+            }
+            "set_click_through" => {
+                let enable = val.get("enable").and_then(|v| v.as_bool()).unwrap_or(false);
+                set_click_through_internal(enable);
+                let weak = weak_instance.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(instance) = weak.upgrade() {
+                        let _ = instance.set_property("click_through", slint_interpreter::Value::Bool(enable));
+                        let _ = instance.set_property("click-through", slint_interpreter::Value::Bool(enable));
+                        let _ = instance.set_property("is_locked", slint_interpreter::Value::Bool(enable));
+                        let _ = instance.set_property("is-locked", slint_interpreter::Value::Bool(enable));
+                    }
+                });
+            }
+            _ => {}
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn enum_thread_wnd_proc(hwnd: HWND, lparam: LPARAM) -> windows::Win32::Foundation::BOOL {
+    let target = &mut *(lparam.0 as *mut Option<HWND>);
+    if target.is_none() {
+        *target = Some(hwnd);
+        return windows::Win32::Foundation::BOOL(0);
+    }
+    windows::Win32::Foundation::BOOL(1)
+}
+
+#[cfg(target_os = "windows")]
+pub fn find_thread_hwnd() -> Option<HWND> {
+    unsafe {
+        let tid = GetCurrentThreadId();
+        let mut target_hwnd: Option<HWND> = None;
+        let _ = EnumThreadWindows(
+            tid,
+            Some(enum_thread_wnd_proc),
+            LPARAM(&mut target_hwnd as *mut _ as isize),
+        );
+        target_hwnd
+    }
+}
+
+/// Locate plugin root directory using the host microkernel's authoritative config directory
+pub fn find_plugin_dir(plugin_id: &str) -> Option<PathBuf> {
+    let base = openrevo_core::system::config::get_config_dir().join("plugins");
+    let direct = base.join(plugin_id);
+    if direct.exists() {
+        return Some(direct);
+    }
+
+    if let Ok(entries) = std::fs::read_dir(&base) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let manifest_path = path.join("manifest.json");
+                if let Ok(content) = std::fs::read_to_string(&manifest_path) {
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+                        if val.get("id").and_then(|v| v.as_str()) == Some(plugin_id) {
+                            return Some(path);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Resolve an existing Slint entry file path by prioritizing declared entries and checking candidates
+fn resolve_slint_entry(plugin_dir: &Path, candidates: &[Option<String>], fallbacks: &[&str]) -> Option<PathBuf> {
+    for cand in candidates.iter().flatten() {
+        if cand.ends_with(".slint") {
+            let p = plugin_dir.join(cand);
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+    for fb in fallbacks {
+        let p = plugin_dir.join(fb);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// Run plugin standalone as a floating widget or popout window
+pub fn run_widget_standalone(plugin_id: &str) {
+    println!("[Slint Widget] Launching standalone widget for plugin: '{}'", plugin_id);
+    let Some(plugin_dir) = find_plugin_dir(plugin_id) else {
+        eprintln!("[Slint Widget] Plugin directory for '{}' not found!", plugin_id);
+        return;
+    };
+
+    let manifest_path = plugin_dir.join("manifest.json");
+    let mut cand_entries = Vec::new();
+    if let Ok(content) = std::fs::read_to_string(&manifest_path) {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+            cand_entries.push(val.get("widget").and_then(|w| w.get("entry")).and_then(|s| s.as_str()).map(|s| s.to_string()));
+            cand_entries.push(val.get("entry").and_then(|s| s.as_str()).map(|s| s.to_string()));
+            cand_entries.push(val.get("tab").and_then(|t| t.get("entry")).and_then(|s| s.as_str()).map(|s| s.to_string()));
+        }
+    }
+
+    let Some(entry_file) = resolve_slint_entry(&plugin_dir, &cand_entries, &["widget.slint", "main.slint", "tab.slint"]) else {
+        eprintln!("[Slint Widget] No valid Slint entry file found for standalone widget in '{:?}'", plugin_dir);
+        return;
+    };
+
+    let compiler = Compiler::default();
+    let comp_res = spin_on::spin_on(compiler.build_from_path(&entry_file));
+    for diag in comp_res.diagnostics() {
+        eprintln!("[Slint Widget Compiler] {:?}", diag);
+    }
+
+    let Some(comp_name) = comp_res.component_names().next() else {
+        eprintln!("[Slint Widget] No export component found in '{:?}'", entry_file);
+        return;
+    };
+
+    let Some(def) = comp_res.component(&comp_name) else {
+        eprintln!("[Slint Widget] Failed to retrieve component '{}'", comp_name);
+        return;
+    };
+
+    let Ok(instance) = def.create() else {
+        eprintln!("[Slint Widget] Failed to instantiate component '{}'", comp_name);
+        return;
+    };
+
+    // Bind universal hardware microkernel callbacks (Raw EC, Fan Boost, Power Mode, Battery Health)
+    bind_openrevo_hardware_callbacks(&instance);
+
+    // Parse window configuration from manifest.json
+    let (always_on_top, decorations, transparent, skip_taskbar, manifest_click_through) = if let Ok(content) = std::fs::read_to_string(&manifest_path) {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+            let win = val.get("widget").and_then(|w| w.get("window")).or_else(|| val.get("window"));
+            let aot = win.and_then(|w| w.get("always_on_top")).and_then(|v| v.as_bool()).unwrap_or(true);
+            let dec = win.and_then(|w| w.get("decorations")).and_then(|v| v.as_bool()).unwrap_or(false);
+            let trans = win.and_then(|w| w.get("transparent")).and_then(|v| v.as_bool()).unwrap_or(true);
+            let skip_tb = win.and_then(|w| w.get("skip_taskbar")).and_then(|v| v.as_bool()).unwrap_or(true);
+            let ct = win.and_then(|w| w.get("click_through")).and_then(|v| v.as_bool())
+                .or_else(|| val.get("click_through").and_then(|v| v.as_bool()))
+                .unwrap_or(false);
+            (aot, dec, trans, skip_tb, ct)
+        } else {
+            (true, false, true, true, false)
+        }
+    } else {
+        (true, false, true, true, false)
+    };
+
+    let cfg = openrevo_core::system::config::load_config();
+    let initial_click_through = cfg.widget_click_through.get(plugin_id).copied().unwrap_or(manifest_click_through);
+    IS_CLICK_THROUGH_LOCKED.store(initial_click_through, Ordering::SeqCst);
+
+    let _ = instance.show();
+
+    // Start background IPC listener for stdin telemetry & control messages
+    let weak_inst = instance.as_weak();
+    std::thread::Builder::new()
+        .name(format!("slint-widget-stdin-{}", plugin_id))
+        .spawn(move || {
+            let stdin = std::io::stdin();
+            for line_res in stdin.lock().lines() {
+                match line_res {
+                    Ok(line) => {
+                        let line = line.trim();
+                        if !line.is_empty() {
+                            handle_widget_ipc_message(line, &weak_inst);
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        })
+        .ok();
+
+    // Initial property sync
+    let _ = instance.set_property("click_through", slint_interpreter::Value::Bool(initial_click_through));
+    let _ = instance.set_property("click-through", slint_interpreter::Value::Bool(initial_click_through));
+    let _ = instance.set_property("is_locked", slint_interpreter::Value::Bool(initial_click_through));
+    let _ = instance.set_property("is-locked", slint_interpreter::Value::Bool(initial_click_through));
+    let _ = instance.set_property("ctrl_preview_unlocked", slint_interpreter::Value::Bool(false));
+    let _ = instance.set_property("ctrl-preview-unlocked", slint_interpreter::Value::Bool(false));
+
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetWindowLongW, SetWindowLongW, SetWindowPos,
+            GWL_STYLE, GWL_EXSTYLE,
+            WS_CAPTION, WS_THICKFRAME, WS_MINIMIZEBOX, WS_MAXIMIZEBOX,
+            WS_POPUP, WS_EX_TOOLWINDOW, WS_EX_APPWINDOW,
+            HWND_TOPMOST, HWND_NOTOPMOST,
+            SWP_NOMOVE, SWP_NOSIZE, SWP_NOACTIVATE, SWP_FRAMECHANGED,
+        };
+        use windows::Win32::Graphics::Dwm::{
+            DwmExtendFrameIntoClientArea, DwmSetWindowAttribute,
+            DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
+        };
+        use windows::Win32::UI::Controls::MARGINS;
+
+        let apply_standalone_styles = move |hwnd: HWND| {
+            unsafe {
+                *RECORDED_HWND.lock().unwrap() = Some(hwnd.0 as isize);
+
+                let dark_mode: i32 = 1;
+                let _ = DwmSetWindowAttribute(
+                    hwnd,
+                    DWMWA_USE_IMMERSIVE_DARK_MODE,
+                    &dark_mode as *const _ as *const _,
+                    std::mem::size_of::<i32>() as u32,
+                );
+
+                if !decorations {
+                    let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+                    let remove_mask = WS_CAPTION.0 | WS_THICKFRAME.0 | WS_MINIMIZEBOX.0 | WS_MAXIMIZEBOX.0;
+                    let new_style = ((style & !remove_mask) | WS_POPUP.0) as i32;
+                    let _ = SetWindowLongW(hwnd, GWL_STYLE, new_style);
+
+                    let pref = DWMWCP_ROUND;
+                    let _ = DwmSetWindowAttribute(
+                        hwnd,
+                        DWMWA_WINDOW_CORNER_PREFERENCE,
+                        &pref as *const _ as _,
+                        std::mem::size_of_val(&pref) as u32,
+                    );
+                }
+
+                if skip_taskbar {
+                    let mut ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+                    ex_style = (ex_style & !WS_EX_APPWINDOW.0) | WS_EX_TOOLWINDOW.0;
+                    let _ = SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style as i32);
+                }
+
+                if transparent {
+                    let margins = MARGINS {
+                        cxLeftWidth: -1,
+                        cxRightWidth: -1,
+                        cyTopHeight: -1,
+                        cyBottomHeight: -1,
+                    };
+                    let _ = DwmExtendFrameIntoClientArea(hwnd, &margins);
+                }
+
+                let top_flag = if always_on_top { HWND_TOPMOST } else { HWND_NOTOPMOST };
+                let _ = SetWindowPos(
+                    hwnd,
+                    top_flag,
+                    0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                );
+
+                if initial_click_through {
+                    set_click_through_internal(true);
+                }
+            }
+        };
+
+        if let Some(hwnd) = find_thread_hwnd() {
+            apply_standalone_styles(hwnd);
+        }
+
+        // Watchdog fallback (16ms & 60ms) to ensure styles take effect after initial window creation
+        let timer = slint::Timer::default();
+        let applied = Arc::new(Mutex::new(false));
+        let applied_clone = applied.clone();
+        timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_millis(16),
+            move || {
+                let mut done = applied_clone.lock().unwrap();
+                if !*done {
+                    if let Some(hwnd) = find_thread_hwnd() {
+                        apply_standalone_styles(hwnd);
+                        *done = true;
+                    }
+                }
+            },
+        );
+    }
+
+    println!("[Slint Widget] Running standalone instance for '{}'", plugin_id);
+    let _ = instance.run();
+}
+
+/// Run plugin embedded as a native Win32 child window into the host parent window
+pub fn run_widget_embedded(plugin_id: &str, parent_hwnd_raw: isize, rect: (i32, i32, i32, i32)) {
+    println!(
+        "[Slint Embedded] Launching embedded view for plugin '{}' into parent 0x{:X} rect={:?}",
+        plugin_id, parent_hwnd_raw, rect
+    );
+
+    let Some(plugin_dir) = find_plugin_dir(plugin_id) else {
+        eprintln!("[Slint Embedded] Plugin directory for '{}' not found!", plugin_id);
+        return;
+    };
+
+    let manifest_path = plugin_dir.join("manifest.json");
+    let mut cand_entries = Vec::new();
+    if let Ok(content) = std::fs::read_to_string(&manifest_path) {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+            cand_entries.push(val.get("tab").and_then(|t| t.get("entry")).and_then(|s| s.as_str()).map(|s| s.to_string()));
+            cand_entries.push(val.get("entry").and_then(|s| s.as_str()).map(|s| s.to_string()));
+            cand_entries.push(val.get("widget").and_then(|w| w.get("entry")).and_then(|s| s.as_str()).map(|s| s.to_string()));
+        }
+    }
+
+    let Some(entry_file) = resolve_slint_entry(&plugin_dir, &cand_entries, &["tab.slint", "main.slint", "widget.slint"]) else {
+        eprintln!("[Slint Embedded] No valid Slint entry file found for embedded tab in '{:?}'", plugin_dir);
+        return;
+    };
+
+    let compiler = Compiler::default();
+    let comp_res = spin_on::spin_on(compiler.build_from_path(&entry_file));
+    for diag in comp_res.diagnostics() {
+        eprintln!("[Slint Embedded Compiler] {:?}", diag);
+    }
+
+    let Some(comp_name) = comp_res.component_names().next() else {
+        eprintln!("[Slint Embedded] No export component found in '{:?}'", entry_file);
+        return;
+    };
+
+    let Some(def) = comp_res.component(&comp_name) else {
+        eprintln!("[Slint Embedded] Failed to retrieve component '{}'", comp_name);
+        return;
+    };
+
+    let Ok(instance) = def.create() else {
+        eprintln!("[Slint Embedded] Failed to instantiate component '{}'", comp_name);
+        return;
+    };
+
+    // Bind universal hardware microkernel callbacks (Raw EC, Fan Boost, Power Mode, Battery Health)
+    bind_openrevo_hardware_callbacks(&instance);
+
+    // Show instance first to trigger Winit window creation
+    let _ = instance.show();
+
+    // Start background IPC listener for stdin telemetry & control messages
+    let weak_inst = instance.as_weak();
+    std::thread::Builder::new()
+        .name(format!("slint-embedded-stdin-{}", plugin_id))
+        .spawn(move || {
+            let stdin = std::io::stdin();
+            for line_res in stdin.lock().lines() {
+                match line_res {
+                    Ok(line) => {
+                        let line = line.trim();
+                        if !line.is_empty() {
+                            handle_widget_ipc_message(line, &weak_inst);
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        })
+        .ok();
+
+    // Setup repeated timer to reliably capture child HWND and apply Win32 parent attachment
+    let timer = slint::Timer::default();
+    let applied = Arc::new(Mutex::new(false));
+    let applied_clone = applied.clone();
+    let parent_raw = parent_hwnd_raw;
+
+    timer.start(
+        slint::TimerMode::Repeated,
+        Duration::from_millis(10),
+        move || {
+            let mut done = applied_clone.lock().unwrap();
+            if !*done {
+                #[cfg(target_os = "windows")]
+                if let Some(child_hwnd) = find_thread_hwnd() {
+                    unsafe {
+                        let parent_hwnd = HWND(parent_raw as *mut _);
+                        if parent_raw != 0 && IsWindow(parent_hwnd).as_bool() {
+                            // 1. Strip top-level chrome styles and convert to child window
+                            let style = GetWindowLongW(child_hwnd, GWL_STYLE) as u32;
+                            let remove_mask = WS_POPUP.0 | WS_CAPTION.0 | WS_THICKFRAME.0 | WS_MINIMIZEBOX.0 | WS_MAXIMIZEBOX.0;
+                            let new_style = ((style & !remove_mask) | WS_CHILD.0 | WS_VISIBLE.0 | WS_CLIPSIBLINGS.0 | WS_CLIPCHILDREN.0) as i32;
+                            let _ = SetWindowLongW(child_hwnd, GWL_STYLE, new_style);
+
+                            let ex_style = GetWindowLongW(child_hwnd, GWL_EXSTYLE) as u32;
+                            let remove_ex = WS_EX_APPWINDOW.0 | WS_EX_TOOLWINDOW.0;
+                            let new_ex_style = ((ex_style & !remove_ex) | WS_EX_CONTROLPARENT.0) as i32;
+                            let _ = SetWindowLongW(child_hwnd, GWL_EXSTYLE, new_ex_style);
+
+                            // 2. Attach into host parent window
+                            let _ = SetParent(child_hwnd, parent_hwnd);
+
+                            // 3. Position and size to fit the container space
+                            let _ = SetWindowPos(
+                                child_hwnd,
+                                None,
+                                rect.0,
+                                rect.1,
+                                rect.2,
+                                rect.3,
+                                SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW,
+                            );
+                            let _ = ShowWindow(child_hwnd, SW_SHOW);
+
+                            println!("[Slint Embedded] Child HWND 0x{:X} successfully docked into parent 0x{:X}", child_hwnd.0 as usize, parent_raw);
+                            *done = true;
+                        }
+                    }
+                }
+            }
+        },
+    );
+
+    // Background watcher thread to listen for parent window close
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(Duration::from_millis(500));
+            #[cfg(target_os = "windows")]
+            unsafe {
+                if parent_raw != 0 && !IsWindow(HWND(parent_raw as *mut _)).as_bool() {
+                    std::process::exit(0);
+                }
+            }
+        }
+    });
+
+    println!("[Slint Embedded] Running embedded instance for '{}'", plugin_id);
+    let _ = instance.run();
+}
+
+use openrevo_core::system::raw_gateway::{
+    detect_auto_raw_protocol, execute_raw_read, execute_raw_write,
+    get_gateway_capabilities, RawEcProtocol, RawEcReadRequest, RawEcWriteRequest,
+};
+
+/// Binds universal hardware control and raw EC communication callbacks onto a Slint component instance.
+/// This allows declarative `.slint` plugins (both standalone widgets and embedded tabs) to interact
+/// directly with OpenRevo's hardware microkernel without requiring WebView2 or Tauri IPC.
+pub fn bind_openrevo_hardware_callbacks(instance: &slint_interpreter::ComponentInstance) {
+    // 1. raw_ec_read: (addr: int) -> int OR (protocol: string, addr: int) -> int
+    let _ = instance.set_callback("raw_ec_read", move |args: &[slint_interpreter::Value]| -> slint_interpreter::Value {
+        let (protocol, addr) = if args.len() == 1 {
+            let addr = args[0].clone().try_into().unwrap_or(0i32) as u16;
+            (detect_auto_raw_protocol(), addr)
+        } else if args.len() >= 2 {
+            let proto_str = match &args[0] {
+                slint_interpreter::Value::String(s) => s.as_str().to_string(),
+                _ => String::new(),
+            };
+            let addr = args[1].clone().try_into().unwrap_or(0i32) as u16;
+            let proto = serde_json::from_value::<RawEcProtocol>(serde_json::Value::String(proto_str))
+                .unwrap_or_else(|_| detect_auto_raw_protocol());
+            (proto, addr)
+        } else {
+            return slint_interpreter::Value::Number(-1.0);
+        };
+
+        match execute_raw_read(RawEcReadRequest { protocol, address: addr }) {
+            Ok(val) => slint_interpreter::Value::Number(val as f64),
+            Err(e) => {
+                eprintln!("[Slint HW Gateway] raw_ec_read failed: {}", e);
+                slint_interpreter::Value::Number(-1.0)
+            }
+        }
+    });
+
+    // 2. raw_ec_write: (addr: int, val: int) -> bool OR (protocol: string, addr: int, val: int) -> bool
+    let _ = instance.set_callback("raw_ec_write", move |args: &[slint_interpreter::Value]| -> slint_interpreter::Value {
+        let (protocol, addr, val) = if args.len() == 2 {
+            let addr = args[0].clone().try_into().unwrap_or(0i32) as u16;
+            let val = args[1].clone().try_into().unwrap_or(0i32) as u8;
+            (detect_auto_raw_protocol(), addr, val)
+        } else if args.len() >= 3 {
+            let proto_str = match &args[0] {
+                slint_interpreter::Value::String(s) => s.as_str().to_string(),
+                _ => String::new(),
+            };
+            let addr = args[1].clone().try_into().unwrap_or(0i32) as u16;
+            let val = args[2].clone().try_into().unwrap_or(0i32) as u8;
+            let proto = serde_json::from_value::<RawEcProtocol>(serde_json::Value::String(proto_str))
+                .unwrap_or_else(|_| detect_auto_raw_protocol());
+            (proto, addr, val)
+        } else {
+            return slint_interpreter::Value::Bool(false);
+        };
+
+        match execute_raw_write(RawEcWriteRequest { protocol, address: addr, value: val }) {
+            Ok(success) => slint_interpreter::Value::Bool(success),
+            Err(e) => {
+                eprintln!("[Slint HW Gateway] raw_ec_write failed: {}", e);
+                slint_interpreter::Value::Bool(false)
+            }
+        }
+    });
+
+    // 3. set_fan_boost: (enable: bool) -> bool
+    let _ = instance.set_callback("set_fan_boost", move |args: &[slint_interpreter::Value]| -> slint_interpreter::Value {
+        let enable = args.get(0).and_then(|v| v.clone().try_into().ok()).unwrap_or(false);
+        let hal = openrevo_core::hal::get_hardware_driver();
+        let ok = hal.set_fan_boost(enable).is_ok();
+        slint_interpreter::Value::Bool(ok)
+    });
+
+    // 4. set_power_mode: (mode: int) -> bool (1: Office, 2: Balance, 3: Turbo, 4: Custom)
+    let _ = instance.set_callback("set_power_mode", move |args: &[slint_interpreter::Value]| -> slint_interpreter::Value {
+        let raw_mode = args.get(0).and_then(|v| v.clone().try_into().ok()).unwrap_or(2i32);
+        let hal_mode = match raw_mode {
+            1 => openrevo_core::hal::HardwarePowerMode::Office,
+            2 => openrevo_core::hal::HardwarePowerMode::Balance,
+            3 => openrevo_core::hal::HardwarePowerMode::Turbo,
+            4 => openrevo_core::hal::HardwarePowerMode::Custom,
+            _ => openrevo_core::hal::HardwarePowerMode::Balance,
+        };
+        let hal = openrevo_core::hal::get_hardware_driver();
+        let ok = hal.set_performance_mode(hal_mode).is_ok();
+        slint_interpreter::Value::Bool(ok)
+    });
+
+    // 5. set_battery_health: (mode: int) -> bool (1: 100%, 2: 80%, 3: 60%)
+    let _ = instance.set_callback("set_battery_health", move |args: &[slint_interpreter::Value]| -> slint_interpreter::Value {
+        let raw_mode = args.get(0).and_then(|v| v.clone().try_into().ok()).unwrap_or(2i32);
+        let health_mode = match raw_mode {
+            1 => openrevo_core::hal::BatteryHealthMode::LongLife,
+            2 => openrevo_core::hal::BatteryHealthMode::Balance,
+            3 => openrevo_core::hal::BatteryHealthMode::Station,
+            _ => openrevo_core::hal::BatteryHealthMode::Balance,
+        };
+        let hal = openrevo_core::hal::get_hardware_driver();
+        let ok = hal.set_battery_health(health_mode).is_ok();
+        slint_interpreter::Value::Bool(ok)
+    });
+
+    // 6. get_raw_ec_capabilities: () -> string (JSON array of available protocols)
+    let _ = instance.set_callback("get_raw_ec_capabilities", move |_args: &[slint_interpreter::Value]| -> slint_interpreter::Value {
+        let caps = get_gateway_capabilities();
+        let json_str = serde_json::to_string(&caps.available_protocols).unwrap_or_else(|_| "[]".to_string());
+        slint_interpreter::Value::String(json_str.into())
+    });
+
+    // 7. get_hardware_status: () -> string (Live telemetry snapshot JSON)
+    let _ = instance.set_callback("get_hardware_status", move |_args: &[slint_interpreter::Value]| -> slint_interpreter::Value {
+        let lock = get_latest_telemetry().lock().unwrap();
+        let json_str = lock.as_ref().map(|v| v.to_string()).unwrap_or_else(|| "{}".to_string());
+        slint_interpreter::Value::String(json_str.into())
+    });
+
+    // 8. get_sensor_value: (sensor_name: string) -> float
+    let _ = instance.set_callback("get_sensor_value", move |args: &[slint_interpreter::Value]| -> slint_interpreter::Value {
+        let sensor = match args.get(0) {
+            Some(slint_interpreter::Value::String(s)) => s.as_str().to_string(),
+            _ => return slint_interpreter::Value::Number(-1.0),
+        };
+        let lock = get_latest_telemetry().lock().unwrap();
+        if let Some(ref data) = *lock {
+            let alt_key = sensor.replace('-', "_");
+            if let Some(v) = data.get(&sensor).or_else(|| data.get(&alt_key)) {
+                if let Some(n) = v.as_f64() {
+                    return slint_interpreter::Value::Number(n);
+                } else if let Some(b) = v.as_bool() {
+                    return slint_interpreter::Value::Number(if b { 1.0 } else { 0.0 });
+                }
+            }
+        }
+        slint_interpreter::Value::Number(-1.0)
+    });
+
+    // 9. set_click_through: (enable: bool) -> bool
+    let _ = instance.set_callback("set_click_through", move |args: &[slint_interpreter::Value]| -> slint_interpreter::Value {
+        let enable = args.get(0).and_then(|v| v.clone().try_into().ok()).unwrap_or(false);
+        set_click_through_internal(enable);
+        println!("{}", serde_json::json!({ "event": "click_through_changed", "enabled": enable }));
+        slint_interpreter::Value::Bool(enable)
+    });
+
+    // 10. get_click_through: () -> bool
+    let _ = instance.set_callback("get_click_through", move |_args: &[slint_interpreter::Value]| -> slint_interpreter::Value {
+        slint_interpreter::Value::Bool(IS_CLICK_THROUGH_LOCKED.load(Ordering::SeqCst))
+    });
+
+    // 11. toggle_click_through: () -> bool
+    let _ = instance.set_callback("toggle_click_through", move |_args: &[slint_interpreter::Value]| -> slint_interpreter::Value {
+        let cur = IS_CLICK_THROUGH_LOCKED.load(Ordering::SeqCst);
+        let next = !cur;
+        set_click_through_internal(next);
+        println!("{}", serde_json::json!({ "event": "click_through_changed", "enabled": next }));
+        slint_interpreter::Value::Bool(next)
+    });
+}

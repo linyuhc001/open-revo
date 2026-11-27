@@ -10,6 +10,8 @@ extern "system" {
     fn LockWorkStation() -> windows::Win32::Foundation::BOOL;
 }
 
+static LAST_REFRESH_SWITCH: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+
 pub fn dispatch_action(app: AppHandle, binding: ShortcutBinding) {
     std::thread::spawn(move || {
         let osd = binding.osd;
@@ -25,7 +27,7 @@ pub fn dispatch_action(app: AppHandle, binding: ShortcutBinding) {
                     crate::system::config::save_config(&cfg);
                     crate::log_info!("SHORTCUTS", "Toggled Fan Boost: {} -> {}", current_boost, next_boost);
                     if osd {
-                        crate::system::osd_window::wake_osd_if_enabled(&app);
+                        crate::system::osd_window::show_fan_boost(next_boost);
                     }
                     let _ = app.emit("fan-boost-changed", next_boost);
                     let _ = app.emit_to("osd", "fan-boost-changed", next_boost);
@@ -56,7 +58,7 @@ pub fn dispatch_action(app: AppHandle, binding: ShortcutBinding) {
                     crate::update_tray_power_mode(next_mode);
                     crate::log_info!("SHORTCUTS", "Cycled Power Mode: {} -> {}", current_mode, next_mode);
                     if osd {
-                        crate::system::osd_window::wake_osd_if_enabled(&app);
+                        crate::system::osd_window::show_power_mode(next_mode);
                     }
                     let _ = app.emit("physical-mode-switched", next_mode);
                     let _ = app.emit_to("osd", "physical-mode-switched", next_mode);
@@ -81,7 +83,7 @@ pub fn dispatch_action(app: AppHandle, binding: ShortcutBinding) {
                     crate::update_tray_power_mode(target_mode);
                     crate::log_info!("SHORTCUTS", "Set Power Mode: {}", target_mode);
                     if osd {
-                        crate::system::osd_window::wake_osd_if_enabled(&app);
+                        crate::system::osd_window::show_power_mode(target_mode);
                     }
                     let _ = app.emit("physical-mode-switched", target_mode);
                     let _ = app.emit_to("osd", "physical-mode-switched", target_mode);
@@ -91,6 +93,17 @@ pub fn dispatch_action(app: AppHandle, binding: ShortcutBinding) {
 
             // 3. Toggle Refresh Rate (e.g. 60Hz <-> High Hz)
             ShortcutAction::ToggleRefreshRate => {
+                {
+                    let mut last = LAST_REFRESH_SWITCH.lock().unwrap();
+                    if let Some(t) = *last {
+                        if t.elapsed() < std::time::Duration::from_millis(1200) {
+                            crate::log_warn!("SHORTCUTS", "Suppressed rapid ToggleRefreshRate call (< 1200ms cooldown)");
+                            return;
+                        }
+                    }
+                    *last = Some(std::time::Instant::now());
+                }
+
                 let current_hz = crate::system::display::get_refresh_rate();
                 let available = crate::system::display::get_available_refresh_rates();
                 if available.len() >= 2 {
@@ -103,7 +116,7 @@ pub fn dispatch_action(app: AppHandle, binding: ShortcutBinding) {
                     if ok.is_ok() {
                         crate::log_info!("SHORTCUTS", "Toggled Refresh Rate: {}Hz -> {}Hz", current_hz, target_hz);
                         if osd {
-                            crate::system::osd_window::wake_osd_if_enabled(&app);
+                            crate::system::osd_window::show_device_switch("refresh", true);
                         }
                         let _ = app.emit("refresh-rate-changed", target_hz);
                         let _ = app.emit_to("osd", "refresh-rate-changed", target_hz);
@@ -118,10 +131,36 @@ pub fn dispatch_action(app: AppHandle, binding: ShortcutBinding) {
                 let next = !current;
                 let _ = crate::system::device_switches::set_switch("touchpad", next);
                 if osd {
-                    crate::system::osd_window::wake_osd_if_enabled(&app);
+                    crate::system::osd_window::show_device_switch("touchpad", next);
                 }
                 let _ = app.emit("touchpad-state-changed", next);
                 let _ = app.emit_to("osd", "touchpad-state-changed", next);
+            }
+
+            // 4.1 Toggle Wi-Fi Radio
+            ShortcutAction::ToggleWifi => {
+                let current = crate::system::switches::radio::get_realtime_wifi_state()
+                    .unwrap_or_else(|| crate::system::config::load_config().wifi_enabled);
+                let next = !current;
+                let _ = crate::system::device_switches::set_switch("wifi", next);
+                if osd {
+                    crate::system::osd_window::show_device_switch("wifi", next);
+                }
+                let _ = app.emit("wifi-state-changed", next);
+                let _ = app.emit_to("osd", "wifi-state-changed", next);
+                let _ = app.emit_to("main", "wifi-state-changed", next);
+            }
+
+            // 4.2 Toggle Screen Flip (180°)
+            ShortcutAction::ToggleScreenFlip => {
+                if let Ok(is_flipped) = crate::system::display::toggle_primary_display_orientation() {
+                    if osd {
+                        crate::system::osd_window::show_device_switch("screen_flip", is_flipped);
+                    }
+                    let _ = app.emit("screen-flip-changed", is_flipped);
+                    let _ = app.emit_to("osd", "screen-flip-changed", is_flipped);
+                    let _ = app.emit_to("main", "screen-flip-changed", is_flipped);
+                }
             }
 
             // 5. Toggle Win Key Lock
@@ -130,7 +169,7 @@ pub fn dispatch_action(app: AppHandle, binding: ShortcutBinding) {
                 let next = !current;
                 crate::system::hooks::set_win_key_locked(next);
                 if osd {
-                    crate::system::osd_window::wake_osd_if_enabled(&app);
+                    crate::system::osd_window::show_device_switch("winlock", next);
                 }
                 let _ = app.emit("win-lock-state-changed", next);
                 let _ = app.emit_to("osd", "win-lock-state-changed", next);
@@ -142,7 +181,7 @@ pub fn dispatch_action(app: AppHandle, binding: ShortcutBinding) {
                 let next = !current;
                 let _ = crate::system::device_switches::set_switch("fnlock", next);
                 if osd {
-                    crate::system::osd_window::wake_osd_if_enabled(&app);
+                    crate::system::osd_window::show_device_switch("fnlock", next);
                 }
                 let _ = app.emit("fn-lock-state-changed", next);
                 let _ = app.emit_to("osd", "fn-lock-state-changed", next);
@@ -150,7 +189,7 @@ pub fn dispatch_action(app: AppHandle, binding: ShortcutBinding) {
 
             // 7. Cycle Keyboard Brightness
             ShortcutAction::CycleKeyboardBrightness => {
-                crate::driver::ite_lighting::cycle_keyboard_brightness(Some(&app));
+                crate::driver::ite_lighting::cycle_keyboard_brightness();
             }
 
             // 8. Trigger OSD Preview
@@ -203,10 +242,10 @@ pub fn dispatch_action(app: AppHandle, binding: ShortcutBinding) {
 
             // 13. Custom Cross-Plugin Event Bus
             ShortcutAction::PluginEvent { event_name, payload } => {
-                let _ = app.emit(&event_name, &payload);
+                crate::system::broadcast::broadcast_all(&event_name, &payload);
                 if let Some(ref p_id) = binding.plugin_id {
                     let plugin_topic = format!("plugin:{}:shortcut", p_id);
-                    let _ = app.emit(&plugin_topic, serde_json::json!({
+                    crate::system::broadcast::broadcast_all(&plugin_topic, &serde_json::json!({
                         "shortcut_id": binding.id,
                         "name": binding.name,
                         "combo": binding.combo,

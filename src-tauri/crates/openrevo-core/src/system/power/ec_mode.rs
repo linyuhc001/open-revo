@@ -1,5 +1,35 @@
 use super::fan_table::{apply_fan_table_to_ec, apply_mode_fan_table, build_custom_fan_table};
 
+/// Dispatches custom profile SPL/sPPT/Temp parameters and fan curve to declarative hardware (e.g. Baolongda MRID6/BM5235)
+pub fn sync_custom_profile_to_declarative_hardware(profile: &crate::system::config::CustomProfileConfig) {
+    if let Some(manifest) = crate::hal::declarative::load_matched_manifest() {
+        if manifest.id.contains("bld") {
+            let p1 = (profile.cpu_pl1_watts as u8).clamp(25, 120);
+            let p2 = (profile.cpu_pl2_watts as u8).clamp(25, 140);
+            let temp = (profile.cpu_temp_target as u8).clamp(70, 100);
+            let _ = crate::hal::declarative::invoke_raw_mailbox(&[0, 251, 0, 23, 2, p1]);
+            let _ = crate::hal::declarative::invoke_raw_mailbox(&[0, 251, 0, 23, 3, p2]);
+            if profile.cpu_temp_target_enabled {
+                let _ = crate::hal::declarative::invoke_raw_mailbox(&[0, 251, 0, 23, 4, temp]);
+            }
+            let fan_boost_active = crate::system::config::load_config().fan_boost;
+            if profile.fan_isolated_output || profile.fan_curve_enabled {
+                crate::driver::bld_driver_mgr::set_bld_fan_curve(
+                    profile.cpu_fan_curve.clone(),
+                    profile.gpu_fan_curve.clone(),
+                    profile.fan_ramp_rate,
+                    profile.fan_ramp_speed_ms,
+                );
+                crate::log_info!("EC_TUNING", "BLD synced custom fan curve to 1Hz heartbeat arbiter");
+            } else if !fan_boost_active {
+                crate::driver::bld_driver_mgr::restore_bld_fan_auto();
+                crate::log_info!("EC_TUNING", "BLD restored fan auto policy (custom fan curve disabled)");
+            }
+            crate::log_info!("EC_TUNING", "BLD synced custom profile: SPL={}W, sPPT={}W, Temp={}°C", p1, p2, temp);
+        }
+    }
+}
+
 /// Set Physical Motherboard EC Hardware Registers
 pub fn apply_ec_hardware_mode(ui_mode: u8) {
     // 0. If current driver is Declarative and DOES NOT use Tongfang ACPI kernel driver channel,
@@ -7,6 +37,7 @@ pub fn apply_ec_hardware_mode(ui_mode: u8) {
     // If Tongfang ACPI hardware channel is available (both gaming laptops and Tongfang ultrabooks like Wujie 14X/15X),
     // we MUST proceed with writing native Tongfang EC registers (APExist, MODE_INDEX, TRIGGER_BYTE, etc.)!
     let is_tongfang_hardware = crate::driver::wmi_ec::is_acpi_driver_available()
+        || crate::hal::platform_probe::is_tongfang_family()
         || crate::hal::declarative::load_matched_manifest()
             .map(|m| m.channels.values().any(|c| matches!(c, crate::hal::declarative::model_manifest::ChannelDef::AcpiIoctl { .. })))
             .unwrap_or(false);
@@ -24,6 +55,13 @@ pub fn apply_ec_hardware_mode(ui_mode: u8) {
             crate::log_warn!("POWER_MODE", "HAL set_performance_mode failed: {}", e);
         } else {
             crate::log_info!("POWER_MODE", "Successfully applied power mode via HAL ({:?})", hal.kind());
+        }
+
+        let cfg = crate::system::config::load_config();
+        if ui_mode == 4 {
+            sync_custom_profile_to_declarative_hardware(&cfg.custom_profile);
+        } else if !cfg.fan_boost {
+            crate::driver::bld_driver_mgr::restore_bld_fan_auto();
         }
         return;
     }
@@ -46,20 +84,20 @@ pub fn apply_ec_hardware_mode(ui_mode: u8) {
     let cfg = crate::system::config::load_config();
     let fan_boost_active = cfg.fan_boost;
 
+    // Direct routing for Legacy Pascal/Turing (10&20-Series) hardware:
+    // Inverted mode codes (0: Gaming, 1: Office, 2: Turbo), dedicated trigger gate, and zero dynamic fan table poking.
+    if crate::hal::platform_probe::is_legacy_pascal_turing_tongfang() {
+        apply_legacy_pascal_turing_mode(ui_mode, fan_boost_active);
+        return;
+    }
+
     // Sanitize and align Fan Boost hardware state:
-    // If user has NOT explicitly activated Fan Boost, ensure ADDR_FAN_BOOST_CLAMP is cleared
-    // so the fan returns to automatic EC curve control.
+    // If user has NOT explicitly activated Fan Boost, ensure ADDR_FAN_BOOST_CLAMP bit 6 is cleared
+    // so the fan returns to automatic EC curve control while strictly preserving Q-Key brightness bits.
     if !fan_boost_active {
-        if wmi_ec::is_legacy_dual_mode_ec() {
-            let cur_clamp = wmi_ec::wmi_read_ec(wmi_ec::ADDR_FAN_BOOST_CLAMP).unwrap_or(0);
-            if (cur_clamp & wmi_ec::FAN_BOOST_CLAMP_BIT) != 0 {
-                wmi_ec::wmi_write_ec(wmi_ec::ADDR_FAN_BOOST_CLAMP, 0x10);
-            }
-        } else {
-            if let Some(v) = wmi_ec::wmi_read_ec(wmi_ec::ADDR_FAN_BOOST_CLAMP) {
-                if (v & wmi_ec::FAN_BOOST_CLAMP_BIT) != 0 {
-                    wmi_ec::wmi_write_ec(wmi_ec::ADDR_FAN_BOOST_CLAMP, v & !wmi_ec::FAN_BOOST_CLAMP_BIT);
-                }
+        if let Some(v) = wmi_ec::wmi_read_ec(wmi_ec::ADDR_FAN_BOOST_CLAMP) {
+            if (v & wmi_ec::FAN_BOOST_CLAMP_BIT) != 0 {
+                wmi_ec::wmi_write_ec(wmi_ec::ADDR_FAN_BOOST_CLAMP, v & !wmi_ec::FAN_BOOST_CLAMP_BIT);
             }
         }
     }
@@ -91,20 +129,16 @@ pub fn apply_ec_hardware_mode(ui_mode: u8) {
             // --- Office / Silent Mode (Green LED) ---
             // Clear Custom White LED override (preserve Bit 3 AC Recovery and Camera)
             if let Some(v) = wmi_ec::wmi_read_ec(wmi_ec::ADDR_AC_RECOVERY) {
-                wmi_ec::wmi_write_ec(wmi_ec::ADDR_AC_RECOVERY, v & !wmi_ec::MASK_QKEY_WHITE_1830);
+                wmi_ec::wmi_write_ec(wmi_ec::ADDR_AC_RECOVERY, v & !wmi_ec::MASK_QKEY_WHITE_AC_RECOVERY);
             }
             if let Some(v) = wmi_ec::wmi_read_ec(wmi_ec::ADDR_CAMERA_CUTOFF) {
-                wmi_ec::wmi_write_ec(wmi_ec::ADDR_CAMERA_CUTOFF, v & !wmi_ec::MASK_QKEY_WHITE_1831);
+                wmi_ec::wmi_write_ec(wmi_ec::ADDR_CAMERA_CUTOFF, v & !wmi_ec::MASK_QKEY_WHITE_CAMERA_CUTOFF);
             }
 
-            // Physical Mode & Chassis Q-Key LED: Green (0xA0 on 40/50-series, 0x10/0x50 on legacy)
-            if wmi_ec::is_legacy_dual_mode_ec() {
-                wmi_ec::wmi_write_ec(wmi_ec::ADDR_FAN_BOOST_CLAMP, if fan_boost_active { 0x50 } else { 0x10 });
-            } else {
-                let base_clamp = 0xA0;
-                let val_clamp = if fan_boost_active { base_clamp | wmi_ec::FAN_BOOST_CLAMP_BIT } else { base_clamp };
-                wmi_ec::wmi_write_ec(wmi_ec::ADDR_FAN_BOOST_CLAMP, val_clamp);
-            }
+            // Physical Mode & Chassis Q-Key LED: Office (0xA0 = low white / green)
+            let base_clamp = 0xA0;
+            let val_clamp = if fan_boost_active { base_clamp | wmi_ec::FAN_BOOST_CLAMP_BIT } else { base_clamp };
+            wmi_ec::wmi_write_ec(wmi_ec::ADDR_FAN_BOOST_CLAMP, val_clamp);
 
             // 1. EC Mode Index: 0x00 (Office Mode, preserves Logo brightness & support bit 0)
             set_ec_mode_index(0x00);
@@ -112,7 +146,7 @@ pub fn apply_ec_hardware_mode(ui_mode: u8) {
             let cur_trig = wmi_ec::wmi_read_ec(wmi_ec::ADDR_TRIGGER_BYTE).unwrap_or(0);
             wmi_ec::wmi_write_ec(wmi_ec::ADDR_TRIGGER_BYTE, (cur_trig & 0x10) | 0x28);
             // 3. Mark silent mode status
-            wmi_ec::wmi_write_ec(wmi_ec::ADDR_TURBO_TRIGGER_1115, 1);
+            wmi_ec::wmi_write_ec(wmi_ec::ADDR_TURBO_TRIGGER, 1);
 
             // 4. Dynamic/Configured CPU Power Limits:
             // GROUND TRUTH RULE: If user has NOT set custom user_presets, DO NOT write power limit registers!
@@ -131,11 +165,20 @@ pub fn apply_ec_hardware_mode(ui_mode: u8) {
             }
 
             // 5. Dynamic GPU DB & TGP (Eco / Quiet Baseline)
-            // Neutralize any GPU overclocking offsets applied in Custom Mode (only if discrete GPU is present)
+            // Neutralize any GPU overclocking offsets ONLY if OpenRevo previously applied them
             if crate::driver::gpu_bridge::is_nvidia_dgpu_available() {
-                let _ = crate::driver::nvapi::reset_gpu_clock_offsets();
                 let gpu = crate::driver::gpu_bridge::get_global_gpu();
-                gpu.lock().set_clock_offsets(0, 0);
+                let (cur_core, cur_mem) = {
+                    let g = gpu.lock();
+                    (g.get_core_offset(), g.get_mem_offset())
+                };
+                if cur_core != 0 || cur_mem != 0 {
+                    let _ = crate::driver::nvapi::reset_gpu_clock_offsets();
+                    gpu.lock().set_clock_offsets(0, 0);
+                    crate::log_info!("POWER_MODE", "Office Mode: Reverted previous OpenRevo GPU OC offsets to 0");
+                } else {
+                    crate::log_info!("POWER_MODE", "Office Mode: No active OpenRevo GPU OC, bypassing NVAPI clock reset.");
+                }
 
                 let gpu_caps = crate::driver::gpu_bridge::probe_gpu_tuning_capabilities();
                 if gpu_caps.supports_gpu_tuning {
@@ -158,26 +201,24 @@ pub fn apply_ec_hardware_mode(ui_mode: u8) {
             wmi_ec::wmi_write_ec(wmi_ec::ADDR_FAN_RAMP_RATE, 0x83);
             wmi_ec::set_fan_isolated_output(false);
             // 7. Apply Silent Fan Table
-            apply_mode_fan_table(1);
+            if !crate::hal::is_legacy_pascal_turing_tongfang() {
+                apply_mode_fan_table(1);
+            }
         }
         2 => {
             // --- Balance / Gaming Mode (Blue LED) ---
             // Clear Custom White LED override (preserve Bit 3 AC Recovery and Camera)
             if let Some(v) = wmi_ec::wmi_read_ec(wmi_ec::ADDR_AC_RECOVERY) {
-                wmi_ec::wmi_write_ec(wmi_ec::ADDR_AC_RECOVERY, v & !wmi_ec::MASK_QKEY_WHITE_1830);
+                wmi_ec::wmi_write_ec(wmi_ec::ADDR_AC_RECOVERY, v & !wmi_ec::MASK_QKEY_WHITE_AC_RECOVERY);
             }
             if let Some(v) = wmi_ec::wmi_read_ec(wmi_ec::ADDR_CAMERA_CUTOFF) {
-                wmi_ec::wmi_write_ec(wmi_ec::ADDR_CAMERA_CUTOFF, v & !wmi_ec::MASK_QKEY_WHITE_1831);
+                wmi_ec::wmi_write_ec(wmi_ec::ADDR_CAMERA_CUTOFF, v & !wmi_ec::MASK_QKEY_WHITE_CAMERA_CUTOFF);
             }
 
-            // Physical Mode & Chassis Q-Key LED: Blue (0x00 on 40/50-series, 0x10/0x50 on legacy)
-            if wmi_ec::is_legacy_dual_mode_ec() {
-                wmi_ec::wmi_write_ec(wmi_ec::ADDR_FAN_BOOST_CLAMP, if fan_boost_active { 0x50 } else { 0x10 });
-            } else {
-                let base_clamp = 0x00;
-                let val_clamp = if fan_boost_active { base_clamp | wmi_ec::FAN_BOOST_CLAMP_BIT } else { base_clamp };
-                wmi_ec::wmi_write_ec(wmi_ec::ADDR_FAN_BOOST_CLAMP, val_clamp);
-            }
+            // Physical Mode & Chassis Q-Key LED: Balanced (0x00 = medium white / blue)
+            let base_clamp = 0x00;
+            let val_clamp = if fan_boost_active { base_clamp | wmi_ec::FAN_BOOST_CLAMP_BIT } else { base_clamp };
+            wmi_ec::wmi_write_ec(wmi_ec::ADDR_FAN_BOOST_CLAMP, val_clamp);
 
             // 1. EC Mode Index: 0x00 (Balance Mode, preserves Logo brightness & support bit 0)
             set_ec_mode_index(0x00);
@@ -185,7 +226,7 @@ pub fn apply_ec_hardware_mode(ui_mode: u8) {
             let cur_trig = wmi_ec::wmi_read_ec(wmi_ec::ADDR_TRIGGER_BYTE).unwrap_or(0);
             wmi_ec::wmi_write_ec(wmi_ec::ADDR_TRIGGER_BYTE, (cur_trig & 0x10) | 0x20);
             // 3. Clear silent mode status
-            wmi_ec::wmi_write_ec(wmi_ec::ADDR_TURBO_TRIGGER_1115, 0);
+            wmi_ec::wmi_write_ec(wmi_ec::ADDR_TURBO_TRIGGER, 0);
 
             // 4. Dynamic/Configured CPU Power Limits:
             // GROUND TRUTH RULE: If user has NOT set custom user_presets, DO NOT write power limit registers!
@@ -204,25 +245,43 @@ pub fn apply_ec_hardware_mode(ui_mode: u8) {
             }
 
             // 5. Dynamic GPU DB & TGP (Full factory Base TGP and DB capacity, discrete GPU only)
-            // Neutralize any GPU overclocking offsets applied in Custom Mode
+            // Neutralize any GPU overclocking offsets ONLY if OpenRevo previously applied them
             if crate::driver::gpu_bridge::is_nvidia_dgpu_available() {
-                let _ = crate::driver::nvapi::reset_gpu_clock_offsets();
                 let gpu = crate::driver::gpu_bridge::get_global_gpu();
-                gpu.lock().set_clock_offsets(0, 0);
+                let (cur_core, cur_mem) = {
+                    let g = gpu.lock();
+                    (g.get_core_offset(), g.get_mem_offset())
+                };
+                if cur_core != 0 || cur_mem != 0 {
+                    let _ = crate::driver::nvapi::reset_gpu_clock_offsets();
+                    gpu.lock().set_clock_offsets(0, 0);
+                    crate::log_info!("POWER_MODE", "Balanced Mode: Reverted previous OpenRevo GPU OC offsets to 0");
+                } else {
+                    crate::log_info!("POWER_MODE", "Balanced Mode: No active OpenRevo GPU OC, bypassing NVAPI clock reset.");
+                }
 
                 let gpu_caps = crate::driver::gpu_bridge::probe_gpu_tuning_capabilities();
                 if gpu_caps.supports_gpu_tuning {
                     let actuator = crate::system::actuator::UnifiedPowerActuator::global();
-                    let db = gpu_caps.max_db_watts.clamp(5, 35) as u8;
                     let floor = gpu_caps.ctgp_floor_watts as u8;
                     let max_base = gpu_caps.base_tgp_max_watts as u8;
                     let max_offset = max_base.saturating_sub(floor);
+                    let enable_db = cfg.balanced_gpu_dynamic_boost;
+                    let db = if enable_db {
+                        gpu_caps.max_db_watts.clamp(5, 35) as u8
+                    } else {
+                        0
+                    };
                     let _ = actuator.apply_gpu_state(
                         Some(false),
-                        Some(true),
+                        Some(enable_db),
                         Some(db),
                         Some(max_offset),
-                        "Balanced Mode Factory Baseline",
+                        if enable_db {
+                            "Balanced Mode Factory Baseline (DB on)"
+                        } else {
+                            "Balanced Mode Base TGP (DB off)"
+                        },
                     );
                 }
             }
@@ -232,25 +291,24 @@ pub fn apply_ec_hardware_mode(ui_mode: u8) {
             wmi_ec::wmi_write_ec(wmi_ec::ADDR_FAN_RAMP_RATE, 0x83);
             wmi_ec::set_fan_isolated_output(false);
             // 7. Apply Balanced Gaming Fan Table
-            apply_mode_fan_table(2);
+            if !crate::hal::is_legacy_pascal_turing_tongfang() {
+                apply_mode_fan_table(2);
+            }
         }
         3 => {
             // --- Beast / Turbo Mode (Red LED) ---
             // Clear Custom White LED override (preserve Bit 3 AC Recovery and Camera)
             if let Some(v) = wmi_ec::wmi_read_ec(wmi_ec::ADDR_AC_RECOVERY) {
-                wmi_ec::wmi_write_ec(wmi_ec::ADDR_AC_RECOVERY, v & !wmi_ec::MASK_QKEY_WHITE_1830);
+                wmi_ec::wmi_write_ec(wmi_ec::ADDR_AC_RECOVERY, v & !wmi_ec::MASK_QKEY_WHITE_AC_RECOVERY);
             }
             if let Some(v) = wmi_ec::wmi_read_ec(wmi_ec::ADDR_CAMERA_CUTOFF) {
-                wmi_ec::wmi_write_ec(wmi_ec::ADDR_CAMERA_CUTOFF, v & !wmi_ec::MASK_QKEY_WHITE_1831);
+                wmi_ec::wmi_write_ec(wmi_ec::ADDR_CAMERA_CUTOFF, v & !wmi_ec::MASK_QKEY_WHITE_CAMERA_CUTOFF);
             }
 
-            // Physical Mode & Chassis Q-Key LED: Red (0x10 on 40/50-series, 0x10/0x50 on legacy)
-            if wmi_ec::is_legacy_dual_mode_ec() {
-                wmi_ec::wmi_write_ec(wmi_ec::ADDR_FAN_BOOST_CLAMP, if fan_boost_active { 0x50 } else { 0x10 });
-            } else {
-                let val_clamp = if fan_boost_active { 0x10 | wmi_ec::FAN_BOOST_CLAMP_BIT } else { 0x10 };
-                wmi_ec::wmi_write_ec(wmi_ec::ADDR_FAN_BOOST_CLAMP, val_clamp);
-            }
+            // Physical Mode & Chassis Q-Key LED: Turbo / Beast (0x10 = high white / red)
+            let base_clamp = 0x10;
+            let val_clamp = if fan_boost_active { base_clamp | wmi_ec::FAN_BOOST_CLAMP_BIT } else { base_clamp };
+            wmi_ec::wmi_write_ec(wmi_ec::ADDR_FAN_BOOST_CLAMP, val_clamp);
 
             // 1. EC Mode Index: 0x10 (Turbo Mode, preserves Logo brightness & support bit 0)
             set_ec_mode_index(0x10);
@@ -258,7 +316,7 @@ pub fn apply_ec_hardware_mode(ui_mode: u8) {
             let cur_trig = wmi_ec::wmi_read_ec(wmi_ec::ADDR_TRIGGER_BYTE).unwrap_or(0);
             wmi_ec::wmi_write_ec(wmi_ec::ADDR_TRIGGER_BYTE, (cur_trig & 0x10) | 0x20);
             // 3. Clear silent mode status
-            wmi_ec::wmi_write_ec(wmi_ec::ADDR_TURBO_TRIGGER_1115, 0);
+            wmi_ec::wmi_write_ec(wmi_ec::ADDR_TURBO_TRIGGER, 0);
 
             // 4. Dynamic/Configured CPU Power Limits:
             // GROUND TRUTH RULE: If user has NOT set custom user_presets, DO NOT write power limit registers!
@@ -277,11 +335,32 @@ pub fn apply_ec_hardware_mode(ui_mode: u8) {
             }
 
             // 5. Dynamic GPU DB & TGP (Full factory Base TGP and DB capacity, discrete GPU only)
-            // Neutralize any GPU overclocking offsets applied in Custom Mode
+            // Apply or reset GPU overclocking offsets based on turbo_oc_enabled
             if crate::driver::gpu_bridge::is_nvidia_dgpu_available() {
-                let _ = crate::driver::nvapi::reset_gpu_clock_offsets();
+                let cfg = crate::system::config::load_config();
                 let gpu = crate::driver::gpu_bridge::get_global_gpu();
-                gpu.lock().set_clock_offsets(0, 0);
+                if cfg.turbo_oc_enabled {
+                    let core = cfg.gpu_oc_core_mhz.clamp(0, 250);
+                    let mem = cfg.gpu_oc_mem_mhz.clamp(0, 1000);
+                    if let Err(e) = crate::driver::nvapi::set_gpu_clock_offsets(core, mem) {
+                        crate::log_warn!("POWER_MODE", "Turbo Mode: Failed to apply GPU OC offsets ({}, {}): {}", core, mem, e);
+                    } else {
+                        gpu.lock().set_clock_offsets(core, mem);
+                        crate::log_info!("POWER_MODE", "Turbo Mode: Applied GPU OC offsets: core=+{}MHz, mem=+{}MHz", core, mem);
+                    }
+                } else {
+                    let (cur_core, cur_mem) = {
+                        let g = gpu.lock();
+                        (g.get_core_offset(), g.get_mem_offset())
+                    };
+                    if cur_core != 0 || cur_mem != 0 {
+                        let _ = crate::driver::nvapi::reset_gpu_clock_offsets();
+                        gpu.lock().set_clock_offsets(0, 0);
+                        crate::log_info!("POWER_MODE", "Turbo Mode: Reset previous GPU OC offsets to 0");
+                    } else {
+                        crate::log_info!("POWER_MODE", "Turbo Mode: turbo_oc is OFF, bypassing GPU clock offset overrides.");
+                    }
+                }
 
                 let gpu_caps = crate::driver::gpu_bridge::probe_gpu_tuning_capabilities();
                 if gpu_caps.supports_gpu_tuning {
@@ -305,7 +384,16 @@ pub fn apply_ec_hardware_mode(ui_mode: u8) {
             wmi_ec::wmi_write_ec(wmi_ec::ADDR_FAN_RAMP_RATE, 0x00);
             wmi_ec::set_fan_isolated_output(false);
             // 7. Apply Turbo Fan Table
-            apply_mode_fan_table(3);
+            if !crate::hal::is_legacy_pascal_turing_tongfang() {
+                apply_mode_fan_table(3);
+            }
+
+            // 8. Apply Turbo Submode if supported
+            if crate::system::power::turbo_submode::is_supported() {
+                if let Err(e) = crate::system::power::turbo_submode::apply_silent(cfg.turbo_silent) {
+                    crate::log_warn!("POWER_MODE", "turbo submode apply failed: {}", e);
+                }
+            }
         }
         4 => {
             // --- Custom Mode (White LED & User Custom Profile) ---
@@ -313,7 +401,7 @@ pub fn apply_ec_hardware_mode(ui_mode: u8) {
             let pre_pwr_mode = wmi_ec::wmi_read_ec(wmi_ec::ADDR_MODE_INDEX).unwrap_or(0);
             let pre_fan_clamp = wmi_ec::wmi_read_ec(wmi_ec::ADDR_FAN_BOOST_CLAMP).unwrap_or(0);
             let pre_trigger_byte = wmi_ec::wmi_read_ec(wmi_ec::ADDR_TRIGGER_BYTE).unwrap_or(0);
-            let pre_turbo_flag = wmi_ec::wmi_read_ec(wmi_ec::ADDR_TURBO_TRIGGER_1115).unwrap_or(0);
+            let pre_turbo_flag = wmi_ec::wmi_read_ec(wmi_ec::ADDR_TURBO_TRIGGER).unwrap_or(0);
             let pre_pl1 = wmi_ec::wmi_read_ec(wmi_ec::ADDR_CUSTOM_PL1).unwrap_or(0);
             let pre_pl2 = wmi_ec::wmi_read_ec(wmi_ec::ADDR_CUSTOM_PL2).unwrap_or(0);
             let pre_pl4 = wmi_ec::wmi_read_ec(wmi_ec::ADDR_CUSTOM_PL4).unwrap_or(0);
@@ -347,20 +435,24 @@ pub fn apply_ec_hardware_mode(ui_mode: u8) {
             // Physical Q-Key LED: Custom Mode (preserve Bit 3 AC Recovery) - Gaming laptops only
             if !crate::hal::platform_probe::is_ultrabook() {
                 if let Some(v) = wmi_ec::wmi_read_ec(wmi_ec::ADDR_AC_RECOVERY) {
-                    wmi_ec::wmi_write_ec(wmi_ec::ADDR_AC_RECOVERY, v | wmi_ec::MASK_QKEY_WHITE_1830);
+                    wmi_ec::wmi_write_ec(wmi_ec::ADDR_AC_RECOVERY, v | wmi_ec::MASK_QKEY_WHITE_AC_RECOVERY);
                 } else {
-                    wmi_ec::wmi_write_ec(wmi_ec::ADDR_AC_RECOVERY, wmi_ec::MASK_QKEY_WHITE_1830);
+                    wmi_ec::wmi_write_ec(wmi_ec::ADDR_AC_RECOVERY, wmi_ec::MASK_QKEY_WHITE_AC_RECOVERY);
                 }
                 if let Some(v) = wmi_ec::wmi_read_ec(wmi_ec::ADDR_CAMERA_CUTOFF) {
-                    wmi_ec::wmi_write_ec(wmi_ec::ADDR_CAMERA_CUTOFF, v | wmi_ec::MASK_QKEY_WHITE_1831);
+                    wmi_ec::wmi_write_ec(wmi_ec::ADDR_CAMERA_CUTOFF, v | wmi_ec::MASK_QKEY_WHITE_CAMERA_CUTOFF);
                 } else {
-                    wmi_ec::wmi_write_ec(wmi_ec::ADDR_CAMERA_CUTOFF, wmi_ec::MASK_QKEY_WHITE_1831);
+                    wmi_ec::wmi_write_ec(wmi_ec::ADDR_CAMERA_CUTOFF, wmi_ec::MASK_QKEY_WHITE_CAMERA_CUTOFF);
                 }
             }
             
-            // Read saved user custom profile
+            // Read saved user custom profile: prioritize matching active profile from list_profiles to avoid cache drift
             let cfg = crate::system::config::load_config();
-            let profile = cfg.custom_profile;
+            let profile = crate::system::config::list_profiles()
+                .into_iter()
+                .find(|p| p.id == cfg.active_profile_id)
+                .map(|p| p.profile)
+                .unwrap_or(cfg.custom_profile);
 
             crate::log_info!(
                 "CUSTOM_TRACE",
@@ -373,11 +465,17 @@ pub fn apply_ec_hardware_mode(ui_mode: u8) {
 
             let gpu_caps = crate::driver::gpu_bridge::probe_gpu_tuning_capabilities();
 
+            // 0. Explicitly assert Custom Mode hardware flag FIRST (ADDR_CUSTOM_MODE = 65)
+            // CRITICAL: Must be asserted BEFORE writing ADDR_TRIGGER_BYTE or ADDR_MODE_INDEX!
+            // If ADDR_CUSTOM_MODE is left at 64 (from previous Balance/Turbo mode) when TRIGGER_BYTE fires with
+            // MODE_INDEX = 0x10, the EC firmware interprets it as factory Turbo mode and forcibly overwrites
+            // custom PL1/PL2/PL4 with factory Turbo presets from ROM table!
+            wmi_ec::set_custom_mode_ec(true);
+
             // Physical Mode & Super Performance:
             // - Super Performance (HWOC): Follows user preference (profile.gpu_super_perf).
             //   When enabled, unlocks GPU hardware overclocking via NVAPI.
             //   When disabled, resets GPU clock offsets to 0 and allows strict Dynamic Boost power budgeting.
-            //   In 10/20-series (Pascal/Turing), Super Performance is unsupported -> bypass bit 4.
             let cur_clamp = wmi_ec::wmi_read_ec(wmi_ec::ADDR_FAN_BOOST_CLAMP).unwrap_or(0);
             let super_bit = if gpu_caps.supports_gpu_tuning && profile.gpu_super_perf {
                 wmi_ec::SUPER_PERF_BIT
@@ -390,7 +488,7 @@ pub fn apply_ec_hardware_mode(ui_mode: u8) {
             set_ec_mode_index(0x10);
 
             // Clear silent mode status
-            wmi_ec::wmi_write_ec(wmi_ec::ADDR_TURBO_TRIGGER_1115, 0);
+            wmi_ec::wmi_write_ec(wmi_ec::ADDR_TURBO_TRIGGER, 0);
 
             // Apply or reset GPU Clock Offsets via native NVAPI
             if gpu_caps.supports_gpu_tuning {
@@ -405,9 +503,9 @@ pub fn apply_ec_hardware_mode(ui_mode: u8) {
                         gpu.lock().set_clock_offsets(profile.gpu_core_offset_mhz, profile.gpu_mem_offset_mhz);
                     }
                 } else {
-                    let _ = crate::driver::nvapi::reset_gpu_clock_offsets();
-                    let gpu = crate::driver::gpu_bridge::get_global_gpu();
-                    gpu.lock().set_clock_offsets(0, 0);
+                    // Critical Guard: When gpu_super_perf is disabled, do NOT touch or reset NVAPI clock offsets.
+                    // This prevents wiping out external tuning tools (e.g. MSI Afterburner, GPU Curve Tuner plugin).
+                    crate::log_info!("POWER_MODE", "Custom Mode: gpu_super_perf is OFF, bypassing GPU clock offset overrides.");
                 }
             }
 
@@ -457,35 +555,53 @@ pub fn apply_ec_hardware_mode(ui_mode: u8) {
                 );
             }
 
-            // 3. Hardware Trigger Latch: Assert Trigger Byte (preserve Bit 4 USB Charging)
+            // 3. Custom Mode Hardware Switch & Fan strategies / Sensitivity
+            wmi_ec::set_fan_ramp_rate(profile.fan_ramp_rate, profile.fan_ramp_speed_ms);
+
+            // 4. Hardware Trigger Latch: Assert Trigger Byte (preserve Bit 4 USB Charging)
             // Latch all CPU & GPU power/thermal configurations into EC/SMM state machine
             let cur_trig = wmi_ec::wmi_read_ec(wmi_ec::ADDR_TRIGGER_BYTE).unwrap_or(0);
             wmi_ec::wmi_write_ec(wmi_ec::ADDR_TRIGGER_BYTE, (cur_trig & 0x10) | 0x20);
-
-            // 4. Custom Mode Hardware Switch & Fan strategies / Sensitivity
-            wmi_ec::set_custom_mode_ec(true);
-            wmi_ec::set_fan_ramp_rate(profile.fan_ramp_rate, profile.fan_ramp_speed_ms);
             
+            // 联动通道机型（无独显薄本）：manifest 声明 fan_independent_channels = false。
+            // 这类机器没有可用的第二通道温度源（0x044F 恒为 0），一旦 0x07C5 bit7 被置起，
+            // EC 会用 GPU 表驱动副扇，而 GPU 表永远停在第 0 档（duty 必须为 0x00），副扇从此不转。
+            // 所以隔离位必须保持清除，两把扇都跟随 CPU 表。切模式 / 应用方案 / 唤醒恢复都会走这里，
+            // 只在实时下发命令里清位是不够的。
+            let linked_channels = !crate::hal::declarative::load_matched_manifest()
+                .map(|m| m.capabilities.fan_independent_channels)
+                .unwrap_or(true);
+
             // If custom fan isolated output / curve is enabled in profile, build and apply user curve; otherwise default to turbo fan table
             // If Fan Boost is active, do not latch curve into EC RAM to preserve full speed!
             if !fan_boost_active {
-                if profile.fan_isolated_output || profile.fan_curve_enabled {
-                    if wmi_ec::is_legacy_dual_mode_ec() {
-                        crate::log_warn!("POWER_MODE", "Legacy Dual-Mode chassis does not support RamFan1p5 RAM curve injection, bypassing to protect fan FSM");
+                // 单通道机型 UI 上没有「启用曲线」开关，面板里显示的那条曲线就是用户意图，
+                // 所以这里把 linked_channels 也算作启用，避免切一次模式就退回固件表。
+                if profile.fan_isolated_output || profile.fan_curve_enabled || linked_channels {
+                    if crate::hal::is_legacy_pascal_turing_tongfang() {
+                        crate::log_warn!("POWER_MODE", "Legacy Pascal/Turing chassis does not support RamFan1p5 RAM curve injection, bypassing to protect fan FSM");
                     } else {
-                        // Assert ADDR_FAN_ISOLATED Bit 7 (Fan Independent Output / Custom Fan Table Active)
-                        wmi_ec::set_fan_isolated_output(true);
+                        // 独立通道机型：Assert ADDR_FAN_ISOLATED Bit 7（主副扇各走各的表）
+                        // 联动通道机型：保持清除，副扇继续跟随 CPU 表
+                        wmi_ec::set_fan_isolated_output(!linked_channels);
 
-                        let custom_table = build_custom_fan_table(&profile.cpu_fan_curve, &profile.gpu_fan_curve);
+                        let (cpu_curve, gpu_curve) = if linked_channels {
+                            (&profile.cpu_fan_curve, &profile.cpu_fan_curve)
+                        } else {
+                            (&profile.cpu_fan_curve, &profile.gpu_fan_curve)
+                        };
+                        let custom_table = build_custom_fan_table(cpu_curve, gpu_curve);
                         apply_fan_table_to_ec(&custom_table);
 
                         crate::log_info!(
                             "POWER_MODE",
-                            "Custom Fan Curve Activated: CustomMode asserted, FanIsolated asserted, ramp rate set, duties written to RAM"
+                            "Custom Fan Curve Activated: CustomMode asserted, FanIsolated={} (linked_channels={}), ramp rate set, duties written to RAM",
+                            !linked_channels,
+                            linked_channels
                         );
                     }
                 } else {
-                    if !wmi_ec::is_legacy_dual_mode_ec() {
+                    if !crate::hal::is_legacy_pascal_turing_tongfang() {
                         wmi_ec::set_fan_isolated_output(false);
                         apply_mode_fan_table(3);
                     }
@@ -500,10 +616,10 @@ pub fn apply_ec_hardware_mode(ui_mode: u8) {
 
             // Re-confirm White Q-Key LED post-latch to guarantee hardware latch permanence
             if let Some(v) = wmi_ec::wmi_read_ec(wmi_ec::ADDR_AC_RECOVERY) {
-                wmi_ec::wmi_write_ec(wmi_ec::ADDR_AC_RECOVERY, v | wmi_ec::MASK_QKEY_WHITE_1830);
+                wmi_ec::wmi_write_ec(wmi_ec::ADDR_AC_RECOVERY, v | wmi_ec::MASK_QKEY_WHITE_AC_RECOVERY);
             }
             if let Some(v) = wmi_ec::wmi_read_ec(wmi_ec::ADDR_CAMERA_CUTOFF) {
-                wmi_ec::wmi_write_ec(wmi_ec::ADDR_CAMERA_CUTOFF, v | wmi_ec::MASK_QKEY_WHITE_1831);
+                wmi_ec::wmi_write_ec(wmi_ec::ADDR_CAMERA_CUTOFF, v | wmi_ec::MASK_QKEY_WHITE_CAMERA_CUTOFF);
             }
 
             crate::log_info!("POWER_MODE", "Custom Mode (Mode 4) successfully asserted with White Q-Key LED, 0x10 Turbo base & Trigger");
@@ -518,7 +634,7 @@ pub fn apply_ec_hardware_mode(ui_mode: u8) {
     let raw_mode_index = wmi_ec::wmi_read_ec(wmi_ec::ADDR_MODE_INDEX).unwrap_or(0);
     let raw_trigger_byte = wmi_ec::wmi_read_ec(wmi_ec::ADDR_TRIGGER_BYTE).unwrap_or(0);
     let raw_fan_clamp = wmi_ec::wmi_read_ec(wmi_ec::ADDR_FAN_BOOST_CLAMP).unwrap_or(0);
-    let raw_turbo_flag = wmi_ec::wmi_read_ec(wmi_ec::ADDR_TURBO_TRIGGER_1115).unwrap_or(0);
+    let raw_turbo_flag = wmi_ec::wmi_read_ec(wmi_ec::ADDR_TURBO_TRIGGER).unwrap_or(0);
     let raw_pl1 = wmi_ec::wmi_read_ec(wmi_ec::ADDR_CUSTOM_PL1).unwrap_or(0);
     let raw_pl2 = wmi_ec::wmi_read_ec(wmi_ec::ADDR_CUSTOM_PL2).unwrap_or(0);
     let raw_pl4 = wmi_ec::wmi_read_ec(wmi_ec::ADDR_CUSTOM_PL4).unwrap_or(0);
@@ -571,6 +687,79 @@ pub fn apply_ec_hardware_mode(ui_mode: u8) {
                 "[ANOMALY] SilentMode status is active ({})! EC may override CPU fan curves and power targets.",
                 raw_turbo_flag
             );
+        }
+    }
+}
+
+/// Applies performance mode on Legacy Pascal/Turing (GTX 10-series / RTX 20-series) Tongfang laptops.
+/// Uses inverted mode codes (0: Gaming/Balance, 1: Office, 2: Turbo) and pulses ADDR_TRIGGER_BYTE.
+fn apply_legacy_pascal_turing_mode(ui_mode: u8, fan_boost_active: bool) {
+    use crate::driver::wmi_ec;
+
+    crate::log_info!("POWER_MODE", "Applying Legacy Pascal/Turing (10&20 Series) power mode {}...", ui_mode);
+
+    // 1. Assert APExist so EC grants control
+    if let Some(val) = wmi_ec::wmi_read_ec(wmi_ec::ADDR_AP_OEM_BYTE) {
+        if (val & 0x01) == 0 {
+            let ok = wmi_ec::wmi_write_ec(wmi_ec::ADDR_AP_OEM_BYTE, val | 0x01);
+            crate::log_info!("POWER_MODE", "Legacy 10&20 Assert APExist result: {}", ok);
+        }
+    }
+
+    // 2. Map UI Mode to Legacy EC Code:
+    // Ground Truth from ECSpec.cs: FAN_GAMING_MODE = 0, FAN_OFFICE_MODE = 1, FAN_TURBO_MODE = 2
+    let (legacy_code, trigger_val, silent_status) = match ui_mode {
+        1 => (1u8, 0x28u8, 1u8),       // Office
+        2 => (0u8, 0x20u8, 0u8),       // Balance / Gaming
+        3 | 4 => (2u8, 0x20u8, 0u8),   // Turbo / Custom
+        _ => (0u8, 0x20u8, 0u8),
+    };
+
+    // 3. Write ADDR_FAN_BOOST_CLAMP: lower 4 bits is mode, bit 6 (0x40) is FanBoost
+    let clamp_val = if fan_boost_active {
+        legacy_code | wmi_ec::FAN_BOOST_CLAMP_BIT
+    } else {
+        legacy_code
+    };
+    wmi_ec::wmi_write_ec(wmi_ec::ADDR_FAN_BOOST_CLAMP, clamp_val);
+
+    // 4. Write Hardware Trigger Gate ADDR_TRIGGER_BYTE (preserve Bit 4 USB charge)
+    let cur_trig = wmi_ec::wmi_read_ec(wmi_ec::ADDR_TRIGGER_BYTE).unwrap_or(0);
+    wmi_ec::wmi_write_ec(wmi_ec::ADDR_TRIGGER_BYTE, (cur_trig & 0x10) | trigger_val);
+
+    // 5. Silent mode flag (ADDR_TURBO_TRIGGER)
+    wmi_ec::wmi_write_ec(wmi_ec::ADDR_TURBO_TRIGGER, silent_status);
+
+    // 6. Optional: User presets for CPU PL1/PL2/PL4 if explicitly configured
+    let active_profile = crate::system::model_engine::get_active_profile();
+    let user_presets = active_profile.as_ref().and_then(|p| p.presets.as_ref());
+    if let Some(p) = user_presets {
+        let (pl1, pl2, pl4, tcc) = match ui_mode {
+            1 => (p.office.pl1, p.office.pl2, p.office.pl4, p.office.temp_offset),
+            2 => (p.balanced.pl1, p.balanced.pl2, p.balanced.pl4, p.balanced.temp_offset),
+            _ => (p.turbo.pl1, p.turbo.pl2, p.turbo.pl4, p.turbo.temp_offset),
+        };
+        wmi_ec::set_custom_pl_limits(pl1, pl2, pl4);
+        wmi_ec::apply_preset_tcc_adaptive(tcc);
+        crate::log_info!("POWER_MODE", "Legacy 10&20 Presets applied -> PL1={}W, PL2={}W, PL4={}W, TccOffset={}°C", pl1, pl2, pl4, tcc);
+    }
+
+    // 7. GPU Overclocking via NVAPI if Turbo mode and enabled
+    if crate::driver::gpu_bridge::is_nvidia_dgpu_available() {
+        let cfg = crate::system::config::load_config();
+        if (ui_mode == 3 || ui_mode == 4) && cfg.turbo_oc_enabled {
+            let core = cfg.gpu_oc_core_mhz.clamp(0, 250);
+            let mem = cfg.gpu_oc_mem_mhz.clamp(0, 1000);
+            if let Err(e) = crate::driver::nvapi::set_gpu_clock_offsets(core, mem) {
+                crate::log_warn!("POWER_MODE", "Legacy 10&20 Turbo: Failed to apply GPU OC offsets ({}, {}): {}", core, mem, e);
+            } else {
+                let gpu = crate::driver::gpu_bridge::get_global_gpu();
+                gpu.lock().set_clock_offsets(core, mem);
+            }
+        } else {
+            let _ = crate::driver::nvapi::reset_gpu_clock_offsets();
+            let gpu = crate::driver::gpu_bridge::get_global_gpu();
+            gpu.lock().set_clock_offsets(0, 0);
         }
     }
 }
