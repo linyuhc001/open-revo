@@ -616,7 +616,7 @@
       <div class="curve-canvas-wrap">
         <div class="canvas-toolbar">
           <div class="canvas-readout" id="readout">
-            <span>🖱️ 拖拽锚点可微调 | 按住 Shift 拖动向右水平削平锁频 | 双击锚点归零</span>
+            <span>🖱️ <b>拖动</b> 微调 · <b>Shift 上拉</b> 右侧整段平移 / <b>下拉</b> 削平锁频 · <b>双击</b> 归零</span>
           </div>
           <div class="canvas-btn-group">
             <button class="canvas-micro-btn" id="btnUndo" onclick="undoEdit()" title="撤销上次曲线改动 (快捷键 Ctrl+Z)" disabled>↶ 撤销</button>
@@ -1136,6 +1136,7 @@
       active: false,
       index: -1,
       shift: false,
+      shiftMode: null,   // 'shift'=上拉整段平移 / 'flatten'=下拉削平 / null=单点
       moved: false,
       startY: 0,
       startFreq: 0,
@@ -1208,14 +1209,18 @@
     function readout(idx) {
       const el = document.getElementById('readout');
       if (idx < 1 || !STATE.vfPoints || idx >= STATE.vfPoints.length) {
-        el.innerHTML = `<span>🖱️ 拖拽锚点可微调 | 按住 Shift 拖动向右水平削平锁频 | 双击锚点归零</span>`;
+        el.innerHTML = `<span>🖱️ <b>拖动</b> 微调 · <b>Shift 上拉</b> 右侧整段平移 / <b>下拉</b> 削平锁频 · <b>双击</b> 归零</span>`;
         return;
       }
       const p = STATE.vfPoints[idx];
       const effF = Math.round(getEffFreq(idx));
       const delta = (STATE.plannedDeltas ? STATE.plannedDeltas[idx] : p.delta_mhz) || 0;
       const deltaStr = (delta >= 0 ? '+' : '') + delta + ' MHz';
-      el.innerHTML = `<span><b>锚点 #${idx}</b> · <b>${p.volt_mv} mV</b> · <b>${effF} MHz</b> (${deltaStr})${drag.active && drag.shift ? ' · <span style="color:#10b981;">Shift水平削平中</span>' : ''}</span>`;
+      const shiftTip = drag.active && drag.shift
+        ? (drag.shiftMode === 'shift' ? ' · <span style="color:#10b981;">整段平移中</span>'
+          : drag.shiftMode === 'flatten' ? ' · <span style="color:#10b981;">削平锁频中</span>' : '')
+        : '';
+      el.innerHTML = `<span><b>锚点 #${idx}</b> · <b>${p.volt_mv} mV</b> · <b>${effF} MHz</b> (${deltaStr})${shiftTip}</span>`;
     }
 
     // --- Interactive Drag Handlers ---
@@ -1231,6 +1236,20 @@
       for (let i = idx + 1; i < STATE.plannedDeltas.length; i++) {
         STATE.plannedDeltas[i] = deltaFor(i, pinnedFreq);
       }
+    }
+
+    // Shift + 上拉：选中点及其右侧所有锚点，delta 同时加上同一个拖动量，整段形状完全不变。
+    // 左侧一个点都不碰；每个锚点仍受 DELTA_MIN/DELTA_MAX 单点钳制。压过左邻的部分会被
+    // 驱动 running-max 抬回，上游已有的橙色虚线预览会画出写入后的真实形状。
+    function setFollowShift(idx, wantFreq) {
+      const start = getEffFreq(idx);
+      const step = Math.round(wantFreq - start);
+      if (step === 0) return 0;
+      for (let i = idx; i < STATE.plannedDeltas.length; i++) {
+        const d = Math.round((STATE.plannedDeltas[i] || 0) + step);
+        STATE.plannedDeltas[i] = Math.max(DELTA_MIN, Math.min(DELTA_MAX, d));
+      }
+      return step;
     }
 
     function onPointerDown(ev) {
@@ -1249,7 +1268,8 @@
 
       drag.active = true;
       drag.index = idx;
-      drag.shift = ev.shiftKey || ev.altKey;
+      drag.shift = ev.shiftKey;   // 按下时锁定，不随拖动切换
+      drag.shiftMode = null;
       drag.moved = false;
       drag.startY = y;
       drag.startFreq = getEffFreq(idx);
@@ -1287,8 +1307,16 @@
       const targetFreq = Math.round(g.yToF(y));
 
       if (isShift) {
-        setFollowFlatten(drag.index, targetFreq);
+        // 上拉 → 右侧整段同幅平移（保持曲线形状）；下拉 → 右侧削平锁频。左侧始终不动。
+        if (targetFreq > drag.startFreq) {
+          drag.shiftMode = 'shift';
+          setFollowShift(drag.index, targetFreq);
+        } else {
+          drag.shiftMode = 'flatten';
+          setFollowFlatten(drag.index, targetFreq);
+        }
       } else {
+        drag.shiftMode = null;
         setSinglePoint(drag.index, targetFreq);
       }
 
@@ -1310,17 +1338,20 @@
         document.getElementById('statModeText').textContent = STATE.activeMode;
         const p = STATE.vfPoints[idx];
         const effF = Math.round(getEffFreq(idx));
-        const isShift = drag.shift || ev.shiftKey || ev.altKey;
+        const tail = Math.round(getEffFreq(STATE.vfPoints.length - 1));
+        const shiftMode = drag.shiftMode; // 'shift'=右侧整段平移 / 'flatten'=右侧削平 / null=单点
 
-        if (isShift) {
+        if (shiftMode) {
           STATE.targetVolt = p.volt_mv;
           STATE.targetFreq = effF;
           document.getElementById('inputTargetVolt').value = STATE.targetVolt;
           document.getElementById('inputTargetFreq').value = STATE.targetFreq;
         }
 
-        const modeDesc = isShift ? 'Shift 右侧水平削平锁频' : '单点微调';
-        log(`[✎] ${modeDesc}: 锚点 #${idx} (${p.volt_mv}mV) 调整为 ${effF}MHz (点击「一键写入」下发生效)`);
+        const modeDesc = shiftMode === 'shift' ? 'Shift 上拉·右侧整段同幅平移'
+                       : shiftMode === 'flatten' ? 'Shift 下拉·右侧削平锁频'
+                       : '单点微调';
+        log(`[✎] ${modeDesc}: 锚点 #${idx} (${p.volt_mv}mV) → ${effF}MHz，右侧末端 ${tail}MHz (点击「一键写入」下发生效)`);
         savePluginStorage({ syncWatcher: false });
       } else {
         // Did not actually move, pop redundant undo snapshot
