@@ -560,7 +560,7 @@
             <span class="header-badge" id="badgeVersion">v2.3.0 Native</span>
           </h1>
           <div class="header-desc">
-            底层硬件级截断充电回路 · 原生三寄存器 (0x07A6 + 0x07B9 + 0x07D0) · 无需心跳 · 彻底杜绝电池鼓包与过充
+            底层硬件级截断充电回路 · 原生双寄存器 (0x07A6 保护模式 + 0x07B9 上限) · 无需心跳 · 彻底杜绝电池鼓包与过充
           </div>
         </div>
       </div>
@@ -620,9 +620,6 @@
         <div class="stat-hint" id="statLimitHint">
           <span id="statLimitDesc">未设置限制</span>
         </div>
-        <div class="stat-hint">
-          <span id="statDownDesc" style="color: var(--text-dim); font-size: 10px;">回落下限 0x07D0 = --</span>
-        </div>
       </div>
 
     </div>
@@ -632,7 +629,7 @@
       <div class="panel-header">
         <div class="panel-title">
           <span>设定目标充电上限 (1% ~ 100% 自由可调)</span>
-          <span class="panel-badge" id="strategyModeBadge">原生三寄存器 (NATIVE)</span>
+          <span class="panel-badge" id="strategyModeBadge">原生双寄存器 (NATIVE)</span>
         </div>
         <span style="font-size: 11px; color: var(--text-dim);">
           到达设定阈值硬件自动切断充电，插着电源也不伤电池
@@ -695,7 +692,7 @@
       <!-- Action Row -->
       <div class="action-row">
         <div class="action-desc" id="actionDescText">
-          <b>运行机制</b>：采用<b>原生三寄存器模式</b>，一次写入 <code>0x07A6</code> 保护模式 + <code>0x07B9</code> 上限 + <code>0x07D0</code> 回落下限，由 EC 固件自己守住阈值，<b>无后台心跳</b>，与 OpenRevo 主程序及开机自恢复逻辑完全一致。
+          <b>运行机制</b>：采用<b>原生双寄存器模式</b>，一次写入 <code>0x07A6</code> 保护模式 + <code>0x07B9</code> 上限，由 EC 固件自己守住阈值，<b>无后台心跳</b>。
         </div>
         <div class="action-buttons">
           <button id="btnCancel" class="btn btn-danger" onclick="triggerCancelLimit()">
@@ -714,9 +711,8 @@
 
   <script>
     // --- 状态与配置存储 ---
-    // 原生三寄存器固定地址（写死，不再提供界面修改）
+    // 原生双寄存器固定地址（写死，不再提供界面修改）
     const REG_LIMIT_UP = 1977;      // 0x07B9 充电上限
-    const REG_LIMIT_DOWN = 2000;    // 0x07D0 回落下限
     const REG_PROTECT_MODE = 1958;  // 0x07A6 电池保护模式
     const EC_PROTOCOL = 'TongfangDirectEc';
 
@@ -734,7 +730,6 @@
       station: { code: 0x21, name: '工作站模式', short: '工作站' },
     };
     const TOUCHPAD_BITMASK = 0x08;
-    const DOWN_OFFSET = 5;
     const STORAGE_SCHEMA = 2;
 
     // 与宿主 ec_bridge::apply_battery_limit_with_override 完全相同的档位推导，
@@ -975,22 +970,20 @@
       const applyBtn = document.getElementById('btnApply');
       if (!badge || !desc) return;
 
-      badge.textContent = '原生三寄存器 (NATIVE)';
+      badge.textContent = '原生双寄存器 (NATIVE)';
       const modeKey = healthModeForTarget(STATE.currentTarget);
-      const down = STATE.currentTarget > DOWN_OFFSET ? STATE.currentTarget - DOWN_OFFSET : STATE.currentTarget;
-      desc.innerHTML = `<b>运行机制</b>：一次写入 <code>0x07A6</code> 保护模式（${HEALTH_MODES[modeKey].name}）+ <code>0x07B9</code> 上限 ${STATE.currentTarget}% + <code>0x07D0</code> 回落下限 ${down}%，由 EC 固件自己守住阈值，<b>无后台心跳</b>，与 OpenRevo 主程序的开机自恢复逻辑完全一致。`;
+      desc.innerHTML = `<b>运行机制</b>：一次写入 <code>0x07A6</code> 保护模式（${HEALTH_MODES[modeKey].name}）+ <code>0x07B9</code> 上限 ${STATE.currentTarget}%，由 EC 固件自己守住阈值，<b>无后台心跳</b>。`;
       if (applyBtn) applyBtn.textContent = '写入并生效';
     }
 
-    // --- 原生三寄存器模式：一次写入 0x07A6 + 0x07B9 + 0x07D0，无心跳 ---
+    // --- 原生双寄存器模式：一次写入 0x07A6 + 0x07B9，无心跳 ---
     async function runNativeApply() {
       setBusy(true);
       const target = STATE.currentTarget;
       const modeKey = healthModeForTarget(target);
       const modeCode = HEALTH_MODES[modeKey].code;
-      const downLimit = target > DOWN_OFFSET ? target - DOWN_OFFSET : target;
 
-      logConsole(`=== 原生三寄存器模式: 目标 ${target}%，保护档位 ${HEALTH_MODES[modeKey].name} ===`);
+      logConsole(`=== 原生双寄存器模式: 目标 ${target}%，保护档位 ${HEALTH_MODES[modeKey].name} ===`);
       STATE.isLimitActive = false;
 
       try {
@@ -1008,11 +1001,10 @@
         const finalByte = (modeCode & ~TOUCHPAD_BITMASK) | tpBit;
         logConsole(`[1/3] 当前 0x07A6 = 0x${curMode.toString(16).toUpperCase().padStart(2, '0')}，触控板位=${tpBit ? '1' : '0'} → 将写入 0x${finalByte.toString(16).toUpperCase().padStart(2, '0')} (${HEALTH_MODES[modeKey].name})`);
 
-        // 2. 上限 + 回落下限
-        showProgress(true, `2/3: 写入充电上限 ${target}% / 回落下限 ${downLimit}%...`, 50);
+        // 2. 充电上限
+        showProgress(true, `2/3: 写入充电上限 ${target}%...`, 50);
         await ecWrite(REG_LIMIT_UP, target);
-        await ecWrite(REG_LIMIT_DOWN, downLimit);
-        logConsole(`[2/3] 0x07B9 = ${target}%，0x07D0 = ${downLimit}%（${DOWN_OFFSET}% 滞回）`);
+        logConsole(`[2/3] 0x07B9 = ${target}%`);
 
         // 3. 写入保护模式并回读校验
         showProgress(true, '3/3: 写入保护模式并回读校验...', 82);
@@ -1021,17 +1013,15 @@
         // 回读校验
         showProgress(true, '3/3: 回读校验...', 90);
         await new Promise((r) => setTimeout(r, 300));
-        const [rbUp, rbDown, rbMode] = await Promise.all([
+        const [rbUp, rbMode] = await Promise.all([
           ecRead(REG_LIMIT_UP).catch(() => null),
-          ecRead(REG_LIMIT_DOWN).catch(() => null),
           ecRead(REG_PROTECT_MODE).catch(() => null),
         ]);
         const upVal = rbUp !== null ? (rbUp & 0x7f) : null;
         const okUp = upVal === target;
-        const okDown = rbDown !== null && rbDown === downLimit;
         const okMode = rbMode !== null && (rbMode & ~TOUCHPAD_BITMASK) === (modeCode & ~TOUCHPAD_BITMASK);
 
-        logConsole(`[3/3] 回读: 0x07B9=${upVal === null ? '?' : upVal}% (${okUp ? '✓' : '✗'})，0x07D0=${rbDown === null ? '?' : rbDown}% (${okDown ? '✓' : '✗'})，0x07A6=0x${rbMode === null ? '?' : rbMode.toString(16).toUpperCase().padStart(2, '0')} (${okMode ? '✓' : '✗'})`);
+        logConsole(`[3/3] 回读: 0x07B9=${upVal === null ? '?' : upVal}% (${okUp ? '✓' : '✗'})，0x07A6=0x${rbMode === null ? '?' : rbMode.toString(16).toUpperCase().padStart(2, '0')} (${okMode ? '✓' : '✗'})`);
 
         STATE.isLimitActive = okUp;
         await refreshHardwareState();
@@ -1047,7 +1037,7 @@
 
         if (okUp && okMode) {
           showToast(`✅ 已生效：上限 ${target}%，${HEALTH_MODES[modeKey].short}模式，由 EC 固件自行守住`);
-          logConsole(`[+] 写入完成，无需心跳。EC 将在 ${downLimit}% 以下才开始补电，充到 ${target}% 停止。\n`);
+          logConsole(`[+] 写入完成，无需心跳。EC 将在 ${target}% 停止充电。\n`);
         } else if (okUp) {
           showToast(`⚠️ 上限已写入 ${target}%，但保护模式字节未按预期落盘（回读 0x${rbMode === null ? '?' : rbMode.toString(16)}）`);
           logConsole('[!] 保护模式回读不符：可能是固件自行重算了档位，上限仍然有效。\n');
@@ -1068,13 +1058,12 @@
 
     async function runNativeCancel() {
       setBusy(true);
-      logConsole('=== 原生三寄存器模式：取消限充（恢复充满）===');
+      logConsole('=== 原生双寄存器模式：取消限充（恢复充满）===');
 
       try {
-        showProgress(true, '1/2: 写入 100% 上限 / 95% 回落下限...', 30);
+        showProgress(true, '1/2: 写入 100% 上限...', 30);
         await ecWrite(REG_LIMIT_UP, 100);
-        await ecWrite(REG_LIMIT_DOWN, 95);
-        logConsole('[1/2] 0x07B9 = 100%，0x07D0 = 95%');
+        logConsole('[1/2] 0x07B9 = 100%');
 
         showProgress(true, '2/2: 保护模式切回长效 (LongLife) 并回读...', 70);
         let finalByte = HEALTH_MODES.longlife.code;
@@ -1142,7 +1131,6 @@
         const vPid = await ecRead(1856).catch(() => null);   // 0x0740 Project ID
         const vMode = await ecRead(REG_PROTECT_MODE).catch(() => null);  // 0x07A6 Protection Mode
         const vLim = await ecRead(REG_LIMIT_UP).catch(() => null);  // 0x07B9 Limit Up
-        const vDown = await ecRead(REG_LIMIT_DOWN).catch(() => null);  // 0x07D0 Limit Down
 
         const modeKey = vMode !== null ? modeNameFromByte(vMode) : null;
         const limVal = vLim !== null ? (vLim & 0x7f) : 0;
@@ -1155,11 +1143,10 @@
     - Project ID  (0x0740) : 0x${hex2(vPid)} (模具识别码)
     - 保护模式    (0x07A6) : 0x${hex2(vMode)} ${modeKey ? '(' + HEALTH_MODES[modeKey].name + ')' : '(未设定/未知)'}
     - 充电上限    (0x07B9) : ${limVal}% (已达上限 bit7=${isReached})
-    - 回落下限    (0x07D0) : ${vDown === null ? '??' : vDown}%
         `;
         logConsole(report);
 
-        const diagMsg = `Project ID 0x${hex2(vPid)} | 保护模式 ${modeKey ? HEALTH_MODES[modeKey].name : '未设定'} | 上限 ${limVal}% / 下限 ${vDown === null ? '?' : vDown}%\n✅ 原生三寄存器通路正常，无需心跳即可保持限充。`;
+        const diagMsg = `Project ID 0x${hex2(vPid)} | 保护模式 ${modeKey ? HEALTH_MODES[modeKey].name : '未设定'} | 上限 ${limVal}%\n✅ 原生双寄存器通路正常，无需心跳即可保持限充。`;
         alert(diagMsg);
         await refreshHardwareState();
       } catch (e) {
@@ -1171,9 +1158,8 @@
     // --- 状态刷新 ---
     async function refreshHardwareState() {
       try {
-        const [vLim, vDown, vMode] = await Promise.all([
+        const [vLim, vMode] = await Promise.all([
           ecRead(REG_LIMIT_UP).catch(() => null),
-          ecRead(REG_LIMIT_DOWN).catch(() => null),
           ecRead(REG_PROTECT_MODE).catch(() => null),
         ]);
 
@@ -1189,10 +1175,7 @@
             `0x${vMode.toString(16).toUpperCase().padStart(2, '0')} · 触控板位=${tpOn ? '1' : '0'}`;
         }
 
-        // 卡片 3：硬件充电上限 (EC 0x07B9) + 回落下限 (EC 0x07D0)
-        document.getElementById('statDownDesc').textContent =
-          vDown === null ? '回落下限 0x07D0 = --' : `回落下限 0x07D0 = ${vDown}%`;
-
+        // 卡片 3：硬件充电上限 (EC 0x07B9)
         if (vLim !== null) {
           const limitNum = vLim & 0x7f;
           const isReached = (vLim & 0x80) !== 0;
