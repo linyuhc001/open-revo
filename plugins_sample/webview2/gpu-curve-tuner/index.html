@@ -394,10 +394,21 @@
       padding: 10px 14px;
       font-family: Consolas, "Courier New", monospace;
       font-size: 11px;
+      line-height: 1.6;
       color: #38bdf8;
-      max-height: 105px;
+      max-height: 115px;
       overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
     }
+    .console-box .log-line {
+      margin-bottom: 2px;
+      word-break: break-all;
+    }
+    .console-box .log-line.log-success { color: #34d399; }
+    .console-box .log-line.log-warn { color: #fbbf24; }
+    .console-box .log-line.log-error { color: #f87171; }
+    .console-box .log-line.log-info { color: #38bdf8; }
 
     .input-field {
       background: #121826;
@@ -411,15 +422,13 @@
     }
   
     /* Manual Dragging & Canvas Toolbar */
-    /* 工具栏恒定单行：readout 文字长度不再影响按钮位置（超长时省略号截断），
-       按钮始终钉在右端，避免鼠标划过锚点时按钮因文字变长/变短而来回跳动。 */
     .canvas-toolbar {
       display: flex;
       align-items: center;
       justify-content: space-between;
       margin-bottom: 8px;
       gap: 8px;
-      flex-wrap: nowrap;
+      flex-wrap: wrap;
     }
     .canvas-readout {
       font-size: 11px;
@@ -429,29 +438,16 @@
       border: 1px solid rgba(6, 182, 212, 0.2);
       border-radius: var(--radius-sm);
       padding: 3px 8px;
-      min-height: 26px;
-      flex: 0 1 auto;
-      min-width: 0;
+      min-height: 24px;
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      white-space: nowrap;
       user-select: none;
-    }
-    /* 只在文字层做省略号，容器不裁切，避免 emoji 上下被切掉 */
-    .canvas-readout > span {
-      min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      line-height: 18px;
     }
     .canvas-btn-group {
       display: flex;
       align-items: center;
       gap: 6px;
-      flex: 0 0 auto;
-      margin-left: auto;
     }
     .canvas-micro-btn {
       background: var(--surface-card);
@@ -503,7 +499,7 @@
           </span>
         </div>
         <div class="hero-subtitle">
-          免小飞机纯 Rust 驱动级显卡调优 · 支持 V/F 曲线手动编辑、plugin_storage 持久化与宿主双向事件联动
+          免小飞机纯 Rust 驱动级显卡调优 · 100% 独立便携 · 支持 plugin_storage 与宿主双向事件联动
         </div>
       </div>
       <div>
@@ -591,7 +587,7 @@
         <button class="preset-btn" onclick="applyPreset(850, 2250, '极致低温 (850mV)')">
           ❄️ 极致低温 (850mV @ 2250MHz)
         </button>
-        <button class="preset-btn active" onclick="applyPreset(875, 2450, '黄金甜点 (875mV)')">
+        <button class="preset-btn" onclick="applyPreset(875, 2450, '黄金甜点 (875mV)')">
           ⚡ 黄金甜点 (875mV @ 2450MHz)
         </button>
         <button class="preset-btn" onclick="applyPreset(900, 2600, '极客能效 (900mV)')">
@@ -620,7 +616,7 @@
       <div class="curve-canvas-wrap">
         <div class="canvas-toolbar">
           <div class="canvas-readout" id="readout">
-            <span>🖱️ <b>拖动</b> 微调 · <b>Shift</b> 整段平移（压过左邻→橙色虚线）· <b>双击</b> 归零</span>
+            <span>🖱️ 拖拽锚点可微调 | 按住 Shift 拖动向右水平削平锁频 | 双击锚点归零</span>
           </div>
           <div class="canvas-btn-group">
             <button class="canvas-micro-btn" id="btnUndo" onclick="undoEdit()" title="撤销上次曲线改动 (快捷键 Ctrl+Z)" disabled>↶ 撤销</button>
@@ -664,17 +660,20 @@
 
     <!-- Output log console -->
     <div class="console-box" id="consoleBox">
-      [00:00:00] 正在连接 OpenRevo 宿主 NVAPI 驱动网关...
+      <div class="log-line log-info">[00:00:00] 正在连接 OpenRevo 宿主 NVAPI 驱动网关...</div>
     </div>
   </div>
 
   <script>
     const PLUGIN_ID = 'gpu-curve-tuner';
     const LOCAL_STORAGE_KEY = 'openrevo_plugin_gpu_curve_tuner_cfg';
-    const V_MIN = 700, V_MAX = 1150;        // 电压轴：700mV 以下是待机死区，1150mV 以上不显示
-    const F_MAX = 3000;                     // 频率轴顶端（高于此值的锚点不绘制）
-    const DELTA_MIN = -500, DELTA_MAX = 1000; // 单锚点偏移硬限制（与后端 nvapi.rs 一致）
-    const HIT_PX = 14;      // 命中判定半径 (像素)
+    // [极客自由度配置 / DIY Tuner Config]
+    // 默认最大允许单点向上超频幅度 (+500MHz)，向下压降幅度 (-1000MHz)。
+    // 追求极致性能的玩家可直接用记事本打开本文件，自由修改 DELTA_MAX（如改为 600、800 或更大），
+    // 底层 NVAPI 驱动已全面解除安全硬上限限制，完全尊重玩家自由意志。
+    const DELTA_MIN = -1000;
+    const DELTA_MAX = 500;
+    const HIT_PX = 14;     // 判定半径 (像素)
 
     // --- State Storage ---
     const STATE = {
@@ -684,9 +683,7 @@
       coreOffset: 0,
       memOffset: 0,
       vfPoints: [],
-      // 出厂基线：首次读回时固定下来，之后不再随读回值漂移。
-      // 编辑缓冲区始终以它为参照，delta 的语义才不会自我污染。
-      stockBaseline: [],
+      stockBaseline: null, // Pristine factory baseline [{ volt_mv, freq_mhz }] protected from mutation
       plannedDeltas: null,
       targetVolt: 875,
       targetFreq: 2450,
@@ -713,8 +710,20 @@
 
     function log(msg) {
       const box = document.getElementById('consoleBox');
+      if (!box) return;
       const time = new Date().toTimeString().split(' ')[0];
-      box.innerHTML += `\n[${time}] ${msg}`;
+      const line = document.createElement('div');
+      let typeClass = 'log-info';
+      if (msg.includes('[✓]') || msg.includes('[+]') || msg.includes('🎉') || msg.includes('[💾]')) {
+        typeClass = 'log-success';
+      } else if (msg.includes('[-]') || msg.includes('[!]')) {
+        typeClass = 'log-error';
+      } else if (msg.includes('[✎]') || msg.includes('[⟲]') || msg.includes('[⟳]')) {
+        typeClass = 'log-warn';
+      }
+      line.className = `log-line ${typeClass}`;
+      line.textContent = `[${time}] ${msg}`;
+      box.appendChild(line);
       box.scrollTop = box.scrollHeight;
     }
 
@@ -760,34 +769,43 @@
           });
         }
 
-        const isEnabled = actions.length > 0;
-        const watcherDef = {
-          id: 'gpu-undervolt-guard',
-          name: '微内核显卡降压超频自愈守护',
-          plugin_id: PLUGIN_ID,
-          enabled: isEnabled,
-          cooldown_ms: 5000,
-          condition: {
-            type: 'power_event',
-            event: 'ac_connected'
-          },
-          actions: isEnabled ? actions : []
-        };
+        const isEnabled = actions.length > 0 && STATE.activeMode !== '出厂默认';
+        const watchers = [];
 
-        if (window.OpenRevo && typeof window.OpenRevo.registerWatcher === 'function') {
-          await window.OpenRevo.registerWatcher(watcherDef);
-        } else if (window.parent && window.parent.__OPENREVO_BRIDGE__ && typeof window.parent.__OPENREVO_BRIDGE__.registerWatcher === 'function') {
-          await window.parent.__OPENREVO_BRIDGE__.registerWatcher(watcherDef);
+        if (isEnabled) {
+          watchers.push({
+            id: 'gpu-undervolt-guard',
+            name: '微内核显卡降压超频自愈守护 (开机、电源接入与模式切换)',
+            plugin_id: PLUGIN_ID,
+            enabled: true,
+            cooldown_ms: 1000,
+            when: {
+              type: 'any',
+              conditions: [
+                { type: 'startup' },
+                { type: 'power_event', event: 'ac_connected' },
+                { type: 'power_event', event: 'mode_switched' }
+              ]
+            },
+            actions: actions
+          });
+        }
+
+        if (window.OpenRevo && typeof window.OpenRevo.setPluginWatchers === 'function') {
+          await window.OpenRevo.setPluginWatchers(PLUGIN_ID, watchers);
+        } else if (window.parent && window.parent.__OPENREVO_BRIDGE__ && typeof window.parent.__OPENREVO_BRIDGE__.setPluginWatchers === 'function') {
+          await window.parent.__OPENREVO_BRIDGE__.setPluginWatchers(PLUGIN_ID, watchers);
         } else {
-          await rpc('register_custom_watcher', { watcher: watcherDef }).catch(() => {});
+          await rpc('set_plugin_watchers', { pluginId: PLUGIN_ID, watchers });
         }
 
         const hintEl = document.getElementById('statStorageHint');
         if (hintEl) {
           hintEl.textContent = isEnabled
-            ? '已保存并同步至微内核看门狗 (开机与重连自愈生效)'
+            ? '已保存并同步至微内核沙盒 (开机与唤醒0MB常驻生效)'
             : '已恢复出厂并同步关闭微内核看门狗';
         }
+        console.log('[WatcherSync] 成功原子化同步显卡 Watcher 至微内核沙盒:', watchers);
       } catch (err) {
         console.warn('[WatcherSync] 同步 Watcher 到宿主事件中心失败:', err);
       }
@@ -815,6 +833,10 @@
           if (typeof stored.target_freq === 'number') STATE.targetFreq = stored.target_freq;
           if (typeof stored.active_mode === 'string') STATE.activeMode = stored.active_mode;
           
+          if (Array.isArray(stored.stock_baseline) && stored.stock_baseline.length > 0) {
+            STATE.stockBaseline = stored.stock_baseline;
+          }
+
           const rawDeltas = Array.isArray(stored.planned_deltas) ? stored.planned_deltas : (Array.isArray(stored.deltas) ? stored.deltas : null);
           if (rawDeltas) STATE.plannedDeltas = rawDeltas.slice();
 
@@ -828,6 +850,7 @@
           document.getElementById('inputTargetFreq').value = STATE.targetFreq;
           document.getElementById('statModeText').textContent = STATE.activeMode;
           document.getElementById('statStorageHint').textContent = '已恢复 plugin_storage 方案';
+          updatePresetButtons(STATE.activeMode);
           refreshSnapshotButton();
 
           log(`[*] 成功从 plugin_storage 恢复持久化方案: ${STATE.activeMode} (${STATE.targetVolt}mV @ ${STATE.targetFreq}MHz)`);
@@ -837,7 +860,8 @@
       }
     }
 
-    async function savePluginStorage() {
+    async function savePluginStorage(options = {}) {
+      const { syncWatcher = false } = options;
       const config = {
         schema: 2,
         target_volt: STATE.targetVolt,
@@ -847,6 +871,7 @@
         active_mode: STATE.activeMode,
         planned_deltas: STATE.plannedDeltas,
         deltas: STATE.plannedDeltas,
+        stock_baseline: STATE.stockBaseline,
         saved_snapshot: STATE.savedSnapshot,
         updated_at: new Date().toISOString()
       };
@@ -858,16 +883,16 @@
       try {
         if (window.OpenRevo && window.OpenRevo.storage && typeof window.OpenRevo.storage.set === 'function') {
           await window.OpenRevo.storage.set(config);
-          await syncWatcherToHost();
+          if (syncWatcher) await syncWatcherToHost();
           return;
         }
         if (window.parent && window.parent.__OPENREVO_BRIDGE__ && window.parent.__OPENREVO_BRIDGE__.storage) {
           await window.parent.__OPENREVO_BRIDGE__.storage.set(config);
-          await syncWatcherToHost();
+          if (syncWatcher) await syncWatcherToHost();
           return;
         }
         await rpc('set_plugin_storage', { pluginId: PLUGIN_ID, data: config });
-        await syncWatcherToHost();
+        if (syncWatcher) await syncWatcherToHost();
       } catch (e) {
         console.warn('[Storage] Save failed:', e);
       }
@@ -890,34 +915,27 @@
         STATE.memOffset = info.mem_offset_mhz || 0;
         STATE.vfPoints = info.vf_points || [];
 
-        // 出厂基线 stock = 该锚点在「零偏移」时的频率。
-        // 读回时如果所有偏移都是 0，说明硬件就是出厂态，直接拿 freq 当基线 —— 这一步
-        // 同时把被旧数据污染过的基线自愈回来：基线一旦算错，出厂虚线、拖动基准、delta
-        // 换算会全部跟着偏，而且不会自己恢复。
-        const pts = STATE.vfPoints;
-        if (pts.length) {
-          const allZero = pts.every(p => !p.delta_mhz);
-          const lenChanged = STATE.stockBaseline.length !== pts.length;
-          if (allZero) {
-            const fresh = pts.map(p => p.freq_mhz);
-            if (lenChanged || fresh.some((f, i) => Math.abs(f - STATE.stockBaseline[i]) > 1)) {
-              log('[*] 硬件处于出厂态，已按读回值重建出厂基线');
-            }
-            STATE.stockBaseline = fresh;
-          } else if (lenChanged) {
-            STATE.stockBaseline = pts.map(p => p.freq_mhz - (p.delta_mhz || 0));
+        // 捕获并严密保护纯净出厂基准线 (Stock Baseline Cache)
+        const isCleanStock = STATE.vfPoints.length > 0 && STATE.vfPoints.every(p => (p.delta_mhz || 0) === 0);
+        if (STATE.vfPoints.length > 0) {
+          if (isCleanStock || !STATE.stockBaseline || STATE.stockBaseline.length !== STATE.vfPoints.length) {
+            STATE.stockBaseline = STATE.vfPoints.map(p => ({
+              volt_mv: p.volt_mv,
+              freq_mhz: isCleanStock ? p.freq_mhz : Math.max(0, p.freq_mhz - (p.delta_mhz || 0))
+            }));
+            savePluginStorage({ syncWatcher: false });
           }
+        }
 
-          // 编辑缓冲区只在缺失或点数不符时初始化。已经存在的方案不会被一次刷新抹掉，
-          // 否则「写入后刷新」会把你刚画的曲线清成 0。
-          if (!STATE.plannedDeltas || STATE.plannedDeltas.length !== pts.length) {
-            // 上游修复：硬件全出厂态但仍有活动预设时重算预设曲线（刷新页面后恢复方案）
-            const hasActiveHardwareDeltas = pts.some(p => (p.delta_mhz || 0) !== 0);
-            if (!hasActiveHardwareDeltas && STATE.targetVolt && STATE.targetFreq && STATE.activeMode !== '出厂默认') {
-              calculatePlannedCurve(STATE.targetVolt, STATE.targetFreq, STATE.activeMode);
-            } else {
-              STATE.plannedDeltas = pts.map(p => p.delta_mhz || 0);
-            }
+        // If no planned curve, synchronize from current physical curve or calculate from active preset
+        if (!STATE.plannedDeltas && STATE.vfPoints.length > 0) {
+          const hasActiveHardwareDeltas = STATE.vfPoints.some(p => (p.delta_mhz || 0) !== 0);
+          if (hasActiveHardwareDeltas) {
+            STATE.plannedDeltas = STATE.vfPoints.map(p => p.delta_mhz || 0);
+          } else if (STATE.targetVolt && STATE.targetFreq && STATE.activeMode !== '出厂默认') {
+            calculatePlannedCurve(STATE.targetVolt, STATE.targetFreq, STATE.activeMode);
+          } else {
+            STATE.plannedDeltas = STATE.vfPoints.map(() => 0);
           }
         }
 
@@ -957,16 +975,22 @@
       document.getElementById('statMemOffset').textContent = (STATE.memOffset >= 0 ? '+' : '') + STATE.memOffset + ' MHz';
     }
 
+    // --- Preset Buttons State Helper ---
+    function updatePresetButtons(activeLabel) {
+      document.querySelectorAll('.preset-btn').forEach(btn => {
+        if (activeLabel && btn.textContent.includes(activeLabel)) {
+          btn.classList.add('active');
+        } else {
+          btn.classList.remove('active');
+        }
+      });
+    }
+
     // --- Automatic Undervolt Calculation (Stock-Baseline Idempotent Algorithm) ---
     function applyPreset(volt, freq, label) {
       document.getElementById('inputTargetVolt').value = volt;
       document.getElementById('inputTargetFreq').value = freq;
-      
-      document.querySelectorAll('.preset-btn').forEach(btn => btn.classList.remove('active'));
-      if (window.event && window.event.currentTarget) {
-        window.event.currentTarget.classList.add('active');
-      }
-
+      updatePresetButtons(label);
       calculatePlannedCurve(volt, freq, label);
     }
 
@@ -977,14 +1001,11 @@
         log('[-] 请输入合法的目标电压与目标频率');
         return;
       }
-      document.querySelectorAll('.preset-btn').forEach(btn => btn.classList.remove('active'));
+      updatePresetButtons(null);
       calculatePlannedCurve(v, f, `自定义 (${v}mV @ ${f}MHz)`);
     }
 
-    // 锁压闭环必须以「驱动当前实际 delta」为基准，而不是编辑缓冲区：缓冲区可能因为
-    // 手动拖拽和驱动实际状态脱节，拿它当基准 shift 就算错，电压锁不住。所以先读回
-    // 硬件，再用读回值反推当前频率做闭环。
-    async function calculatePlannedCurve(targetVolt, targetFreq, label) {
+    function calculatePlannedCurve(targetVolt, targetFreq, label) {
       STATE.targetVolt = targetVolt;
       STATE.targetFreq = targetFreq;
       STATE.activeMode = label;
@@ -995,55 +1016,74 @@
         return;
       }
 
-      // 1. 读回驱动当前曲线，作为闭环基准
-      try {
-        const info = await rpc('get_gpu_tuning_info');
-        if (info && Array.isArray(info.vf_points) && info.vf_points.length) {
-          STATE.vfPoints = info.vf_points;
-        }
-      } catch (_) { /* 读回失败则沿用现有锚点 */ }
-
       pushUndo();
 
-      const points = STATE.vfPoints;
-      const cur = points.map(p => p.freq_mhz);
-
-      // 2. 找离目标电压最近的锚点
-      let targetIdx = 0, minDiff = Infinity;
-      for (let i = 0; i < points.length; i++) {
-        const diff = Math.abs(points[i].volt_mv - targetVolt);
-        if (diff < minDiff) { minDiff = diff; targetIdx = i; }
+      const count = STATE.vfPoints.length;
+      // 1. 查找电压最接近目标电压的硬件锚点（优先参考纯净出厂基准）
+      let targetIdx = 0;
+      let minDiff = 999999;
+      for (let i = 0; i < count; i++) {
+        const v = (STATE.stockBaseline && STATE.stockBaseline[i]) ? STATE.stockBaseline[i].volt_mv : STATE.vfPoints[i].volt_mv;
+        const diff = Math.abs(v - targetVolt);
+        if (diff < minDiff) {
+          minDiff = diff;
+          targetIdx = i;
+        }
       }
 
-      // 本地闭环算法：以读回的当前曲线为基准逐点 deltaFor（内部已 clamp 到 ±DELTA），
-      // 因此不存在上游「名义 targetFreq 超出可达范围」的锁频电压不匹配问题。
-      // 3. 低压段整段平移，让目标锚点正好落在目标频率；高压段削平到目标频率
-      const shift = targetFreq - cur[targetIdx];
-      const newDeltas = new Array(points.length).fill(0);
-      for (let i = 1; i < points.length; i++) {
-        const want = i <= targetIdx ? cur[i] + shift : targetFreq;
-        newDeltas[i] = deltaFor(i, want);
+      // 2. 基于纯净出厂基准计算目标增量 targetDelta
+      const stockFreqAtTarget = getStockFreq(targetIdx);
+      const targetDelta = Math.max(DELTA_MIN, Math.min(DELTA_MAX, targetFreq - stockFreqAtTarget));
+      const actualTargetFreq = stockFreqAtTarget + targetDelta;
+
+      const newDeltas = new Array(count).fill(0);
+      for (let i = 1; i < count; i++) {
+        const stockFreq = getStockFreq(i);
+        if (i <= targetIdx) {
+          // 低压爬升段：统一抬升 targetDelta，让能效曲线平滑上移
+          newDeltas[i] = targetDelta;
+        } else {
+          // 削平锁频段：严格锁平在 targetFreq（即 actualTargetFreq）
+          const deltaToFlat = actualTargetFreq - stockFreq;
+          newDeltas[i] = Math.max(DELTA_MIN, Math.min(DELTA_MAX, deltaToFlat));
+        }
       }
 
-      // 4. 单调守卫：驱动按 running-max 生效，低于左侧最高点的锚点会被抬回去，
-      //    这里提前抹平台阶，保证「画出来的形状」就是「写入后生效的形状」。
-      let prev = cur[0];
-      for (let i = 1; i < points.length; i++) {
-        const stock = getStockFreq(i);
-        if (stock + newDeltas[i] < prev - 25) newDeltas[i] = deltaFor(i, prev);
-        prev = stock + newDeltas[i];
+      // 3. 严格单调性守护与削平段双重加固：
+      // (a) 低压段 (1 到 targetIdx): 保证频率单调不降，且任何点绝不允许超过 actualTargetFreq，杜绝局部尖峰污染后续平线
+      let prevFreq = getStockFreq(0) + newDeltas[0];
+      for (let i = 1; i <= targetIdx; i++) {
+        const stockFreq = getStockFreq(i);
+        let effFreq = stockFreq + newDeltas[i];
+        if (effFreq < prevFreq) {
+          newDeltas[i] = Math.max(DELTA_MIN, Math.min(DELTA_MAX, prevFreq - stockFreq));
+          effFreq = stockFreq + newDeltas[i];
+        }
+        if (effFreq > actualTargetFreq) {
+          newDeltas[i] = Math.max(DELTA_MIN, Math.min(DELTA_MAX, actualTargetFreq - stockFreq));
+          effFreq = stockFreq + newDeltas[i];
+        }
+        prevFreq = effFreq;
+      }
+
+      // (b) 削平锁频段 (targetIdx 到 count - 1): 强制每个锚点的生效频率绝对等于 actualTargetFreq
+      for (let i = targetIdx; i < count; i++) {
+        const stockFreq = getStockFreq(i);
+        newDeltas[i] = Math.max(DELTA_MIN, Math.min(DELTA_MAX, actualTargetFreq - stockFreq));
       }
 
       STATE.plannedDeltas = newDeltas;
-      log(`[✓] 已计算曲线方案 [${label}]: ${targetVolt}mV 以下整段平移 ${shift >= 0 ? '+' : ''}${Math.round(shift)}MHz，${targetVolt}mV 以上削平锁频至 ${targetFreq}MHz。`);
+      const targetVoltMv = (STATE.stockBaseline && STATE.stockBaseline[targetIdx]) ? STATE.stockBaseline[targetIdx].volt_mv : STATE.vfPoints[targetIdx].volt_mv;
+      log(`[✓] 已计算曲线方案 [${label}]: 低压段抬升 ${targetDelta >= 0 ? '+' : ''}${targetDelta}MHz, 超出 ${targetVoltMv}mV 后强制削平锁频至 ${actualTargetFreq}MHz.`);
       drawCurve();
     }
 
     // --- Math & Frequency Helpers ---
     function getStockFreq(idx) {
+      if (STATE.stockBaseline && STATE.stockBaseline[idx]) {
+        return STATE.stockBaseline[idx].freq_mhz;
+      }
       if (!STATE.vfPoints || !STATE.vfPoints[idx]) return 0;
-      const base = STATE.stockBaseline;
-      if (base && typeof base[idx] === 'number') return base[idx];
       const p = STATE.vfPoints[idx];
       return p.freq_mhz - (p.delta_mhz || 0);
     }
@@ -1113,12 +1153,10 @@
       const plotH = Math.max(10, h - padT - padB);
 
       // Voltage Range
-      const minV = V_MIN;
-      const maxV = V_MAX;
+      const minV = 650;
+      const maxV = 1150;
 
-      // Frequency Range (adapt dynamically to the visible window)
-      // 只把「可视窗内」的锚点纳入 Y 轴：450~700mV 那一段是待机 180MHz 的死区，
-      // 算进来会把纵轴拉到 -200~3500，一像素 19MHz，拖一下就跨 1000MHz。
+      // Frequency Range (adapt dynamically to visible window)
       let fMin = Infinity, fMax = -Infinity;
       if (STATE.vfPoints && STATE.vfPoints.length > 0) {
         for (let i = 0; i < STATE.vfPoints.length; i++) {
@@ -1130,12 +1168,11 @@
           fMax = Math.max(fMax, sF, eF);
         }
       }
-      if (!isFinite(fMin) || fMax - fMin < 100) { fMin = 1600; fMax = 3200; }
+      if (!isFinite(fMin) || fMax - fMin < 100) { fMin = 1600; fMax = 3000; }
       const margin = Math.max(60, (fMax - fMin) * 0.12);
-      // 下沿按数据自适应，上沿固定在 F_MAX：曲线始终贴着底部往上铺，
-      // 不会因为某个高压锚点或出厂尾部把整幅图拉扁。
       let yMin = Math.floor((fMin - margin) / 50) * 50;
-      const yMax = F_MAX;
+      let yMax = Math.ceil((fMax + margin) / 50) * 50;
+      yMax = Math.min(3200, Math.max(2600, yMax));
       if (yMin > yMax - 400) yMin = yMax - 400;
 
       const toX = (volt) => padL + ((volt - minV) / (maxV - minV)) * plotW;
@@ -1145,44 +1182,40 @@
       return { canvas, w, h, padL, padR, padT, padB, plotW, plotH, minV, maxV, yMin, yMax, toX, toY, yToF };
     }
 
-    // 命中判定只看横向距离：127 个锚点摊在 450mV 里平均只隔 3px，再加 Y 约束反而抓不到
-    // （整段压平后大量锚点同高，Y 方向完全区分不开）。按列取最近的锚点最可预期。
-    function nearest(xPx) {
+    function nearest(xPx, yPx) {
       const g = getCanvasGeom();
       if (!g || !STATE.vfPoints || STATE.vfPoints.length < 2) return -1;
       let best = -1, bestDist = Infinity;
       for (let i = 1; i < STATE.vfPoints.length; i++) {
         const v = STATE.vfPoints[i].volt_mv;
         if (v < g.minV || v > g.maxV) continue;
-        const dx = Math.abs(g.toX(v) - xPx);
-        if (dx < bestDist) {
-          bestDist = dx;
-          best = i;
+        const ax = g.toX(v);
+        const ay = g.toY(getEffFreq(i));
+        const dx = Math.abs(ax - xPx);
+        const dy = Math.abs(ay - yPx);
+        const dist = Math.hypot(dx, dy);
+        // Euclidean proximity or strict column proximity
+        if (dist <= HIT_PX * 1.5 || (dx <= HIT_PX && dy <= 45)) {
+          if (dist < bestDist) {
+            bestDist = dist;
+            best = i;
+          }
         }
       }
-      return bestDist <= HIT_PX ? best : -1;
+      return best;
     }
 
     function readout(idx) {
       const el = document.getElementById('readout');
       if (idx < 1 || !STATE.vfPoints || idx >= STATE.vfPoints.length) {
-        el.innerHTML = `<span>🖱️ <b>拖动</b> 微调 · <b>Shift</b> 整段平移（压过左邻→橙色虚线）· <b>双击</b> 归零</span>`;
+        el.innerHTML = `<span>🖱️ 拖拽锚点可微调 | 按住 Shift 拖动向右水平削平锁频 | 双击锚点归零</span>`;
         return;
       }
       const p = STATE.vfPoints[idx];
       const effF = Math.round(getEffFreq(idx));
       const delta = (STATE.plannedDeltas ? STATE.plannedDeltas[idx] : p.delta_mhz) || 0;
       const deltaStr = (delta >= 0 ? '+' : '') + delta + ' MHz';
-      let txt = `<span><b>锚点 #${idx}</b> · <b>${p.volt_mv} mV</b> · <b>${effF} MHz</b> (${deltaStr})`;
-      if (snapInfo) {
-        txt += ` · <span style="color:#f59e0b;">压过左邻 ${STATE.vfPoints[snapInfo.at].volt_mv}mV ${snapInfo.level}MHz（会抬回成平台）</span>`;
-      }
-      if (drag.active && drag.shift && delta <= DELTA_MIN + 1) {
-        txt += ` · <span style="color:#ef4444;">已到 -500 下限，整段停住</span>`;
-      } else if (drag.active && drag.shift) {
-        txt += ` · <span style="color:#10b981;">整段平移中</span>`;
-      }
-      el.innerHTML = txt + '</span>';
+      el.innerHTML = `<span><b>锚点 #${idx}</b> · <b>${p.volt_mv} mV</b> · <b>${effF} MHz</b> (${deltaStr})${drag.active && drag.shift ? ' · <span style="color:#10b981;">Shift水平削平中</span>' : ''}</span>`;
     }
 
     // --- Interactive Drag Handlers ---
@@ -1190,51 +1223,14 @@
       STATE.plannedDeltas[idx] = deltaFor(idx, wantFreq);
     }
 
-    // ---- Shift：右侧整段同幅平移 ----
-    // 上拉 / 下拉都是「选中点及其右侧，delta 同时加上同一个拖动量」，整段形状完全不变。
-    // 这里刻意不用「左邻频率」截断：出厂曲线相邻两点只差几十 MHz，一截断拖动立刻停住，
-    // 手感像整段下移失效。压过左邻的部分会被驱动 running-max 抬回，结果用橙色虚线画出来，
-    // 所以所见就是写入后的真实形状。左侧一个点都不碰，唯一硬约束是每个锚点自己的 -500/+1000。
-    let snapInfo = null;   // 松手日志里用来描述「压过左邻」的台阶
-
-    function setFollowShift(idx, wantFreq) {
-      const start = getEffFreq(idx);
-      const step = Math.round(wantFreq - start);
-      snapInfo = null;
-      if (step === 0) return 0;
-
-      for (let i = idx; i < STATE.plannedDeltas.length; i++) {
-        const d = Math.round((STATE.plannedDeltas[i] || 0) + step);
-        STATE.plannedDeltas[i] = Math.max(DELTA_MIN, Math.min(DELTA_MAX, d));
-      }
-      if (step < 0 && idx > 0 && getEffFreq(idx) < getEffFreq(idx - 1)) {
-        snapInfo = { at: idx - 1, level: Math.round(getEffFreq(idx - 1)) };
-      }
-      return step;
-    }
-
-    // Shift + 下拉：把选中点压到目标频率，右侧所有锚点钉在同一频率（水平削平）。
-    // 左侧（i < idx）完全不动。用本地 deltaFor（固定出厂基线 + ±1000 clamp）。
     function setFollowFlatten(idx, wantFreq) {
       const newD = deltaFor(idx, wantFreq);
       STATE.plannedDeltas[idx] = newD;
       const pinnedFreq = getStockFreq(idx) + newD;
+      // Flatten all points to the right to the exact same frequency
       for (let i = idx + 1; i < STATE.plannedDeltas.length; i++) {
         STATE.plannedDeltas[i] = deltaFor(i, pinnedFreq);
       }
-      snapInfo = null;
-    }
-
-    // 统计右侧有多少锚点因为 -500MHz 单点下限压不到目标（触底后曲线会重新上翘）。
-    function countFloored(fromIdx, level) {
-      let n = 0, first = -1;
-      for (let i = fromIdx; i < STATE.plannedDeltas.length; i++) {
-        if (STATE.plannedDeltas[i] <= DELTA_MIN + 1 && getEffFreq(i) > level + 2) {
-          n++;
-          if (first < 0) first = i;
-        }
-      }
-      return { n, first };
     }
 
     function onPointerDown(ev) {
@@ -1245,16 +1241,15 @@
       const x = ev.clientX - rect.left;
       const y = ev.clientY - rect.top;
 
-      const idx = nearest(x);
+      const idx = nearest(x, y);
       if (idx < 1) return;
 
       ensurePlannedDeltas();
       pushUndo();
 
-      snapInfo = null;
       drag.active = true;
       drag.index = idx;
-      drag.shift = ev.shiftKey;   // 按下时锁定，不随拖动切换
+      drag.shift = ev.shiftKey || ev.altKey;
       drag.moved = false;
       drag.startY = y;
       drag.startFreq = getEffFreq(idx);
@@ -1277,7 +1272,7 @@
       const y = ev.clientY - rect.top;
 
       if (!drag.active) {
-        const idx = nearest(x);
+        const idx = nearest(x, y);
         if (idx !== STATE.hoverIndex) {
           STATE.hoverIndex = idx;
           readout(idx);
@@ -1291,19 +1286,9 @@
       const isShift = drag.shift || ev.shiftKey || ev.altKey;
       const targetFreq = Math.round(g.yToF(y));
 
-      // Shift 按下时按拖动方向二选一（左侧始终不动）：
-      //   上拉（目标频率高于按下时）→ 右侧整段同幅平移，保持曲线形状
-      //   下拉（目标频率低于按下时）→ 右侧削平到选中点频率，水平锁频
       if (isShift) {
-        if (targetFreq > drag.startFreq) {
-          drag.shiftMode = 'shift';
-          setFollowShift(drag.index, targetFreq);
-        } else {
-          drag.shiftMode = 'flatten';
-          setFollowFlatten(drag.index, targetFreq);
-        }
+        setFollowFlatten(drag.index, targetFreq);
       } else {
-        drag.shiftMode = null;
         setSinglePoint(drag.index, targetFreq);
       }
 
@@ -1320,62 +1305,23 @@
       if (g && g.canvas) g.canvas.classList.remove('dragging');
 
       if (drag.moved && idx >= 1) {
+        updatePresetButtons(null);
         STATE.activeMode = '手动微调方案';
         document.getElementById('statModeText').textContent = STATE.activeMode;
         const p = STATE.vfPoints[idx];
-        const knee = Math.round(getEffFreq(idx));
-        const tail = Math.round(getEffFreq(STATE.vfPoints.length - 1));
-        const shiftMode = drag.shiftMode; // shift=右侧整段平移 / flatten=右侧削平 / null=单点
-        const how = shiftMode === 'shift' ? 'Shift 上拉·右侧整段同幅平移'
-                  : shiftMode === 'flatten' ? 'Shift 下拉·右侧削平锁频'
-                  : '单点微调';
-        log(`[✎] ${how}：锚点 #${idx} (${p.volt_mv}mV) → ${knee}MHz，右侧末端 ${tail}MHz（缓冲已更新，点「一键写入」下发生效）`);
+        const effF = Math.round(getEffFreq(idx));
+        const isShift = drag.shift || ev.shiftKey || ev.altKey;
 
-        // Shift 拖动后同步目标锚点到输入框，并取消预设高亮（目标标记会随之吸附到该锚点）
-        if (shiftMode) {
+        if (isShift) {
           STATE.targetVolt = p.volt_mv;
-          STATE.targetFreq = knee;
+          STATE.targetFreq = effF;
           document.getElementById('inputTargetVolt').value = STATE.targetVolt;
           document.getElementById('inputTargetFreq').value = STATE.targetFreq;
-          document.querySelectorAll('.preset-btn').forEach(btn => btn.classList.remove('active'));
         }
 
-        if (!shiftMode) {
-          const left = idx > 0 ? Math.round(getEffFreq(idx - 1)) : null;
-          if (left !== null && knee < left - 1) {
-            log(`[!] 该点比左侧 ${left}MHz 低 ${left - knee}MHz，驱动 running-max 会把它抬回；要连右侧一起压低请用 Shift+拖动`);
-          }
-        } else if (shiftMode === 'flatten') {
-          // 削平：右侧钉在选中点频率；若左邻更高，驱动 running-max 会把整段抬回左邻高度
-          const effF = knee;
-          let leftHigher = -1;
-          for (let i = idx - 1; i >= 1; i--) {
-            if (getEffFreq(i) > effF + 1) { leftHigher = i; break; }
-          }
-          if (leftHigher >= 0) {
-            log(`[!] 左侧 ${STATE.vfPoints[leftHigher].volt_mv}mV 仍高于 ${effF}MHz，写入后驱动 running-max 会把削平段抬回该高度；如需整体压低请先压低左侧锚点`);
-          }
-        } else {
-          // 整段同幅平移不按左邻截断；压过左邻时提示写入后的真实形状
-          if (snapInfo) {
-            const a = STATE.vfPoints[snapInfo.at];
-            log(`[⇥] 已压过左邻 ${a.volt_mv}mV 的 ${snapInfo.level}MHz：缓冲里是台阶，写入后驱动 running-max 会把这一段抬成 ${snapInfo.level}MHz 平台（见橙色虚线）`);
-          }
-          // -500MHz 单点下限：尾部触底的锚点会停住，其余继续跟随
-          const fl = countFloored(idx, knee);
-          if (fl.n > 0) {
-            log(`[!] 从 ${STATE.vfPoints[fl.first].volt_mv}mV 起有 ${fl.n} 个锚点已到 -500MHz 单点下限，只跟到 -500 就停（出厂该段约 ${Math.round(getStockFreq(fl.first))}MHz）`);
-          }
-          // 左邻仍高于选中点时，驱动的 running-max 会把整段抬回该高度
-          let leftHigher = -1;
-          for (let i = idx - 1; i >= 1; i--) {
-            if (getEffFreq(i) > knee + 1) { leftHigher = i; break; }
-          }
-          if (leftHigher >= 0) {
-            log(`[!] 左侧 ${STATE.vfPoints[leftHigher].volt_mv}mV 仍高于 ${knee}MHz，写入后驱动会把这一段抬回该高度；如需整体压低请先压低左侧锚点`);
-          }
-        }
-        savePluginStorage();
+        const modeDesc = isShift ? 'Shift 右侧水平削平锁频' : '单点微调';
+        log(`[✎] ${modeDesc}: 锚点 #${idx} (${p.volt_mv}mV) 调整为 ${effF}MHz (点击「一键写入」下发生效)`);
+        savePluginStorage({ syncWatcher: false });
       } else {
         // Did not actually move, pop redundant undo snapshot
         STATE.undoStack.pop();
@@ -1386,7 +1332,6 @@
 
       drag.index = -1;
       drag.snapshot = null;
-      snapInfo = null;          // 松手后不再保留「压过左邻」的提示
       readout(STATE.hoverIndex);
       drawCurve();
     }
@@ -1395,18 +1340,19 @@
       const g = getCanvasGeom();
       if (!g) return;
       const rect = g.canvas.getBoundingClientRect();
-      const idx = nearest(ev.clientX - rect.left);
+      const idx = nearest(ev.clientX - rect.left, ev.clientY - rect.top);
       if (idx < 1) return;
 
       ensurePlannedDeltas();
       pushUndo();
       STATE.plannedDeltas[idx] = 0;
+      updatePresetButtons(null);
       STATE.activeMode = '手动微调方案';
       document.getElementById('statModeText').textContent = STATE.activeMode;
       readout(idx);
       drawCurve();
       log(`[⟲] 锚点 #${idx} (${STATE.vfPoints[idx].volt_mv}mV) 偏移已归零`);
-      savePluginStorage();
+      savePluginStorage({ syncWatcher: false });
     }
 
     // --- Manual Snapshot Archive & Hardware Reload ---
@@ -1428,7 +1374,7 @@
         target_freq: STATE.targetFreq,
         saved_at: new Date().toISOString()
       };
-      savePluginStorage();
+      savePluginStorage({ syncWatcher: false });
       refreshSnapshotButton();
       log(`[💾] 已将当前 ${STATE.plannedDeltas.length} 锚点曲线存入本地独立快照！`);
     }
@@ -1448,6 +1394,7 @@
       if (typeof STATE.savedSnapshot.target_freq === 'number') STATE.targetFreq = STATE.savedSnapshot.target_freq;
       document.getElementById('inputTargetVolt').value = STATE.targetVolt;
       document.getElementById('inputTargetFreq').value = STATE.targetFreq;
+      updatePresetButtons(null);
       STATE.activeMode = '快照方案';
       document.getElementById('statModeText').textContent = STATE.activeMode;
       drawCurve();
@@ -1459,6 +1406,7 @@
       if (STATE.vfPoints && STATE.vfPoints.length > 0) {
         pushUndo();
         STATE.plannedDeltas = STATE.vfPoints.map(p => p.delta_mhz || 0);
+        updatePresetButtons(null);
         STATE.activeMode = '硬件实时曲线';
         document.getElementById('statModeText').textContent = STATE.activeMode;
         drawCurve();
@@ -1566,7 +1514,7 @@
         const eF = getEffFreq(i);
         runMax = (i === 0) ? eF : Math.max(runMax, eF);
         drv[i] = runMax;
-        if (runMax > eF + 1) hasLifted = true;
+        if (runMax > eF + 2) hasLifted = true;
       }
 
       const legendPreviewEl = document.getElementById('legendDriverPreview');
@@ -1667,7 +1615,7 @@
           memOffsetMhz: STATE.memOffset
         });
         log('[✓] 基础频率偏移已成功写入物理显卡生效！');
-        await savePluginStorage();
+        await savePluginStorage({ syncWatcher: true });
         refreshHardwareInfo();
       } catch (err) {
         log(`[-] 写入时钟偏移失败: ${err.message || err}`);
@@ -1696,7 +1644,7 @@
         }
 
         log('🎉 恭喜！免小飞机降压曲线已全量下发至显卡驱动生效！');
-        await savePluginStorage();
+        await savePluginStorage({ syncWatcher: true });
         refreshHardwareInfo();
       } catch (err) {
         log(`[-] 写入显卡调优失败: ${err.message || err}`);
@@ -1710,10 +1658,22 @@
         STATE.plannedDeltas = null;
         STATE.coreOffset = 0;
         STATE.memOffset = 0;
+        updatePresetButtons(null);
         STATE.activeMode = '出厂默认';
         document.getElementById('statModeText').textContent = '出厂默认';
+
+        // 刷新干净状态并重新校准纯净出厂基准
+        const info = await rpc('get_gpu_tuning_info');
+        if (info && info.vf_points && info.vf_points.length > 0) {
+          STATE.vfPoints = info.vf_points;
+          STATE.stockBaseline = info.vf_points.map(p => ({
+            volt_mv: p.volt_mv,
+            freq_mhz: p.freq_mhz
+          }));
+        }
+
         log('[✓] 显卡已成功恢复出厂 stock 状态！');
-        await savePluginStorage();
+        await savePluginStorage({ syncWatcher: true });
         refreshHardwareInfo();
       } catch (err) {
         log(`[-] 恢复出厂设置失败: ${err.message || err}`);
@@ -1734,7 +1694,7 @@
       document.getElementById('memValBadge').textContent = (memMhz >= 0 ? '+' : '') + memMhz + ' MHz';
 
       log(`[⟳] 接收到宿主时钟变更广播: Core=${coreMhz >= 0 ? '+' : ''}${coreMhz}MHz, Mem=${memMhz >= 0 ? '+' : ''}${memMhz}MHz，界面已自动镜像同步。`);
-      savePluginStorage();
+      savePluginStorage({ syncWatcher: false });
     }
 
     // --- Host Telemetry Listener ---
@@ -1801,7 +1761,22 @@
         canvas.addEventListener('dblclick', onDblClick);
       }
 
-      // 4. Register Tauri Event Listener for host-wide clock offset sync
+      // 4. Register Tauri Event Listener for host-wide clock offset sync & mode switch reaffirmation
+      const onModeSwitchedReaffirm = async (mode) => {
+        if (STATE.plannedDeltas && STATE.plannedDeltas.length >= 16 && STATE.activeMode !== '出厂默认') {
+          log(`[⚡] 检测到系统性能模式切换 (模式 ${mode?.payload !== undefined ? mode.payload : mode})，守护引擎正在确保 V/F 曲线锁定...`);
+          // Brief debounce to allow EC/VBIOS power transition and TGP latching to finish
+          await new Promise(r => setTimeout(r, 350));
+          try {
+            await rpc('set_gpu_vf_curve_deltas', { deltasMhz: STATE.plannedDeltas });
+            await refreshHardwareInfo();
+            log('🎉 性能模式切换完成，V/F 降压曲线已自动重新咬合生效！');
+          } catch (err) {
+            console.warn('Mode switch reaffirmation failed:', err);
+          }
+        }
+      };
+
       try {
         if (window.OpenRevo && typeof window.OpenRevo.listen === 'function') {
           window.OpenRevo.listen('gpu-clock-offsets-changed', (event) => {
@@ -1809,15 +1784,17 @@
               onExternalOffsetsChanged(event.payload.core_offset_mhz, event.payload.mem_offset_mhz);
             }
           });
+          window.OpenRevo.listen('physical-mode-switched', onModeSwitchedReaffirm);
         } else if (window.__TAURI__ && window.__TAURI__.event && typeof window.__TAURI__.event.listen === 'function') {
           window.__TAURI__.event.listen('gpu-clock-offsets-changed', (event) => {
             if (event.payload) {
               onExternalOffsetsChanged(event.payload.core_offset_mhz, event.payload.mem_offset_mhz);
             }
           });
+          window.__TAURI__.event.listen('physical-mode-switched', onModeSwitchedReaffirm);
         }
       } catch (err) {
-        console.warn('Failed to attach gpu-clock-offsets-changed listener:', err);
+        console.warn('Failed to attach event listeners:', err);
       }
     });
 

@@ -99,6 +99,7 @@ impl openrevo_core::CoreEventSink for TauriEventSink {
         let _ = self.app.emit_to("main", "physical-mode-switched", mode);
         crate::system::native_wry::broadcast_event("power-mode-changed", &serde_json::json!({ "mode": mode }));
         crate::system::native_wry::broadcast_event("physical-mode-switched", &serde_json::json!(mode));
+        crate::system::watcher_hub::notify_power_event("mode_switched");
     }
 
     fn on_fan_boost_changed(&self, enabled: bool) {
@@ -174,6 +175,7 @@ impl openrevo_core::CoreEventSink for SlintDaemonEventSink {
         }));
         crate::system::native_wry::broadcast_event("power-mode-changed", &serde_json::json!({ "mode": mode }));
         crate::system::native_wry::broadcast_event("physical-mode-switched", &serde_json::json!(mode));
+        crate::system::watcher_hub::notify_power_event("mode_switched");
     }
 
     fn on_fan_boost_changed(&self, enabled: bool) {
@@ -479,6 +481,7 @@ fn run_slint_pure_daemon() {
     crate::system::telemetry::start_telemetry_loop(None, ec_for_telemetry, gpu_for_telemetry);
 
     // 14. Watcher Hub & Enabled Plugins Bootstrap
+    crate::system::watcher_hub::ensure_background_watcher_started();
     crate::commands::system_cmd::bootstrap_enabled_plugins();
 
     // 15. Autostart Alignment
@@ -757,9 +760,12 @@ pub fn run_tauri_runtime() {
             commands::hardware_cmd::set_plugin_enabled_unified,
             commands::hardware_cmd::uninstall_plugin,
             commands::hardware_cmd::install_plugin_from_url,
+            commands::system_cmd::plugin_log,
             commands::system_cmd::register_telemetry_consumer,
             commands::system_cmd::unregister_telemetry_consumer,
             commands::system_cmd::emit_plugin_broadcast,
+            commands::system_cmd::set_plugin_watchers,
+            commands::system_cmd::get_plugin_watchers,
             commands::system_cmd::load_plugin_theme_css,
             commands::system_cmd::set_active_skin,
             commands::system_cmd::get_active_skin,
@@ -941,6 +947,7 @@ pub fn run_tauri_runtime() {
                 crate::system::watcher_hub::init_watcher_hub(app.handle().clone());
                 crate::system::broadcast::bind_broadcast_app(app.handle().clone());
                 crate::commands::system_cmd::bootstrap_enabled_plugins();
+                crate::system::watcher_hub::trigger_startup_watchers();
             });
 
             crate::system::boot_trace::boot_log("TRAY", "System tray mounted and listeners active");
